@@ -12,7 +12,7 @@ background band.
 > [!NOTE]
 > Tested and working on the author's own DP-UB820 with firmware 1.82. Other
 > units on the same firmware should behave the same, but that has not been
-> checked. Keep a backup of a USB stick you know works.
+> checked.
 
 ## Features
 
@@ -22,9 +22,8 @@ background band.
   - **Off / On** without losing the selected file
   - **Reload current subtitle**: re-reads an edited file without restarting
   - **Refresh files**: rescans the current folder
-- **Neutral black outline.** An earlier helper had a wrong constant that made
-  the outline and the anti-aliased edges *blue* (`0xFF0000FF`). This build
-  encodes opaque black (`0xFF000000`), so edges are neutral grey.
+- **Neutral black outline.** White text with an opaque black outline
+  (`0xFF000000`) and neutral grey anti-aliased edges.
 - **Stable bottom baseline.** When a cue goes from one line to two, the extra
   line grows upward instead of pushing the bottom line lower. Three- and
   four-line cues keep the stock behaviour.
@@ -57,22 +56,13 @@ background band.
 
    Put your own `.srt` files anywhere on the stick. Subfolders work.
 
-2. **Fully power-cycle the player** (unplug it, or turn off Quick Start).
-   Standby can keep an older helper running in RAM, and the old one will not
-   be replaced.
+2. **Fully power-cycle the player** (unplug it, or turn off Quick Start), so
+   the helper starts fresh. Standby keeps whatever is already running in RAM.
 3. Insert the stick and launch `UB820-SUBTITLES.MKV` with your usual loader
    startup procedure.
 4. Insert the disc and start the film. Wait a few seconds, then press
    **OPTIONS**.
 5. Select **External Subtitles** and enter it with **OK** or **Right**.
-
-### Upgrading an existing stick
-
-If your stick already has an earlier version of this patch, replacing
-`sub/engage` is enough. Keep your own `.srt` files and `disc_style.cfg`.
-The loader is the same file that older packages shipped as
-`S2_FORKFIRST.MKV`. Only the name changed, so you can keep either one.
-Power-cycle the player before you test it.
 
 ## Using the menu
 
@@ -189,10 +179,10 @@ The output goes to `source/build/`.
 
 - **The menu does not appear.** Power-cycle the player fully, then launch the
   MKV again before starting the disc.
-- **The UI or playback stalls.** Stop, power-cycle the player, and go back to a
-  stick you know works. All changes live in RAM, so a power cycle clears them.
-- **The outline is still blue.** An old helper is still running in RAM. Do a
-  full power cycle.
+- **The UI or playback stalls.** Remove the stick and power-cycle the player.
+  All changes live in RAM, so a power cycle clears them.
+- **A `disc_style.cfg` change has no effect.** The file is read only at
+  startup. Power-cycle the player and launch the MKV again.
 
 ## Disclaimer
 
