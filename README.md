@@ -59,7 +59,9 @@ background band.
 2. **Fully power-cycle the player** (unplug it, or turn off Quick Start), so
    the helper starts fresh. Standby keeps whatever is already running in RAM.
 3. Insert the stick and launch `UB820-SUBTITLES.MKV` with your usual loader
-   startup procedure.
+   startup procedure. The player will show an error that the file cannot be
+   opened. This is expected: the file only triggers the helper, so there is
+   nothing to play. Dismiss the message and continue.
 4. Insert the disc and start the film. Wait a few seconds, then press
    **OPTIONS**.
 5. Select **External Subtitles** and enter it with **OK** or **Right**.
