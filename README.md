@@ -38,7 +38,8 @@ background band.
   anything else:
   - `apl_dispsrv`: `3ca762ac044acba426c45be240075f2644fc9f645a0fbbb1aabc4c8656dcec1d`
   - `apl_meda_bdplay`: `a07b82bc4a3a50594ee97ce9ad6937f8f63b129da0779c15576691e06da9789b`
-- A USB stick the player can read.
+- A USB stick formatted as **FAT32**. This is the only format the patch was
+  tested with.
 
 ## Installation
 
