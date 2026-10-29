@@ -1,0 +1,40 @@
+{
+  "format": "ub820-ui-hooks-v1",
+  "program": "apl_dispsrv",
+  "firmware": "1.82",
+  "sha256": "3ca762ac044acba426c45be240075f2644fc9f645a0fbbb1aabc4c8656dcec1d",
+  "payload_source": "src/menu.c",
+  "initialize_by_loader_only": true,
+  "hooks": [
+    {
+      "target": "0x187d48",
+      "replacement": "ub_hook_root_builder",
+      "original_pointer": "ub_original_root_builder",
+      "prototype": "unsigned int fn(int update)",
+      "note": "PC-relative literal LDR.W sb at +6: trampoline must relocate it, not blindly copy."
+    },
+    {
+      "target": "0x188e4c",
+      "replacement": "ub_hook_refresh",
+      "original_pointer": "ub_original_refresh",
+      "prototype": "void fn(void)"
+    },
+    {
+      "target": "0x194c90",
+      "replacement": "ub_hook_key_router",
+      "original_pointer": "ub_original_key_router",
+      "prototype": "int fn(void)",
+      "note": "Primary router captures the private child before stock fixed-page dispatch."
+    }
+  ],
+  "bindings": [
+    {"symbol":"ub_get_ctx","value":"0x1b1dbd","kind":"thumb_function_pointer","prototype":"void *fn(int resource)"},
+    {"symbol":"ub_lookup","value":"0x1b8005","kind":"thumb_function_pointer","prototype":"void *fn(void *window,const char *name)"},
+    {"symbol":"ub_get_key","value":"0x1b69cd","kind":"thumb_function_pointer","prototype":"unsigned int fn(void *event)"},
+    {"symbol":"ub_event","value":"0x258ec0","kind":"data_pointer"},
+    {"symbol":"ub_register_window","value":"0x25085","kind":"thumb_function_pointer","prototype":"int fn(void *window)"},
+    {"symbol":"ub_window_registry","value":"0x243be8","kind":"data_pointer","note":"100 32-bit native top-window slots; own child is removed before destroy."}
+  ],
+  "external_imports": "Resolve libc, CTK/GTK and g_timeout_add/gtk_signal_connect exports through target module dynamic symbols. No loader-side call to GTK or payload init is permitted.",
+  "lifecycle": "Owner destroy signal closes child on UI thread; media-kind/media-number/deck-mode or page changes close it; Return restores root focus; OPTIONS closes child and delegates stock exit. One process-lifetime GLib timer runs on the same UI main loop."
+}
