@@ -187,6 +187,10 @@ The output goes to `source/build/`.
 - **A `disc_style.cfg` change has no effect.** The file is read only at
   startup. Power-cycle the player and launch the MKV again.
 
+## License
+
+Released under the MIT License. See [`LICENSE`](LICENSE).
+
 ## Disclaimer
 
 This is an unofficial project with no affiliation to Panasonic. It modifies
