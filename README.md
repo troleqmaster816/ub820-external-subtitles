@@ -9,11 +9,10 @@ you browse the USB stick and switch subtitle files mid-film, and draws
 subtitles with a disc-like look: white text, neutral black outline, no
 background band.
 
-> [!WARNING]
-> **Experimental.** Every component passes offline tests: ARM compilation,
-> emulation against the stock 1.82 binaries, and host sanitizer tests. This
-> build **has not been confirmed on a physical player yet.** Use it at your own
-> risk, and keep a backup of a USB stick you know works.
+> [!NOTE]
+> Tested and working on the author's own DP-UB820 with firmware 1.82. Other
+> units on the same firmware should behave the same, but that has not been
+> checked. Keep a backup of a USB stick you know works.
 
 ## Features
 
@@ -81,11 +80,13 @@ Power-cycle the player before you test it.
 | --- | --- |
 | Up / Down | move between rows |
 | OK / Right | open a folder, select a file, run an action |
-| Back / Left | close the submenu and return to OPTIONS |
+| Return / Left | close the submenu and return to OPTIONS |
 | OPTIONS | close everything as usual |
 
-Rows: folders, **Up one folder**, `.srt` files, **Off**, **On**,
-**Reload current subtitle**, **Refresh files**.
+The header shows the current folder and the active state, for example
+`On | /mnt/usb/SUB/menu_polish.srt`. Rows, top to bottom: **[..] Up one
+folder**, **Off**, **On**, **Reload current subtitle**, **Refresh files**,
+then the subfolders, then the `.srt` files.
 
 ## Configuration: `sub/disc_style.cfg`
 
@@ -181,7 +182,7 @@ The output goes to `source/build/`.
 - The selected file is remembered for the current playback session only, not
   across a power cycle.
 - A media or state change may close the submenu. Open it again.
-- Not yet tested on real hardware: unusual filename encodings, very large or
+- Not covered by testing so far: unusual filename encodings, very large or
   corrupt `.srt` files, and removing the stick while a file is being read.
 
 ## Troubleshooting
