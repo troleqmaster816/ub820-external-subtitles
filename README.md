@@ -7,6 +7,16 @@ region choices, a configurable Netflix button and a few diagnostic tools.
 Nothing is written to flash, EEPROM or the drive: a full power cycle removes
 everything.
 
+> [!TIP]
+> **Press the Netflix button on the remote** and the **UB820 Helper** window
+> opens over whatever is on screen: the home screen, a menu or a film. Press
+> it again, or Return, to close it. This is the default; the button can also
+> be set back to Netflix or to do nothing.
+
+<p align="center">
+  <img src="docs/images/helper-overlay.jpg" width="640" alt="The UB820 Helper window opened with the Netflix button over the home screen">
+</p>
+
 Each feature is a separate module that you can switch on or off in one
 settings file, and new modules can be added without touching the others.
 
@@ -19,6 +29,7 @@ settings file, and new modules can be added without touching the others.
 ## Contents
 
 - [Features](#features)
+- [Screenshots](#screenshots)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Using the menus](#using-the-menus)
@@ -40,6 +51,19 @@ settings file, and new modules can be added without touching the others.
 | `remote` | What the remote's **Netflix** button does: open Netflix as usual, nothing, or open the UB820 Helper menu as an overlay anywhere (home screen, menus, playback). | on |
 | `log` | The helper log: level, saving it to the stick (on request or continuously), and optional detailed diagnostics of the player (crashes, hangs, kernel messages). | on |
 | `ssh` | An **on-demand** diagnostic SSH server (Dropbear), started from the menu. Key or password login. | **off** |
+
+## Screenshots
+
+Photos of a DP-UB820 with the English menu language.
+
+| | |
+| --- | --- |
+| ![External Subtitles in OPTIONS: the .srt file browser](docs/images/subtitle-browser.jpg) | ![An external subtitle during playback](docs/images/subtitle-playback.jpg) |
+| **External Subtitles** in OPTIONS: browse the stick and pick a `.srt` file | The chosen file on screen, in the disc-like style |
+| ![The player's own subtitle rows, unlocked](docs/images/subtitle-settings.jpg) | ![UB820 Helper in OPTIONS](docs/images/options-helper.jpg) |
+| The player's hidden subtitle rows (size, position, sync, character code), unlocked | **UB820 Helper** in OPTIONS, shown as soon as its tile has the focus |
+| ![Choosing the Blu-ray region](docs/images/bd-region-list.jpg) | ![The UB820 Helper overlay](docs/images/helper-overlay.jpg) |
+| Choosing the Blu-ray region from a list | The same menu as an overlay, opened with the Netflix button |
 
 ## Requirements
 
