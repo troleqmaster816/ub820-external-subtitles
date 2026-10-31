@@ -1,0 +1,29 @@
+{
+  "format": "ub820-ui-hooks-v1",
+  "program": "apl_mgr",
+  "firmware": "1.82",
+  "sha256": "5ba307fa43e18ee0aa72576ff4e5a49b316f7f239794fb84579f638ec00ba6a9",
+  "payload_source": "keys.c",
+  "initialize_by_loader_only": true,
+  "hooks": [
+    {
+      "target": "0x2e4f0",
+      "replacement": "ub_hook_key_filter",
+      "original_pointer": "ub_original_key_filter",
+      "prototype": "int fn(int *ctx)",
+      "note": "Key cancel filter: ctx+0xe4 is the translated key (set by FUN_000202ec for remote keys, FUN_0001d9b8, and FUN_0001b4a4 for HDMI-CEC keys, before the call); 1 drops it. The stock body drops 0x168 (Netflix) when APL_ENV_GetReplaceKey(0x700) != 0x700 and lets every key pass while ctx+0x64 == 2. Prologue ldr r3,[r0,#0x64]; push {r4,r5,r6,lr}."
+    }
+  ],
+  "bindings": [],
+  "variants": [
+    {
+      "firmware": "1.85",
+      "sha256": "eeb1b73b4c2b2857aae7699c8f74eaefdb77fd4aeaf79eea579b55aeb76a8ca0",
+      "hooks": {"ub_hook_key_filter": "0x2e568"},
+      "bindings": {},
+      "note": "The filter moved +0x78 (FUN_0002e568); its machine code, ctx offsets (0x64, 0xe0, 0xe4) and its callers' use of it (FUN_0001e740 remote keys, FUN_0001f218, FUN_0001b4a4 HDMI-CEC; 1 drops the key) are the same as in 1.82."
+    }
+  ],
+  "external_imports": "open and close from libc, resolved through the target's dynamic symbols.",
+  "lifecycle": "apl_mgr runs from boot to power off; the payload is installed once per helper run."
+}

@@ -1,45 +1,54 @@
-# UB820 External Subtitle Menu (firmware 1.82)
+# UB820 Helper
 
-A RAM-only patch for the **Panasonic DP-UB820** Ultra HD Blu-ray player
-(firmware **1.82**) that lets you choose and control external `.srt` subtitles
-from a USB stick while a disc is playing.
+A RAM-only, modular add-on for the **Panasonic DP-UB820** Ultra HD Blu-ray
+player (firmware **1.82**, and **1.85**). It adds external `.srt` subtitles,
+a **UB820 Helper** menu in OPTIONS and in Player Settings, Blu-ray and DVD
+region choices, a configurable Netflix button and a few diagnostic tools.
+Nothing is written to flash, EEPROM or the drive: a full power cycle removes
+everything.
 
-It adds an **External Subtitles** entry to the player's own OPTIONS menu, lets
-you browse the USB stick and switch subtitle files mid-film, and draws
-subtitles with a disc-like look: white text, neutral black outline, no
-background band.
+Each feature is a separate module that you can switch on or off in one
+settings file, and new modules can be added without touching the others.
 
 > [!NOTE]
-> Tested and working on the author's own DP-UB820 with firmware 1.82. Other
-> units on the same firmware should behave the same, but that has not been
-> checked.
+> Developed and tested on a DP-UB820 with firmware 1.82. Support for 1.85 is
+> built from a comparison of the two firmware versions and has not been
+> confirmed on a 1.85 player yet. This is an unofficial project with no
+> affiliation to Panasonic.
+
+## Contents
+
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Using the menus](#using-the-menus)
+- [Configuration](#configuration-submodulescfg)
+- [Firmware support](#firmware-support)
+- [How it works](#how-it-works)
+- [Building from source](#building-from-source)
+- [Known limitations](#known-limitations)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
 
 ## Features
 
-- **External Subtitles menu** in OPTIONS during playback
-  - browse folders on the USB stick (folders first, then `.srt` files)
-  - pick any `.srt` file; it takes over at the current film position
-  - **Off / On** without losing the selected file
-  - **Reload current subtitle**: re-reads an edited file without restarting
-  - **Refresh files**: rescans the current folder
-- **Neutral black outline.** White text with an opaque black outline
-  (`0xFF000000`) and neutral grey anti-aliased edges.
-- **Stable bottom baseline.** When a cue goes from one line to two, the extra
-  line grows upward instead of pushing the bottom line lower. Three- and
-  four-line cues keep the stock behaviour.
-- **Size and position calibration** in `sub/disc_style.cfg`.
-- **Nothing is written to flash.** No firmware files, flash or EEPROM are
-  modified. A full power cycle removes the patch completely.
+| Module | What it does | Default |
+| --- | --- | --- |
+| `external_subtitles` | External `.srt` subtitles from the USB stick, chosen during playback in OPTIONS > **External Subtitles**: browse folders, pick a file, switch On/Off. Disc-like look (white text, neutral black outline, stable bottom line). Also unlocks the player's own hidden subtitle rows in OPTIONS (size, sync, character code, on/off), with English text where the firmware has no translation. | on |
+| `ui` | The menus: **External Subtitles** and **UB820 Helper** in OPTIONS, and the same UB820 Helper as a tile in **Player Settings > System**, reachable without a disc. | on |
+| `region` | **Blu-ray region** the disc sees, chosen per disc (`auto`, fixed A/B/C, or all three). **DVD region**, best effort (no region error, or a fixed region 1-8). Region diagnostics in the log. | on |
+| `remote` | What the remote's **Netflix** button does: open Netflix as usual, nothing, or open the UB820 Helper menu as an overlay anywhere (home screen, menus, playback). | on |
+| `log` | The helper log: level, saving it to the stick (on request or continuously), and optional detailed diagnostics of the player (crashes, hangs, kernel messages). | on |
+| `ssh` | An **on-demand** diagnostic SSH server (Dropbear), started from the menu. Key or password login. | **off** |
 
 ## Requirements
 
-- Panasonic DP-UB820 running firmware **1.82**. The loader checks exact
-  SHA-256 hashes of the target executables and refuses to install hooks on
-  anything else:
-  - `apl_dispsrv`: `3ca762ac044acba426c45be240075f2644fc9f645a0fbbb1aabc4c8656dcec1d`
-  - `apl_meda_bdplay`: `a07b82bc4a3a50594ee97ce9ad6937f8f63b129da0779c15576691e06da9789b`
-- A USB stick formatted as **FAT32**. This is the only format the patch was
-  tested with.
+- A Panasonic DP-UB820 with firmware **1.82** or **1.85**. Every module
+  checks the exact SHA-256 of each program it changes and leaves anything
+  else alone; on any other firmware the helper changes nothing.
+- A USB stick formatted as **FAT32**.
+- A way to launch the loader file from the stick with the player's usual
+  loader start-up procedure.
 
 ## Installation
 
@@ -50,148 +59,295 @@ background band.
    USB root
    ├── UB820-SUBTITLES.MKV   loader (launch this one)
    └── sub/
-       ├── engage            helper: menu + subtitle controller + RAM loader
-       ├── disc_style.cfg    optional look calibration
-       └── sub.srt           native default subtitle (fallback)
+       ├── engage            the helper: all modules + RAM loader
+       ├── modules.cfg       settings: which modules run, and their options
+       └── sub.srt           default subtitle used by the player (fallback)
    ```
 
-   Put your own `.srt` files anywhere on the stick. Subfolders work.
+   Put your own `.srt` files anywhere on the stick; subfolders work.
 
-2. **Fully power-cycle the player** (unplug it, or turn off Quick Start), so
-   the helper starts fresh. Standby keeps whatever is already running in RAM.
-3. Insert the stick and launch `UB820-SUBTITLES.MKV` with your usual loader
-   startup procedure. The player will show an error that the file cannot be
-   opened. This is expected: the file only triggers the helper, so there is
-   nothing to play. Dismiss the message and continue.
-4. Insert the disc and start the film. Wait a few seconds, then press
-   **OPTIONS**.
-5. Select **External Subtitles** and enter it with **OK** or **Right**.
+2. **Fully power-cycle the player** (unplug it, or turn Quick Start off), so
+   the helper starts fresh. Standby keeps whatever already runs in RAM.
+3. Insert the stick and launch `UB820-SUBTITLES.MKV`. The player then says
+   the file cannot be opened. This is expected: the file only starts the
+   helper and has nothing to play. Dismiss the message.
+4. The helper is now running until the next power cycle. Start a disc and
+   press **OPTIONS** to find **External Subtitles** and **UB820 Helper**, or
+   open **Setup > Player Settings > System > UB820 Helper** without a disc.
 
-## Using the menu
+## Using the menus
 
 | Key | Action |
 | --- | --- |
-| Up / Down | move between rows |
-| OK / Right | open a folder, select a file, run an action |
-| Return / Left | close the submenu and return to OPTIONS |
+| Up / Down | move between rows (scroll in the log view) |
+| OK / Right | open a folder, select a file, open a list, run an action |
+| Return / Left | close a list or the log view, then the menu |
 | OPTIONS | close everything as usual |
 
-The header shows the current folder and the active state, for example
-`On | /mnt/usb/SUB/menu_polish.srt`. Rows, top to bottom: **[..] Up one
-folder**, **Off**, **On**, **Reload current subtitle**, **Refresh files**,
-then the subfolders, then the `.srt` files.
+A row with several values (Subtitles On/Off, Blu-ray region, DVD region,
+Netflix button) opens a list beside it with the current value highlighted:
+**OK** takes the highlighted one, **Return** keeps the old one.
 
-## Configuration: `sub/disc_style.cfg`
+**External Subtitles** (OPTIONS, during playback). The header shows the
+current folder and state, for example `On | /mnt/usb/SUB/movie.srt`. Rows:
+**[..] Up one folder**, **Subtitles: On/Off**, **Refresh files**, then the
+subfolders, then the `.srt` files. A chosen file takes over at the current
+film position; choosing it again re-reads it.
 
-The helper reads this file once at startup. Power-cycle the player after
-editing it.
+**UB820 Helper** (OPTIONS, Player Settings > System, or the Netflix button):
 
-| Key | Default | Range | Meaning |
+- **Blu-ray region**: **Auto** (default), **A**, **B**, **C**, **A+B+C** or
+  **Player default**. The row says what the player does for the disc in the
+  drive, e.g. `Auto (player's own: B)` or `Auto (set to A for this disc)`.
+  A new choice applies from the next disc on.
+- **DVD region**: **Player default** (default), **Auto**, **No region
+  check**, or a region **1**-**8**. Applies within a second; restart a DVD
+  that already stopped with a region error. See [the limits](#known-limitations).
+- **Netflix button**: **Netflix** (default), **Does nothing**, or **UB820
+  Helper**: the button then opens this menu as an overlay wherever you are,
+  and Return or the Netflix button closes it. While the overlay is open the
+  remote only works the overlay.
+- **Start SSH** / **Stop SSH**, when `[ssh]` is enabled.
+- **Helper log**: the last lines of the helper log, on screen.
+- **Save log to USB**: writes the log to `sub/ub820_submenu.log`. With
+  `save=always` the row only says that this happens automatically.
+
+Choices made in the menu are saved on the stick in `sub/ub820_menu.cfg`.
+
+## Configuration: `sub/modules.cfg`
+
+The helper reads this file once at start; power-cycle and launch the loader
+again after editing it. Each `[section]` is one module, and `enabled=0`
+switches it off. Choices made in the UB820 Helper menu are saved to
+`sub/ub820_menu.cfg`, which is read after `modules.cfg` and wins; delete it to
+go back to `modules.cfg` alone. Invalid or out-of-range values are ignored
+(the default stays) and noted in the log as `config:` lines.
+
+### `[external_subtitles]`
+
+| Key | Default | Values | Meaning |
 | --- | --- | --- | --- |
-| `font_percent` | `122` | 90 to 150 | Font scale. `124` is slightly larger. |
-| `position` | `-8` | -10 to 10 | Native vertical step. Lower numbers move text down. |
-| `bottom_align` | `1` | 0 or 1 | `1` keeps one- and two-line cues on the same bottom line. `0` restores stock row selection. |
+| `font_percent` | `122` | 90 to 150 | Font scale. |
+| `position` | `-8` | -10 to 10 | Vertical step; lower numbers move the text down. |
+| `bottom_align` | `1` | 0 or 1 | `1` keeps one- and two-line cues on the same bottom line; `0` is the stock behaviour. |
+| `native_options` | `1` | 0 or 1 | The player's own size, sync, character code and on/off rows in OPTIONS. |
+| `english_text` | `1` | 0 or 1 | English text for those rows in menu languages where the firmware has none. |
 
-The helper ignores invalid or out-of-range values and uses the defaults
-instead. The player's own subtitle position and size settings still work.
+The player's own subtitle position and size settings keep working.
+
+### `[region]`
+
+| Key | Default | Values | Meaning |
+| --- | --- | --- | --- |
+| `bd_region` | `auto` | `auto`, `stock`, `A`, `B`, `C`, `ABC` | Region a Blu-ray sees. `auto` keeps the player's region unless the disc's HDMV program accepts only other regions; discs that check in Java (BD-J) keep the player's region in `auto`, so choose a letter for them. `A`/`B`/`C` force one region; `ABC` sets all three bits (only for discs that test a bit mask); `stock` leaves the player alone. |
+| `dvd_region` | `stock` | `stock`, `free`, `1`-`8`, `auto` | DVD region, best effort. `free`: a disc is never stopped with a region error; `1`-`8`: also the region discs see; `auto`: no region error, and a disc that excludes the player's region sees the first one it allows. |
+
+### `[remote]`
+
+| Key | Default | Values | Meaning |
+| --- | --- | --- | --- |
+| `netflix_key` | `netflix` | `netflix`, `nothing`, `helper` | What the Netflix button does. `nothing` drops the key the way the firmware does on models without Netflix; `helper` opens and closes the UB820 Helper overlay. |
+
+### `[log]`
+
+| Key | Default | Values | Meaning |
+| --- | --- | --- | --- |
+| `level` | `info` | `errors`, `info`, `debug` | Detail of the helper log. Errors are always kept. |
+| `save` | `menu` | `off`, `menu`, `always` | When the log goes to `sub/ub820_submenu.log`: `menu` when you choose **Save log to USB**; `always` a few seconds after each change and at once after a crash report, keeping the previous run's log as `sub/ub820_submenu.prev.log`; `off` never. |
+| `diagnostics` | `0` | 0 or 1 | Detailed diagnostics of the player itself: crash reports, stuck or spinning threads, programs starting and ending, kernel messages, low memory, and a load line every minute. Best with `save=always`. |
+
+### `[ssh]`
+
+| Key | Default | Values | Meaning |
+| --- | --- | --- | --- |
+| `enabled` | `0` | 0 or 1 | `1` adds **Start SSH** to the UB820 Helper menu. Nothing listens until you start it there. |
+| `auth` | `key` | `key`, `password` | `key`: log in with a key whose public half is in `sub/authorized_keys` on the stick. `password`: the password is the one line in `sub/ssh_password` on the stick. |
+| `port` | `2222` | 1024 to 65535 | TCP port. |
+| `guard` | `0` | 0 or 1 | Logs every program a session starts, and ends a session whose shells keep starting each other. Diagnostic. |
+
+Connect with `ssh root@<player-ip> -p 2222`; the menu shows the exact line
+after you start the server. **Key login is recommended.** With a password,
+it sits in clear text on the stick (the helper hands Dropbear only a `$6$`
+hash), and the player has no firewall, so anyone on your network can reach
+the port. The server runs only after you start it and is gone after a power
+cycle.
+
+## Firmware support
+
+| Firmware | Status |
+| --- | --- |
+| 1.82 | Everything; tested on a player. |
+| 1.85 | Everything except the English text of the native subtitle rows (the firmware's language file changed); not yet confirmed on a player. |
+| other | Nothing is changed. |
+
+For 1.85, programs that are byte for byte the same as in 1.82 take the 1.82
+code as it is; `apl_bdv` keeps its code and only its region data moved;
+`apl_mgr` and `apl_setting` changed, so their payloads carry their own 1.85
+addresses, each one checked against the 1.82 machine code. Every decision is
+in the helper log. Expected hashes are in the module manifests
+(`source/modules/*/*.json`) and in [`source/core/injector.c`](source/core/injector.c).
 
 ## How it works
 
 ```
-UB820-SUBTITLES.MKV ──► starts sub/engage (supervisor, static ARM binary)
+UB820-SUBTITLES.MKV ──► starts sub/engage (core + modules, static ARM binary)
                             │
-                            ├─ injects menu payload    ──► apl_dispsrv      (OPTIONS UI)
-                            └─ injects backend payload ──► apl_meda_bdplay  (SRT engine)
-                                        ▲                         │
-                                        └── /tmp request/status ──┘
+                            ├─ ui: menu payload               ──► apl_dispsrv      (OPTIONS menus, overlay)
+                            │      settings payload           ──► apl_setting      (Player Settings tile)
+                            ├─ external_subtitles: engine     ──► apl_meda_bdplay  (SRT engine)
+                            │      native rows, English text  ──► apl_dispsrv      (data only)
+                            ├─ region: PSR20 / DVD region     ──► apl_bdv, apl_meda_dvdv
+                            ├─ remote: keys payload           ──► apl_mgr          (key filter)
+                            ├─ log: log, saving, diagnostics
+                            └─ ssh: static Dropbear in RAM, on demand
 ```
 
-- **Supervisor** ([`source/src/supervisor.c`](source/src/supervisor.c),
-  [`engage_core.c`](source/src/engage_core.c),
-  [`disc_style.h`](source/src/disc_style.h)): finds the two player processes,
-  checks the firmware hashes, installs both payloads with
-  [`injector.c`](source/src/injector.c), applies the subtitle style (font,
-  outline colour, row layout) and turns on the native external-SRT engine.
-- **Menu payload** ([`menu.c`](source/src/menu.c)): runs inside
-  `apl_dispsrv`. It adds the OPTIONS entry and the file browser using the
-  player's own CTK/GTK widgets.
-- **Backend payload** ([`backend.c`](source/src/backend.c)): runs inside
-  `apl_meda_bdplay`. It hooks the native ESL Open/Draw/Close functions, lists
-  the USB folders, and restarts the stock SRT parser on the selected file.
-- **IPC** ([`protocol.h`](source/src/protocol.h)): fixed-size, versioned
-  request and status records in `/tmp`. Status is written atomically
-  (temporary file, then rename). Each record carries an epoch so stale
-  requests from a previous playback session are rejected.
-- **Hook definitions:** [`source/ui_hooks.json`](source/ui_hooks.json) and
-  [`source/src/backend-hooks.json`](source/src/backend-hooks.json). Each hook
-  checks that the original instruction bytes match before patching. If they
-  do not match, nothing is installed.
+- **Core** ([`source/core/`](source/core)) finds the player's processes once
+  per second, checks each program's exact hash, installs payloads with
+  [`injector.c`](source/core/injector.c) (ptrace, hook trampolines checked
+  against the original bytes), calls every module part, writes the log and
+  reads the settings. The module interface is [`ub.h`](source/core/ub.h).
+  A payload carries one set of addresses per supported firmware build.
+- **Circuit breaker.** If a player process ends after a module part changed
+  it, that part stays off until the next power cycle, and the log says which.
+- **The stick is not mounted in Linux.** The player reaches it only through
+  its own user-space file layer, `libufs`. The helper carries a small tool,
+  [`tools/ufs`](source/tools/ufs/ufs.c), linked against the player's own
+  libc and `libufs.so`, that copies single files between the stick and `/tmp`
+  the way the player itself does.
+- **Linux 4.4.** The player runs Linux 4.4 with 32-bit programs. The helper's
+  periodic work uses [`sys.c`](source/core/sys.c), which calls 4.4 syscalls
+  directly instead of newer ones the kernel lacks; `tests/sys_check.c`
+  verifies this under `qemu-arm -strace`.
+- **`ui`** ([`source/modules/ui/`](source/modules/ui)):
+  [`menu.c`](source/modules/ui/menu.c) runs inside `apl_dispsrv` and adds the
+  two OPTIONS categories with the player's own CTK/GTK widgets; the same page
+  also opens as an overlay when the Netflix button is set to do so.
+  [`settings.c`](source/modules/ui/settings.c) runs inside `apl_setting`
+  (started only while Player Settings is open) and adds the System tile and
+  its submenu. Both share [`helper_actions.h`](source/modules/ui/helper_actions.h)
+  and talk to the other modules only through files in `/tmp`
+  ([`helper_menu.h`](source/core/helper_menu.h)), so each module keeps
+  working without them.
+- **`external_subtitles`**: [`backend.c`](source/modules/external_subtitles/backend.c)
+  runs inside `apl_meda_bdplay`, hooks the native subtitle functions and
+  restarts the stock SRT parser on the chosen file. The menu and the backend
+  exchange fixed-size, versioned records in `/tmp`
+  ([`protocol.h`](source/modules/external_subtitles/protocol.h)). The native
+  rows are shown by setting one cached flag in `apl_dispsrv`, and their
+  English text comes from swapping two read-only pages of the language file
+  for a private copy; no code is changed for either.
+- **`region`**: a Blu-ray's region check is the disc's own program reading
+  PSR20, so there is nothing to remove in the player; the module chooses the
+  value. When a BD is mounted it decides the region, and a short-lived guard
+  replaces PSR20 in that disc's `apl_bdv` within about 20 ms of the engine
+  filling it, before First Play (HDMV or BD-J) runs. This is a data write; no
+  code in `apl_bdv` changes. For DVD the module changes the DVD process's own
+  copy of two code sites in `libnavi_api.so`: the branch after the drive's
+  region answer (so the disc is never stopped with a region error) and the
+  function that gives discs the player's region. The original bytes are
+  checked before each change and put back for `stock`.
+- **`remote`**: [`keys.c`](source/modules/remote/keys.c) runs inside
+  `apl_mgr`, which asks a key filter about every remote and HDMI-CEC key. It
+  drops the Netflix key, or sends it (and, while the overlay is open, every
+  key) through a FIFO to the overlay in `apl_dispsrv`. If nothing reads the
+  FIFO, keys go through as usual, so the remote cannot get stuck.
+- **`log`** keeps the runtime log in `/tmp/ub820_submenu.log` (the oldest half
+  is dropped at 256 KB). With `diagnostics=1` it also reports crashes (the
+  kernel's `core_pattern` is pointed at the helper, which logs registers and
+  code addresses from the core's notes and discards the rest), stuck or
+  spinning threads, programs starting and ending, kernel messages and low
+  memory.
+- **`ssh`** runs a prebuilt static [Dropbear](https://matt.ucc.asn.au/dropbear/)
+  from RAM; see [`source/tools/ssh/`](source/tools/ssh/README.md). Programs it
+  starts get default signal handling and no inherited descriptors; **Stop
+  SSH** also ends open sessions.
 
-The runtime log is written to `/tmp/ub820_submenu.log` on the player. The
-patch starts no network service.
+To write a module of your own, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Building from source
 
-The prebuilt `USB-CONTENTS/sub/engage` is reproducible: building from this
+The prebuilt `USB-CONTENTS/sub/engage` is reproducible: building this
 repository gives a byte-identical file with SHA-256
-`9570a94f4617a3980350dca64a74c3744a01c76c471bef4159c11f30bf0f5e9d`.
+`bd0b1ba5b32ca7ddbb0d6a4e62cff9fc6c2c2c440d992bf328d1c1aa7fe011c9`.
 
-### Helper only (uses the committed `embedded_payloads.h`)
-
-On Linux or WSL with an ARM hard-float cross compiler:
-
-```bash
-cd source
-arm-linux-gnueabihf-gcc -std=gnu11 -static -Os -s -mthumb -march=armv7-a -mfpu=neon -mfloat-abi=hard -fno-strict-aliasing -ffunction-sections -fdata-sections -Wl,--gc-sections -Wall -Wextra -Werror -Wno-unused-function -Isrc src/supervisor.c src/injector.c -o engage
-```
+Requirements: Windows with WSL (`Ubuntu`) providing `arm-linux-gnueabihf-gcc`,
+`gcc` and `qemu-arm`.
 
 ```bash
-qemu-arm ./engage --selftest
+python source/build.py --helper
 ```
 
-### Full rebuild (payloads + hook trampolines)
+builds the helper from the committed [`source/generated/`](source/generated)
+files (no firmware needed) and self-tests it under `qemu-arm`.
 
-[`source/build.py`](source/build.py) recompiles `menu.c` and `backend.c`,
-generates the hook trampolines from the stock firmware binaries, writes
-`src/embedded_payloads.h`, and builds and self-tests `engage`. It needs:
-
-- Windows with WSL (`Ubuntu`) providing `arm-linux-gnueabihf-gcc` and
-  `qemu-arm`
-- Python packages `pyelftools`, `capstone` and `keystone-engine`
-- the stock 1.82 `apl_dispsrv` and `apl_meda_bdplay` executables. They are
-  not included in this repository.
+The full build recompiles the payloads, regenerates the hook trampolines
+from the stock firmware executables and links `tools/ufs` against the
+player's `libufs.so` and `libc-2.20-2014.11.so`. None of the firmware files
+are included in this repository. It also needs the Python packages
+`pyelftools`, `capstone` and `keystone-engine`:
 
 ```bash
-UB820_FIRMWARE_DIR=/path/to/v182/dtvrec/bin python source/build.py
+UB820_FIRMWARE_DIR=/path/to/v182/appfs/dtvrec/bin \
+UB820_FIRMWARE_DIR_185=/path/to/v185/appfs/dtvrec/bin python source/build.py
 ```
 
-The output goes to `source/build/`.
+`UB820_ROOTFS_LIB` overrides where the stock `libc-2.20-2014.11.so` is
+(default: `<1.82 firmware>/rootfs/lib`). Output goes to `source/build/`.
+
+Host tests (x86, in WSL); with `UB820_FIRMWARE_DIR` set they also check the
+English-text page swap against the real language file:
+
+```bash
+python source/tests/run_tests.py
+```
 
 ## Known limitations
 
-- Works only with firmware 1.82 and the exact hashes listed above.
-- At most 64 entries per folder. Split large libraries into subfolders. Full
-  paths are limited to 250 bytes.
-- The selected file is remembered for the current playback session only, not
-  across a power cycle.
-- A media or state change may close the submenu. Open it again.
+- **DVD region** is best effort. The drive keeps its own region, so an
+  encrypted (CSS) DVD from another region may still not play even though the
+  player no longer refuses it; unencrypted discs are the realistic case. It
+  has not been tested with a foreign-region disc.
+- **Blu-ray `auto`** does not analyse discs that check their region in Java
+  (BD-J); choose a region letter for those.
+- External subtitles: at most 64 entries per folder (use subfolders), full
+  paths up to 250 bytes, and the chosen file is remembered for the current
+  playback only.
+- A media or state change may close an open menu; open it again.
 - Not covered by testing so far: unusual filename encodings, very large or
-  corrupt `.srt` files, and removing the stick while a file is being read.
+  corrupt `.srt` files, removing the stick while a file is being read, and
+  firmware 1.85 on a real player.
 
 ## Troubleshooting
 
-- **The menu does not appear.** Power-cycle the player fully, then launch the
-  MKV again before starting the disc.
-- **The UI or playback stalls.** Remove the stick and power-cycle the player.
-  All changes live in RAM, so a power cycle clears them.
-- **A `disc_style.cfg` change has no effect.** The file is read only at
-  startup. Power-cycle the player and launch the MKV again.
+- **The menu does not appear.** Power-cycle the player fully, launch the
+  loader again before starting a disc, then read the log (on the stick, or
+  in the menu if it appears): look for `Installed apl_dispsrv`, `giving up
+  installing`, or a line saying that a process ended and a part is off.
+- **No log on the stick.** With `save=menu` the log is written only when you
+  choose **Save log to USB**; the menu then says whether it worked. With
+  `save=always` a failure is logged as `cannot save the log to the stick` and
+  retried every minute.
+- **The player crashes, freezes or reboots.** Set `save=always` and
+  `diagnostics=1`, power-cycle, reproduce it with the stick inserted, then
+  read `sub/ub820_submenu.log` (or `sub/ub820_submenu.prev.log`). Look for
+  `crash:`, `diag:` and `kernel:` lines just before the end.
+- **Settings are ignored.** The log starts with `config: copied
+  /mnt/usb/sub/modules.cfg from the stick` when the file was read; otherwise
+  a `config:` line gives the reason. The file is read only at start.
+- **Anything misbehaves.** Remove the stick and power-cycle the player:
+  every change lives in RAM.
 
 ## License
 
-Released under the MIT License. See [`LICENSE`](LICENSE).
+Released under the MIT License, see [`LICENSE`](LICENSE).
 
-## Disclaimer
+Third-party components in the binaries: the helper `engage` is statically
+linked with the GNU C Library (LGPL-2.1-or-later); its complete source and
+build are in this repository, so it can be rebuilt and relinked. It embeds
+the prebuilt [Dropbear](https://matt.ucc.asn.au/dropbear/) binaries, which
+are statically linked with [musl](https://musl.libc.org/); their license
+texts are in [`source/tools/ssh/licenses/`](source/tools/ssh/licenses).
 
-This is an unofficial project with no affiliation to Panasonic. It modifies
-running processes on your own device and is provided as is, with no warranty.
+This project is not affiliated with Panasonic. It modifies running processes
+on your own device and is provided as is, with no warranty.

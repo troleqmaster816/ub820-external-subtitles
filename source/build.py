@@ -1,103 +1,220 @@
+"""Build the UB820 QoL helper (sub/engage) from core/ and modules/.
+
+  python build.py            full build: payloads, hook trampolines, generated/*,
+                             then the helper (needs the stock 1.82 executables in
+                             UB820_FIRMWARE_DIR, and the 1.85 ones in
+                             UB820_FIRMWARE_DIR_185 for manifests with a 1.85
+                             variant)
+  python build.py --helper   helper only, from the committed generated/* files
+                             (no firmware needed)
+
+Each modules/<id>/ holds module.json, module.c (helper side) and optional
+payload sources with a hook manifest. See CONTRIBUTING.md.
+"""
 from pathlib import Path
 import hashlib,io,json,os,struct,subprocess,sys
-from elftools.elf.elffile import ELFFile
-from capstone import Cs,CS_ARCH_ARM,CS_MODE_THUMB,CS_GRP_JUMP,CS_GRP_CALL
-from capstone.arm import ARM_OP_MEM,ARM_OP_REG,ARM_REG_PC
-from keystone import Ks,KS_ARCH_ARM,KS_MODE_THUMB
 ROOT=Path(__file__).resolve().parent
-SRC=ROOT/'src';BUILD=ROOT/'build';BUILD.mkdir(exist_ok=True)
-# Directory holding the stock 1.82 apl_dispsrv and apl_meda_bdplay executables.
+CORE=ROOT/'core';MODULES=ROOT/'modules';GEN=ROOT/'generated';BUILD=ROOT/'build'
+# Directories holding the stock player executables (apl_dispsrv, apl_mgr, ...)
+# per firmware: 1.82, the one every manifest is written for, and 1.85 for the
+# manifests' "variants" (addresses of a program whose code changed in 1.85).
 FIRM=Path(os.environ.get('UB820_FIRMWARE_DIR','firmware'))
+FIRMS={'1.82':FIRM}
+if os.environ.get('UB820_FIRMWARE_DIR_185'):FIRMS['1.85']=Path(os.environ['UB820_FIRMWARE_DIR_185'])
 USB=ROOT.parent/'USB-CONTENTS'
+CFLAGS=['-mthumb','-march=armv7-a','-mfpu=neon','-mfloat-abi=hard','-Os','-Wall','-Wextra','-Werror']
+
 def linux(p):
  s=str(p.resolve()).replace('\\','/');return '/mnt/'+s[0].lower()+s[2:]
 def run(args,log):
+ BUILD.mkdir(exist_ok=True)
  r=subprocess.run(['wsl.exe','-d','Ubuntu','--',*args],capture_output=True,text=True,encoding='utf-8',errors='replace')
  (BUILD/log).write_text(r.stdout+r.stderr)
  if r.returncode:raise RuntimeError((r.stdout+r.stderr)[-7000:])
  return r.stdout
-def elf_bytes(path):
- data=path.read_bytes();return data,ELFFile(io.BytesIO(data))
-def readva(elf,addr,n):
- for s in elf.iter_segments():
-  if s['p_type']=='PT_LOAD' and s['p_vaddr']<=addr and addr+n<=s['p_vaddr']+s['p_filesz']:
-   return s.data()[addr-s['p_vaddr']:addr-s['p_vaddr']+n]
- raise ValueError(hex(addr))
-ks=Ks(KS_ARCH_ARM,KS_MODE_THUMB);cs=Cs(CS_ARCH_ARM,CS_MODE_THUMB);cs.detail=True
-def asm(s):return bytes(ks.asm(s)[0])
-def make_hook(elf,raw):
- addr=int(raw.get('target',raw.get('target_hex')),0)
- assert addr%4==0
- ins=[];size=0
- for x in cs.disasm(readva(elf,addr,32),addr):
-  ins.append(x);size+=x.size
-  if size>=4:break
- assert size<=32
- expected=readva(elf,addr,size);tramp=b'';rel=[]
- for x in ins:
-  if x.group(CS_GRP_JUMP) or x.group(CS_GRP_CALL) or x.mnemonic.startswith('it'):raise ValueError('Unsupported hook prologue flow: '+str(x))
-  mem=next((o for o in x.operands if o.type==ARM_OP_MEM and o.mem.base==ARM_REG_PC),None)
-  if mem is not None:
-   assert x.mnemonic.startswith('ldr') and x.operands[0].type==ARM_OP_REG
-   reg=x.reg_name(x.operands[0].reg);assert reg!='pc'
-   literal=((x.address+4)&~3)+mem.mem.disp
-   value=struct.unpack('<I',readva(elf,literal,4))[0]
-   tramp+=asm(f'movw {reg}, #{value&65535}; movt {reg}, #{value>>16}')
-   rel.append({'address':hex(x.address),'literal':hex(literal),'value':hex(value),'register':reg})
-  elif ARM_REG_PC in x.regs_access()[0]:raise ValueError('Unsupported PC-relative prefix '+str(x))
-  else:tramp+=x.bytes
- if len(tramp)%4:tramp+=b'\x00\xbf'
- tramp+=b'\xdf\xf8\x00\xf0'+struct.pack('<I',addr+size+1)
- return {'target':addr,'length':size,'replacement':raw['replacement'],'original_pointer':raw['original_pointer'],
-         'expected':expected,'trampoline':tramp,'relocated_literals':rel,
-         'decoded':[{'address':hex(x.address),'mnemonic':x.mnemonic,'operands':x.op_str} for x in ins]}
-def cblob(name,data):return 'static const unsigned char '+name+'[]={'+','.join('0x%02x'%b for b in data)+'};\n'
-def compile_payload(name):
- args=['arm-linux-gnueabihf-gcc','-shared','-fPIC','-nostdlib','-fno-stack-protector','-mthumb','-march=armv7-a','-mfpu=neon','-mfloat-abi=hard','-Os','-Wall','-Wextra','-Werror','-Wl,--hash-style=sysv','-Wl,--build-id=none','-I'+linux(SRC),'-o',linux(BUILD/(name+'.so')),linux(SRC/(name+'.c'))]
- run(args,name+'-compile.log')
- return BUILD/(name+'.so')
-def main():
- for n in ['menu','backend']:compile_payload(n)
- definitions='#include "injector.h"\n';reports=[]
- for label,name,manifest_path,program in [('ui','menu',ROOT/'ui_hooks.json','apl_dispsrv'),('backend','backend',SRC/'backend-hooks.json','apl_meda_bdplay')]:
-  manifest=json.loads(manifest_path.read_text());data,elf=elf_bytes(FIRM/program)
-  sha=hashlib.sha256(data).hexdigest();assert sha==manifest.get('sha256',manifest.get('firmware_sha256'))
-  blob,plugin=elf_bytes(BUILD/(name+'.so'));sym={s.name:s for s in plugin.get_section_by_name('.dynsym').iter_symbols()}
-  relocs=[]
-  for s in plugin.iter_sections():
-   if s['sh_type']=='SHT_REL':
-    for r in s.iter_relocations():assert r['r_info_type'] in (0,2,21,22,23);relocs.append(r['r_info_type'])
-  hooks=[make_hook(elf,h) for h in manifest['hooks']]
-  definitions+=cblob(label+'_elf',blob)
-  for i,h in enumerate(hooks):
-   assert h['replacement'] in sym and h['original_pointer'] in sym
-   definitions+=cblob(f'{label}_expected_{i}',h['expected'])+cblob(f'{label}_trampoline_{i}',h['trampoline'])
-  definitions+=f'static const struct ub_hook_spec {label}_hooks[]={{\n'
-  for i,h in enumerate(hooks):definitions+='{0x%x,%d,"%s","%s",%s_expected_%d,%s_trampoline_%d,%d},\n'%(h['target'],h['length'],h['replacement'],h['original_pointer'],label,i,label,i,len(h['trampoline']))
-  definitions+='};\n'
-  bindings=manifest.get('bindings',[])
-  definitions+=f'static const struct ub_binding {label}_bindings[]={{\n'
-  for b in bindings:
-   assert b['symbol'] in sym
-   definitions+='{"%s",%su},\n'%(b['symbol'],b['value'])
-  if not bindings:definitions+='{0,0},\n'
-  definitions+='};\n'
-  segments=sorted([(s['p_vaddr']&~4095,(s['p_vaddr']+s['p_memsz']+4095)&~4095) for s in elf.iter_segments() if s['p_type']=='PT_LOAD'])
-  gateway_hint=next(end for (_,end),(start,_) in zip(segments,segments[1:]) if start-end>=4096)
-  definitions+=f'static const struct ub_payload ub_{label}_payload={{"{program}","{sha}",{label}_elf,sizeof({label}_elf),{label}_hooks,{len(hooks)},{label}_bindings,{len(bindings)},0x{gateway_hint:x}}};\n'
-  reports.append({'label':label,'program':program,'firmware_sha256':sha,'payload_sha256':hashlib.sha256(blob).hexdigest(),
-                  'relocation_types':sorted(set(relocs)),'gateway_hint':hex(gateway_hint),
-                  'undefined_imports':[n for n,s in sym.items() if s['st_shndx']=='SHN_UNDEF' and n],
-                  'hooks':[{**h,'expected':h['expected'].hex(),'trampoline':h['trampoline'].hex()} for h in hooks]})
- (SRC/'embedded_payloads.h').write_text(definitions)
- args=['arm-linux-gnueabihf-gcc','-std=gnu11','-static','-Os','-s','-mthumb','-march=armv7-a','-mfpu=neon','-mfloat-abi=hard','-fno-strict-aliasing','-ffunction-sections','-fdata-sections','-Wl,--gc-sections','-Wall','-Wextra','-Werror','-Wno-unused-function','-I'+linux(SRC),linux(SRC/'supervisor.c'),linux(SRC/'injector.c'),'-o',linux(BUILD/'engage')]
- run(args,'supervisor-compile.log')
- smoke=run(['qemu-arm',linux(BUILD/'engage'),'--selftest'],'supervisor-selftest.log')
- digest=run(['qemu-arm',linux(BUILD/'engage'),'--hash',linux(USB/'UB820-SUBTITLES.MKV')],'supervisor-hash-test.log').strip()
+
+def modules():
+ found=[]
+ for d in sorted(p for p in MODULES.iterdir() if p.is_dir()):
+  meta=json.loads((d/'module.json').read_text())
+  if meta['id']!=d.name:raise ValueError(f'{d}: module.json id must match the directory name')
+  if not (d/'module.c').exists():raise ValueError(f'{d}: missing module.c')
+  found.append((meta.get('order',1000),d.name,d,meta))
+ return [(n,d,m) for _,n,d,m in sorted(found)]
+
+def helper_sources():
+ return sorted(CORE.glob('*.c'))+[d/'module.c' for _,d,_ in modules()]+sorted(GEN.glob('*.c'))
+
+def build_helper():
+ out=BUILD/'engage'
+ args=['arm-linux-gnueabihf-gcc','-std=gnu11','-static','-s',*CFLAGS,'-fno-strict-aliasing','-ffunction-sections','-fdata-sections','-Wl,--gc-sections','-Wno-unused-function',
+       '-I'+linux(CORE),'-I'+linux(GEN),*[linux(s) for s in helper_sources()],'-o',linux(out)]
+ run(args,'helper-compile.log')
+ smoke=run(['qemu-arm',linux(out),'--selftest'],'helper-selftest.log')
+ listing=run(['qemu-arm',linux(out),'--modules'],'helper-modules.log')
+ digest=run(['qemu-arm',linux(out),'--hash',linux(USB/'UB820-SUBTITLES.MKV')],'helper-hash-test.log').strip()
  assert digest==hashlib.sha256((USB/'UB820-SUBTITLES.MKV').read_bytes()).hexdigest()
- report={'target_firmware':'1.82','components':reports,'supervisor_sha256':hashlib.sha256((BUILD/'engage').read_bytes()).hexdigest(),
-         'supervisor_bytes':(BUILD/'engage').stat().st_size,'selftest':smoke.strip(),'SHA256_implementation_known_file_pass':True,
-         'USB_written':False,'hardware_executed':False}
+ return out,smoke.strip(),listing
+
+def build_tool():
+ """tools/ufs, linked against the stock 1.82 libc 2.20 and libufs.so (see the
+ file header). Embedded in the helper as generated/tools.c."""
+ libufs=FIRM.parent/'lib'/'libufs.so'
+ libc=Path(os.environ.get('UB820_ROOTFS_LIB',FIRM.parents[2]/'rootfs'/'lib'))/'libc-2.20-2014.11.so'
+ out=BUILD/'ufs'
+ run(['arm-linux-gnueabihf-gcc','-std=gnu11',*CFLAGS,'-fno-stack-protector','-fno-builtin','-ffreestanding','-nostdlib','-nostartfiles',
+      '-Wl,--dynamic-linker=/lib/ld-linux-armhf.so.3','-Wl,--disable-new-dtags','-Wl,-rpath=/usr/X11R6/lib:/usr/dtvrec/lib:/lib:/usr/lib:/usr/local/lib',
+      '-Wl,--hash-style=sysv','-Wl,--build-id=none','-Wl,--allow-shlib-undefined','-Wl,-z,norelro',
+      linux(ROOT/'tools'/'ufs'/'ufs.c'),linux(libc),linux(libufs),'-lgcc','-o',linux(out)],'tool-ufs-compile.log')
+ run(['arm-linux-gnueabihf-strip',linux(out)],'tool-ufs-strip.log')
+ versions=run(['arm-linux-gnueabihf-readelf','-V',linux(out)],'tool-ufs-versions.log')
+ import re
+ assert set(re.findall(r'Name: (GLIBC_[0-9.]+)',versions))<={'GLIBC_2.4'},'ufs tool needs a newer libc than the player has'
+ data=out.read_bytes()
+ # Vendored, prebuilt tools embedded as-is (see tools/<name>/ for the recipe).
+ # ssh/dropbear is a static musl binary; tools/ssh/README.md has the build steps.
+ vendored=[('dropbear',ROOT/'tools'/'ssh'/'bin'/'dropbear'),
+           ('dropbearkey',ROOT/'tools'/'ssh'/'bin'/'dropbearkey')]
+ blobs=[('ufs',data)]
+ for name,path in vendored:
+  if path.exists():blobs.append((name,path.read_bytes()))
+ decls=''.join('extern const unsigned char ub_tool_%s[];\nextern const size_t ub_tool_%s_size;\n'%(n,n) for n,_ in blobs)
+ defs=''.join('const unsigned char ub_tool_%s[]={%s};\nconst size_t ub_tool_%s_size=sizeof ub_tool_%s;\n'%(n,','.join('0x%02x'%x for x in b),n,n) for n,b in blobs)
+ (GEN/'tools.h').write_text('/* Generated by build.py. Do not edit. */\n#ifndef UB_TOOLS_H\n#define UB_TOOLS_H\n#include <stddef.h>\n'+decls+'#endif\n',newline='\n')
+ (GEN/'tools.c').write_text('/* Generated by build.py. Do not edit. */\n#include "tools.h"\n'+defs,newline='\n')
+ return {'tool':'ufs','sha256':hashlib.sha256(data).hexdigest(),'bytes':len(data),
+         'linked_against':{str(p.name):hashlib.sha256(p.read_bytes()).hexdigest() for p in (libc,libufs)},
+         'vendored':{n:{'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()} for n,b in blobs if n!='ufs'}}
+
+def manifest_variants(manifest,path):
+ """The manifest's firmware variants: first the one it is written for (1.82),
+ then each entry of "variants", which must give the address of every hook (by
+ replacement) and every binding (by symbol): nothing is carried over."""
+ hooks,bindings=manifest['hooks'],manifest.get('bindings',[])
+ out=[{'firmware':manifest.get('firmware','1.82'),'sha256':manifest['sha256'],'hooks':hooks,'bindings':bindings}]
+ for var in manifest.get('variants',[]):
+  th,tb=var.get('hooks',{}),var.get('bindings',{})
+  if set(th)!={h['replacement'] for h in hooks} or set(tb)!={b['symbol'] for b in bindings}:
+   raise SystemExit(f'{path}: the {var["firmware"]} variant must give every hook and binding, and only those')
+  out.append({'firmware':var['firmware'],'sha256':var['sha256'],
+              'hooks':[{**h,'target':th[h['replacement']]} for h in hooks],
+              'bindings':[{**b,'value':tb[b['symbol']]} for b in bindings]})
+ return out
+
+def full_build():
+ from elftools.elf.elffile import ELFFile
+ from capstone import Cs,CS_ARCH_ARM,CS_MODE_THUMB,CS_GRP_JUMP,CS_GRP_CALL
+ from capstone.arm import ARM_OP_MEM,ARM_OP_REG,ARM_REG_PC
+ from keystone import Ks,KS_ARCH_ARM,KS_MODE_THUMB
+ ks=Ks(KS_ARCH_ARM,KS_MODE_THUMB);cs=Cs(CS_ARCH_ARM,CS_MODE_THUMB);cs.detail=True
+ def elf_bytes(path):
+  data=path.read_bytes();return data,ELFFile(io.BytesIO(data))
+ def readva(elf,addr,n):
+  for s in elf.iter_segments():
+   if s['p_type']=='PT_LOAD' and s['p_vaddr']<=addr and addr+n<=s['p_vaddr']+s['p_filesz']:
+    return s.data()[addr-s['p_vaddr']:addr-s['p_vaddr']+n]
+  raise ValueError(hex(addr))
+ def asm(s):return bytes(ks.asm(s)[0])
+ def make_hook(elf,raw):
+  addr=int(raw.get('target',raw.get('target_hex')),0)
+  assert addr%4==0
+  ins=[];size=0
+  for x in cs.disasm(readva(elf,addr,32),addr):
+   ins.append(x);size+=x.size
+   if size>=4:break
+  assert size<=32
+  expected=readva(elf,addr,size);tramp=b'';rel=[]
+  for x in ins:
+   if x.group(CS_GRP_JUMP) or x.group(CS_GRP_CALL) or x.mnemonic.startswith('it'):raise ValueError('Unsupported hook prologue flow: '+str(x))
+   mem=next((o for o in x.operands if o.type==ARM_OP_MEM and o.mem.base==ARM_REG_PC),None)
+   if mem is not None:
+    assert x.mnemonic.startswith('ldr') and x.operands[0].type==ARM_OP_REG
+    reg=x.reg_name(x.operands[0].reg);assert reg!='pc'
+    literal=((x.address+4)&~3)+mem.mem.disp
+    value=struct.unpack('<I',readva(elf,literal,4))[0]
+    tramp+=asm(f'movw {reg}, #{value&65535}; movt {reg}, #{value>>16}')
+    rel.append({'address':hex(x.address),'literal':hex(literal),'value':hex(value),'register':reg})
+   elif ARM_REG_PC in x.regs_access()[0]:raise ValueError('Unsupported PC-relative prefix '+str(x))
+   else:tramp+=x.bytes
+  if len(tramp)%4:tramp+=b'\x00\xbf'
+  tramp+=b'\xdf\xf8\x00\xf0'+struct.pack('<I',addr+size+1)
+  return {'target':addr,'length':size,'replacement':raw['replacement'],'original_pointer':raw['original_pointer'],
+          'expected':expected,'trampoline':tramp,'relocated_literals':rel,
+          'decoded':[{'address':hex(x.address),'mnemonic':x.mnemonic,'operands':x.op_str} for x in ins]}
+ def cblob(name,data):return 'static const unsigned char '+name+'[]={'+','.join('0x%02x'%b for b in data)+'};\n'
+ def compile_payload(d,name,source):
+  out=BUILD/f'{d.name}_{name}.so'
+  run(['arm-linux-gnueabihf-gcc','-shared','-fPIC','-nostdlib','-fno-stack-protector',*CFLAGS,'-Wl,--hash-style=sysv','-Wl,--build-id=none','-I'+linux(d),'-I'+linux(CORE),'-o',linux(out),linux(d/source)],f'{d.name}_{name}-compile.log')
+  return out
+
+ BUILD.mkdir(exist_ok=True);GEN.mkdir(exist_ok=True)
+ body='#include "payloads.h"\n';decls=[];programs={};reports=[];claimed={}
+ for mid,d,meta in modules():
+  for p in meta.get('payloads',[]):
+   label=f"{mid}_{p['name']}";so=compile_payload(d,p['name'],p['source'])
+   manifest=json.loads((d/p['manifest']).read_text());program=manifest['program']
+   blob,plugin=elf_bytes(so);sym={s.name:s for s in plugin.get_section_by_name('.dynsym').iter_symbols()}
+   relocs=set()
+   for s in plugin.iter_sections():
+    if s['sh_type']=='SHT_REL':
+     for r in s.iter_relocations():assert r['r_info_type'] in (0,2,21,22,23);relocs.add(r['r_info_type'])
+   body+=cblob(label+'_elf',blob)
+   vreports=[]
+   for vi,var in enumerate(manifest_variants(manifest,d/p['manifest'])):
+    firm=FIRMS.get(var['firmware'])
+    if firm is None:raise SystemExit(f'{label}: {d/p["manifest"]} has a {var["firmware"]} variant; set UB820_FIRMWARE_DIR_185 to that firmware\'s executables')
+    data,elf=elf_bytes(firm/program);sha=hashlib.sha256(data).hexdigest()
+    assert sha==var['sha256'],f'{program} {var["firmware"]}: firmware hash differs from {d/p["manifest"]}'
+    if vi==0 and programs.setdefault(program,sha)!=sha:raise ValueError(program+': two manifests pin different hashes')
+    hooks=[make_hook(elf,h) for h in var['hooks']]
+    for h in hooks:
+     for (other,start,end) in claimed.get((program,var['firmware']),[]):
+      if h['target']<end and start<h['target']+h['length']:raise ValueError(f'{label} hooks {program} {var["firmware"]}:{h["target"]:#x}, already hooked by {other}')
+     claimed.setdefault((program,var['firmware']),[]).append((label,h['target'],h['target']+h['length']))
+    v=f'{label}_v{vi}'
+    for i,h in enumerate(hooks):
+     assert h['replacement'] in sym and h['original_pointer'] in sym
+     body+=cblob(f'{v}_expected_{i}',h['expected'])+cblob(f'{v}_trampoline_{i}',h['trampoline'])
+    body+=f'static const struct ub_hook_spec {v}_hooks[]={{\n'
+    for i,h in enumerate(hooks):body+='{0x%x,%d,"%s","%s",%s_expected_%d,%s_trampoline_%d,%d},\n'%(h['target'],h['length'],h['replacement'],h['original_pointer'],v,i,v,i,len(h['trampoline']))
+    body+='};\n'
+    bindings=var['bindings']
+    body+=f'static const struct ub_binding {v}_bindings[]={{\n'
+    for b in bindings:
+     assert b['symbol'] in sym
+     body+='{"%s",%su},\n'%(b['symbol'],b['value'])
+    if not bindings:body+='{0,0},\n'
+    body+='};\n'
+    segments=sorted([(s['p_vaddr']&~4095,(s['p_vaddr']+s['p_memsz']+4095)&~4095) for s in elf.iter_segments() if s['p_type']=='PT_LOAD'])
+    gateway_hint=next(end for (_,end),(start,_) in zip(segments,segments[1:]) if start-end>=4096)
+    vreports.append({'firmware':var['firmware'],'sha256':sha,'gateway_hint':hex(gateway_hint),'bindings':bindings,
+                     'hooks':[{**h,'expected':h['expected'].hex(),'trampoline':h['trampoline'].hex()} for h in hooks],
+                     'c':'{"%s","%s",%s_hooks,%d,%s_bindings,%d,0x%x}'%(var['firmware'],sha,v,len(hooks),v,len(bindings),gateway_hint)})
+   body+=f'static const struct ub_payload_variant {label}_variants[]={{\n'+''.join(r.pop('c')+',\n' for r in vreports)+'};\n'
+   body+=f'const struct ub_payload ub_payload_{label}={{"{program}","{vreports[0]["sha256"]}",{label}_elf,sizeof({label}_elf),{label}_variants,{len(vreports)}}};\n'
+   decls.append(f'extern const struct ub_payload ub_payload_{label};')
+   reports.append({'payload':label,'program':program,'payload_sha256':hashlib.sha256(blob).hexdigest(),
+                   'relocation_types':sorted(relocs),
+                   'undefined_imports':sorted(n for n,s in sym.items() if s['st_shndx']=='SHN_UNDEF' and n),
+                   'variants':vreports})
+ header='/* Generated by build.py. Do not edit. */\n#ifndef UB_PAYLOADS_H\n#define UB_PAYLOADS_H\n#include "injector.h"\n'
+ header+=''.join(f'#define UB_SHA256_{p.upper()} "{s}"\n' for p,s in sorted(programs.items()))
+ header+='\n'.join(decls)+'\n#endif\n'
+ registry='/* Generated by build.py. Do not edit. */\n#include "ub.h"\n'
+ registry+=''.join(f'extern struct ub_module ub_module_{m};\n' for m,_,_ in modules())
+ registry+='struct ub_module *const ub_modules[]={'+''.join(f'&ub_module_{m},' for m,_,_ in modules())+'0};\n'
+ (GEN/'payloads.h').write_text(header,newline='\n');(GEN/'payloads.c').write_text('/* Generated by build.py. Do not edit. */\n'+body,newline='\n')
+ (GEN/'registry.c').write_text(registry,newline='\n')
+ return reports
+
+def main():
+ helper_only='--helper' in sys.argv[1:]
+ reports=[] if helper_only else full_build()
+ tool=None if helper_only else build_tool()
+ out,smoke,listing=build_helper()
+ report={'target_firmware':sorted(FIRMS),'modules':[m for m,_,_ in modules()],'payloads':reports,'tool':tool,
+         'helper_sha256':hashlib.sha256(out.read_bytes()).hexdigest(),'helper_bytes':out.stat().st_size,
+         'selftest':smoke,'module_listing':listing.splitlines(),'USB_written':False,'hardware_executed':False}
  (BUILD/'build.json').write_text(json.dumps(report,indent=2)+'\n')
- print(json.dumps({k:v for k,v in report.items() if k!='components'},indent=2))
+ print(json.dumps({k:v for k,v in report.items() if k!='payloads'},indent=2))
 if __name__=='__main__':main()

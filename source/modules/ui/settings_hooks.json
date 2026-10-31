@@ -1,0 +1,56 @@
+{
+  "format": "ub820-ui-hooks-v1",
+  "program": "apl_setting",
+  "firmware": "1.82",
+  "sha256": "6529f72a9c01770980be7335142ba481e75799c4b5f1a31a5ead8b60a064a006",
+  "payload_source": "settings.c",
+  "initialize_by_loader_only": true,
+  "hooks": [
+    {
+      "target": "0x96900",
+      "replacement": "ub_hook_render",
+      "original_pointer": "ub_original_render",
+      "prototype": "void fn(int *view,void *a,void *b,void *c)",
+      "note": "Renderer of the Player Settings main view only (called from FUN_0009798c, from APL_SET_Initial_menu_View). The UB820 Helper tile is appended to the System column before it runs and labelled after."
+    },
+    {
+      "target": "0x9a9dc",
+      "replacement": "ub_hook_entry_table",
+      "original_pointer": "ub_original_entry_table",
+      "prototype": "void fn(int id)",
+      "note": "APL_SET_Initial_menu_change_Entry_table: picks the key table (DAT_0016910c) for the selected entry; ours gets the payload's table."
+    }
+  ],
+  "bindings": [
+    {"symbol":"ub_build_column","value":"0xd78ed","kind":"thumb_function_pointer","prototype":"void fn(uint32_t *record,int category)","note":"FUN_000d78ec: fills the right column of the run-time record for a category or item id."},
+    {"symbol":"ub_view","value":"0x1692e4","kind":"data_pointer","note":"View structure of the main menu; word 4 = record, 5 = window, 0x20+i = right-column buttons."},
+    {"symbol":"ub_key_table","value":"0x16910c","kind":"data_pointer","note":"Active key table pointer: {key, press, repeat, release, 0} records ending with 0xffffffff."},
+    {"symbol":"ub_right_count","value":"0x159868","kind":"data_pointer","note":"Number of right-column rows the renderer handles (set by FUN_000d7b80)."},
+    {"symbol":"ub_system_keys","value":"0x15a124","kind":"data_pointer","note":"Key table of System items (Remote Control, Quick Start, Default Settings): up, down, OK, back."},
+    {"symbol":"ub_make_right_button","value":"0xbea0d","kind":"thumb_function_pointer","prototype":"void fn(void *window,void *fixed,int row)","note":"FUN_000bea0c: makes right-column button s_<row>_btn in the main window (as FUN_000bf070 does for each row of the record)."},
+    {"symbol":"ub_right_names_all","value":"0x1620f8","kind":"data_pointer","note":"Names of the right-column buttons s_1st_btn .. s_11th_btn."},
+    {"symbol":"ub_right_names","value":"0x15986c","kind":"data_pointer","note":"Per-row button name the renderer looks up (set by FUN_000bf070 for the rows it made)."},
+    {"symbol":"ub_right_values","value":"0x15989c","kind":"data_pointer","note":"Per-row value-label name (rows with flag 2 only); 0 for ours."}
+  ],
+  "variants": [
+    {
+      "firmware": "1.85",
+      "sha256": "62d6933a4e577c4be3466f75d08ee1d1a6ce2b6d687a11112cb11c85cc052741",
+      "hooks": {"ub_hook_render": "0x96938", "ub_hook_entry_table": "0x9aa28"},
+      "bindings": {
+        "ub_build_column": "0xd798d",
+        "ub_view": "0x16939c",
+        "ub_key_table": "0x1691c4",
+        "ub_right_count": "0x159920",
+        "ub_system_keys": "0x15a1dc",
+        "ub_make_right_button": "0xbeaa1",
+        "ub_right_names_all": "0x1621b0",
+        "ub_right_names": "0x159924",
+        "ub_right_values": "0x159954"
+      },
+      "note": "Every function used here has the 1.82 machine code instruction for instruction (renderer FUN_00096938, entry table FUN_0009aa28, view FUN_0009ad70, column builder FUN_000d798c, window builder FUN_000bf104, right-row button FUN_000beaa0, and what they call); code moved +0x38..+0xa0, data and strings +0xb8 (paired from their movw/movt loads). The System key table at 0x15a1dc has the 1.82 layout."
+    }
+  ],
+  "external_imports": "Resolve libc, CTK/GTK and g_timeout_add exports through target module dynamic symbols.",
+  "lifecycle": "apl_setting runs only while Player Settings is open; the payload is installed for each run. The submenu is a CTK window over the right area; while it is open the active key table is the payload's, Return restores the tile's table and destroys the window."
+}

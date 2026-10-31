@@ -1,0 +1,11 @@
+{
+  "id": "remote",
+  "order": 55,
+  "payloads": [
+    {
+      "name": "keys",
+      "source": "keys.c",
+      "manifest": "keys_hooks.json"
+    }
+  ]
+}

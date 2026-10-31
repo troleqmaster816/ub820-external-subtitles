@@ -1,0 +1,16 @@
+{
+  "id": "ui",
+  "order": 15,
+  "payloads": [
+    {
+      "name": "menu",
+      "source": "menu.c",
+      "manifest": "ui_hooks.json"
+    },
+    {
+      "name": "settings",
+      "source": "settings.c",
+      "manifest": "settings_hooks.json"
+    }
+  ]
+}

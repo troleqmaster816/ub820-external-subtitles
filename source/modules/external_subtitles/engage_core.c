@@ -262,8 +262,8 @@ static int playdat_set_on(void) {
         if (read(fd, b, sizeof b) != (ssize_t)sizeof b) { close(fd); flock(lf, LOCK_UN); close(lf); return -1; }
         close(fd);
     }
-    /* Native-matched look: byte0=-8 moves the overlay down ~198 photo px
-     * (native baseline ~2526 vs predicted 2532); size index 0 = 52 px scaled
+    /* Native-matched look: byte0=-8 moves the overlay down to the native
+     * subtitle baseline (measured on screen); size index 0 = 52 px scaled
      * by /tmp/ti_font_size=122 to ~63 units (cap ~116 px, native 116).
      * No sync, UTF-8, external on.  Preserve bytes 1, 6, 7. */
     b[0] = (unsigned char)-8;

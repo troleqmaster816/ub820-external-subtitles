@@ -3,7 +3,7 @@
   "program": "apl_dispsrv",
   "firmware": "1.82",
   "sha256": "3ca762ac044acba426c45be240075f2644fc9f645a0fbbb1aabc4c8656dcec1d",
-  "payload_source": "src/menu.c",
+  "payload_source": "menu.c",
   "initialize_by_loader_only": true,
   "hooks": [
     {
@@ -25,6 +25,13 @@
       "original_pointer": "ub_original_key_router",
       "prototype": "int fn(void)",
       "note": "Primary router captures the private child before stock fixed-page dispatch."
+    },
+    {
+      "target": "0x17c58",
+      "replacement": "ub_hook_input",
+      "original_pointer": "ub_original_input",
+      "prototype": "void fn(void *data,int source,int condition)",
+      "note": "Main message callback, registered by FUN_00018494 with gdk_input_add (UI thread). Starts the payload's timer, which reads the overlay's key FIFO, without OPTIONS being opened. Prologue push.w {r4-r8,lr}."
     }
   ],
   "bindings": [
@@ -35,6 +42,10 @@
     {"symbol":"ub_register_window","value":"0x25085","kind":"thumb_function_pointer","prototype":"int fn(void *window)"},
     {"symbol":"ub_window_registry","value":"0x243be8","kind":"data_pointer","note":"100 32-bit native top-window slots; own child is removed before destroy."}
   ],
+  "data_writes": [
+    {"address":"0x243b80","size":4,"value":"0x1","accepted_before":["0xffffffff","0x0","0x1"],"writer":"supervisor native_options()","note":"Cached ENABLE_BD_SRT_TEXT read by FUN_001baf28. FUN_001974c0 then keeps OPTIONS rows 0x3000800/0x3001000/0x3002000/0x3004000 (item types 0x5c-0x5f -> events 0x8eb0/0x8eb1/0x8eb4/0x8eb5) while bdplay reports is_srttext (ctx+0x328c)."},
+    {"mapping":"/usr/dtvrec/data/lang/apl_lang.dat","file_sha256":"a50b218d480c68cae126457c3a734d928af2acdc81c318e09030972da7cd59df","offset":"0x408000","size":"0x2000","writer":"supervisor lang_overlay() via ub_overlay_pages()","note":"libmulang maps the file read-only MAP_SHARED. The two pages holding text IDs 0x12b5-0x12c0 are replaced (mremap MREMAP_FIXED of a private anonymous copy) by the same bytes with each empty column's u16 offset pointing at column 16, the English text. No code, GOT or file change."}
+  ],
   "external_imports": "Resolve libc, CTK/GTK and g_timeout_add/gtk_signal_connect exports through target module dynamic symbols. No loader-side call to GTK or payload init is permitted.",
-  "lifecycle": "Owner destroy signal closes child on UI thread; media-kind/media-number/deck-mode or page changes close it; Return restores root focus; OPTIONS closes child and delegates stock exit. One process-lifetime GLib timer runs on the same UI main loop."
+  "lifecycle": "The overlay (Netflix key, remote module) is the same page outside OPTIONS, opened and driven by key presses read from /tmp/ub820_keys.fifo; it ignores the OPTIONS owner and closes with Return or the Netflix key. Owner destroy signal closes child on UI thread; media-kind/media-number/deck-mode or page changes close it; Return restores root focus; OPTIONS closes child and delegates stock exit. One process-lifetime GLib timer runs on the same UI main loop."
 }

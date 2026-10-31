@@ -1,47 +1,21 @@
 /* Optional calibration and stable one/two-line bottom baseline for stock 1.82.
- * Included after engage_core.c. No firmware-file writes.
+ * Included after engage_core.c and ub.h. No firmware-file writes.
  */
 #ifndef UB_DISC_STYLE_H
 #define UB_DISC_STYLE_H
-#include <ctype.h>
-#ifndef UB_DISC_STYLE_CONFIG
-#define UB_DISC_STYLE_CONFIG "/mnt/usb/sub/disc_style.cfg"
-#endif
 #ifndef UB_DISC_STYLE_FONT_FILE
 #define UB_DISC_STYLE_FONT_FILE "/tmp/ti_font_size"
 #endif
+/* Values come from the module options (sub/modules.cfg [external_subtitles],
+ * or the older sub/disc_style.cfg keys). */
 struct ub_disc_style { int font_percent, position, bottom_align; };
 static struct ub_disc_style disc_style = {122,-8,1};
 
-static void disc_style_parse(FILE *file) {
- char line[128]; unsigned count=0;
- while(count++<32 && fgets(line,sizeof line,file)) {
-  char *p=line,*end,*key,*eq;long value;
-  while(isspace((unsigned char)*p))p++;
-  if(!*p || *p=='#')continue;
-  eq=strchr(p,'=');if(!eq)continue;
-  *eq=0;key=p;end=eq;
-  while(end>key && isspace((unsigned char)end[-1]))*--end=0;
-  p=eq+1;errno=0;value=strtol(p,&end,10);
-  if(end==p || errno)continue;
-  while(isspace((unsigned char)*end))end++;
-  if(*end && *end!='#')continue;
-  if(!strcmp(key,"font_percent") && value>=90 && value<=150)disc_style.font_percent=(int)value;
-  else if(!strcmp(key,"position") && value>=-10 && value<=10)disc_style.position=(int)value;
-  else if(!strcmp(key,"bottom_align") && value>=0 && value<=1)disc_style.bottom_align=(int)value;
- }
-}
-static void disc_style_load(void) {
- FILE *f=fopen(UB_DISC_STYLE_CONFIG,"r");
- if(f){disc_style_parse(f);fclose(f);}
- fprintf(stderr,"Disc style: font=%d%% position=%d bottom_align=%d\n",
-         disc_style.font_percent,disc_style.position,disc_style.bottom_align);
-}
 static void font_size_set(void) {
  char value[16];int n=snprintf(value,sizeof value,"%d\n",disc_style.font_percent);
  int fd=open(UB_DISC_STYLE_FONT_FILE,O_WRONLY|O_CREAT|O_TRUNC,0666);
- if(fd>=0){if(write(fd,value,(size_t)n)!=n)fprintf(stderr,"Font calibration write failed\n");close(fd);}
- else fprintf(stderr,"Font calibration file open failed\n");
+ if(fd>=0){if(write(fd,value,(size_t)n)!=n)ub_log("external_subtitles",UB_ALWAYS,"Font calibration write failed");close(fd);}
+ else ub_log("external_subtitles",UB_ALWAYS,"Font calibration file open failed");
 }
 
 /* In esl_tst_UpdateDisplayText, r3 holds the counted number of lines.
@@ -63,7 +37,7 @@ static int style_patch(int pid) {
  if(legacy_style_patch(pid))return -1;
  if(mem_read_buf(pid,UB_DISC_ROWS_ADDR,cur,sizeof cur))return -1;
  if(memcmp(cur,disc_rows_stock,sizeof cur) && memcmp(cur,disc_rows_aligned,sizeof cur)) {
-  fprintf(stderr,"Disc layout bytes differ from exact 1.82; layout patch skipped\n");return -1;
+  ub_log("external_subtitles",UB_ALWAYS,"Disc layout bytes differ from exact 1.82; layout patch skipped");return -1;
  }
  return style_site(pid,UB_DISC_ROWS_ADDR,want,sizeof cur);
 }

@@ -1,0 +1,11 @@
+{
+  "id": "external_subtitles",
+  "order": 20,
+  "payloads": [
+    {
+      "name": "engine",
+      "source": "backend.c",
+      "manifest": "backend_hooks.json"
+    }
+  ]
+}

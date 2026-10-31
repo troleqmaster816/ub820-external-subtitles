@@ -2,3 +2,5 @@ source/build/
 engage_check
 __pycache__/
 *.pyc
+USB-CONTENTS/sub/ssh_password
+USB-CONTENTS/sub/authorized_keys

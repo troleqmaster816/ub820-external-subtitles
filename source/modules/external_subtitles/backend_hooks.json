@@ -1,10 +1,12 @@
 {
-  "firmware_sha256": "a07b82bc4a3a50594ee97ce9ad6937f8f63b129da0779c15576691e06da9789b",
+  "program": "apl_meda_bdplay",
+  "sha256": "a07b82bc4a3a50594ee97ce9ad6937f8f63b129da0779c15576691e06da9789b",
   "architecture": "ARMv7 little-endian Thumb; fixed ET_EXEC target addresses",
   "initialization": "Natural Open or Draw invocation starts worker once; no constructors or remote init",
   "hooks": [
     {"target_va": 118164, "target_hex": "0x1cd94", "replacement": "ub_hook_open", "original_pointer": "ub_original_open", "overwrite_bytes": 8, "expected_hex": "80b58ab006af7860"},
     {"target_va": 119188, "target_hex": "0x1d194", "replacement": "ub_hook_draw", "original_pointer": "ub_original_draw", "overwrite_bytes": 8, "expected_hex": "80b58ab006af7860"},
     {"target_va": 118728, "target_hex": "0x1cfc8", "replacement": "ub_hook_close", "original_pointer": "ub_original_close", "overwrite_bytes": 8, "expected_hex": "80b588b006af0023"}
-  ]
+  ],
+  "payload_source": "backend.c"
 }
