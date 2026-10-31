@@ -256,6 +256,14 @@ int ub_overlay_pages(int pid,uint32_t a,const unsigned char *expected,const unsi
  if(stop.mem>=0)close(stop.mem);
  detach_all(&stop);free(now);return rc;
 }
+int ub_while_stopped(int pid,int (*fn)(int,int,void *),void *arg){
+ struct stopped stop;int rc;
+ if(stop_threads(pid,&stop))return -1;
+ rc=fn(pid,stop.mem,arg);
+ if(stop.mem>=0)close(stop.mem);
+ detach_all(&stop);
+ return rc;
+}
 const char *ub_overlay_error(int rc){
  switch(rc){
  case UB_OVERLAY_ARGS:return "bad arguments";

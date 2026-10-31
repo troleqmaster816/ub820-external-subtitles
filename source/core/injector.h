@@ -39,6 +39,10 @@ int ub_probe(int pid);
 enum { UB_OVERLAY_ARGS=-1, UB_OVERLAY_STOP=-2, UB_OVERLAY_READ=-3, UB_OVERLAY_MAP=-4,
        UB_OVERLAY_FILL=-5, UB_OVERLAY_SEAL=-6, UB_OVERLAY_SWAP=-7, UB_OVERLAY_VERIFY=-8 };
 int ub_overlay_pages(int pid,uint32_t address,const unsigned char *expected,const unsigned char *replacement,uint32_t length);
+/* Stops every thread of pid (ptrace), calls fn(pid, mem, arg) with mem an
+ * open /proc/<pid>/mem, and lets the process go on. Returns fn's result, or
+ * -1 if the process could not be stopped (fn is then not called). */
+int ub_while_stopped(int pid,int (*fn)(int pid,int mem,void *arg),void *arg);
 const char *ub_overlay_error(int rc);
 int ub_hash_file(const char *path,char result[65]);
 /* Whether a file whose SHA-256 is have may stand in for the 1.82 file

@@ -36,7 +36,7 @@ settings file, and new modules can be added without touching the others.
 | --- | --- | --- |
 | `external_subtitles` | External `.srt` subtitles from the USB stick, chosen during playback in OPTIONS > **External Subtitles**: browse folders, pick a file, switch On/Off. Disc-like look (white text, neutral black outline, stable bottom line). Also unlocks the player's own hidden subtitle rows in OPTIONS (size, sync, character code, on/off), with English text where the firmware has no translation. | on |
 | `ui` | The menus: **External Subtitles** and **UB820 Helper** in OPTIONS, and the same UB820 Helper as a tile in **Player Settings > System**, reachable without a disc. | on |
-| `region` | **Blu-ray region** the disc sees, chosen per disc (`auto`, fixed A/B/C, or all three). **DVD region**, best effort (no region error, or a fixed region 1-8). Region diagnostics in the log. | on |
+| `region` | **Blu-ray region** the disc sees (fixed A/B/C or all three; an experimental `auto` is off by default). **DVD region**, best effort (no region error, or a fixed region 1-8). Region diagnostics in the log. | on |
 | `remote` | What the remote's **Netflix** button does: open Netflix as usual, nothing, or open the UB820 Helper menu as an overlay anywhere (home screen, menus, playback). | on |
 | `log` | The helper log: level, saving it to the stick (on request or continuously), and optional detailed diagnostics of the player (crashes, hangs, kernel messages). | on |
 | `ssh` | An **on-demand** diagnostic SSH server (Dropbear), started from the menu. Key or password login. | **off** |
@@ -57,7 +57,7 @@ settings file, and new modules can be added without touching the others.
 
    ```
    USB root
-   ├── UB820-SUBTITLES.MKV   loader (launch this one)
+   ├── LOADER.MKV            loader (launch this one)
    └── sub/
        ├── engage            the helper: all modules + RAM loader
        ├── modules.cfg       settings: which modules run, and their options
@@ -68,7 +68,7 @@ settings file, and new modules can be added without touching the others.
 
 2. **Fully power-cycle the player** (unplug it, or turn Quick Start off), so
    the helper starts fresh. Standby keeps whatever already runs in RAM.
-3. Insert the stick and launch `UB820-SUBTITLES.MKV`. The player then says
+3. Insert the stick and launch `LOADER.MKV`. The player then says
    the file cannot be opened. This is expected: the file only starts the
    helper and has nothing to play. Dismiss the message.
 4. The helper is now running until the next power cycle. Start a disc and
@@ -80,9 +80,12 @@ settings file, and new modules can be added without touching the others.
 | Key | Action |
 | --- | --- |
 | Up / Down | move between rows (scroll in the log view) |
-| OK / Right | open a folder, select a file, open a list, run an action |
-| Return / Left | close a list or the log view, then the menu |
+| OK / Right | enter the page; then open a folder, select a file, open a list, run an action |
+| Return / Left | close a list or the log view, then go back to the tile |
 | OPTIONS | close everything as usual |
+
+As with the player's own categories, a page is shown as soon as its tile on
+the left has the focus; OK or Right moves into it.
 
 A row with several values (Subtitles On/Off, Blu-ray region, DVD region,
 Netflix button) opens a list beside it with the current value highlighted:
@@ -96,15 +99,15 @@ film position; choosing it again re-reads it.
 
 **UB820 Helper** (OPTIONS, Player Settings > System, or the Netflix button):
 
-- **Blu-ray region**: **Auto** (default), **A**, **B**, **C**, **A+B+C** or
-  **Player default**. The row says what the player does for the disc in the
-  drive, e.g. `Auto (player's own: B)` or `Auto (set to A for this disc)`.
-  A new choice applies from the next disc on.
+- **Blu-ray region**: **Player default** (default), **A**, **B**, **C** or
+  **A+B+C** (and **Auto** when `bd_auto=1`). The row says what the disc in
+  the drive sees, e.g. `A (this disc still: B)` until the next disc. A new
+  choice applies from the next disc on.
 - **DVD region**: **Player default** (default), **Auto**, **No region
   check**, or a region **1**-**8**. Applies within a second; restart a DVD
   that already stopped with a region error. See [the limits](#known-limitations).
-- **Netflix button**: **Netflix** (default), **Does nothing**, or **UB820
-  Helper**: the button then opens this menu as an overlay wherever you are,
+- **Netflix button**: **UB820 Helper** (default), **Netflix** or **Does
+  nothing**. **UB820 Helper** opens this menu as an overlay wherever you are,
   and Return or the Netflix button closes it. While the overlay is open the
   remote only works the overlay.
 - **Start SSH** / **Stop SSH**, when `[ssh]` is enabled.
@@ -139,14 +142,15 @@ The player's own subtitle position and size settings keep working.
 
 | Key | Default | Values | Meaning |
 | --- | --- | --- | --- |
-| `bd_region` | `auto` | `auto`, `stock`, `A`, `B`, `C`, `ABC` | Region a Blu-ray sees. `auto` keeps the player's region unless the disc's HDMV program accepts only other regions; discs that check in Java (BD-J) keep the player's region in `auto`, so choose a letter for them. `A`/`B`/`C` force one region; `ABC` sets all three bits (only for discs that test a bit mask); `stock` leaves the player alone. |
+| `bd_region` | `stock` | `stock`, `A`, `B`, `C`, `ABC`, `auto` | Region a Blu-ray sees. `stock` leaves the player alone; `A`/`B`/`C` force one region; `ABC` sets all three bits (only for discs that test a bit mask); `auto` needs `bd_auto=1`. |
+| `bd_auto` | `0` | 0 or 1 | Experimental: allows `bd_region=auto`, which keeps the player's region unless the disc's HDMV program accepts only other regions (discs that check in Java, BD-J, keep the player's region). With 0, `auto` is not offered in the menus and counts as `stock`. |
 | `dvd_region` | `stock` | `stock`, `free`, `1`-`8`, `auto` | DVD region, best effort. `free`: a disc is never stopped with a region error; `1`-`8`: also the region discs see; `auto`: no region error, and a disc that excludes the player's region sees the first one it allows. |
 
 ### `[remote]`
 
 | Key | Default | Values | Meaning |
 | --- | --- | --- | --- |
-| `netflix_key` | `netflix` | `netflix`, `nothing`, `helper` | What the Netflix button does. `nothing` drops the key the way the firmware does on models without Netflix; `helper` opens and closes the UB820 Helper overlay. |
+| `netflix_key` | `helper` | `helper`, `netflix`, `nothing` | What the Netflix button does. `nothing` drops the key the way the firmware does on models without Netflix; `helper` opens and closes the UB820 Helper overlay. |
 
 ### `[log]`
 
@@ -190,13 +194,13 @@ in the helper log. Expected hashes are in the module manifests
 ## How it works
 
 ```
-UB820-SUBTITLES.MKV ──► starts sub/engage (core + modules, static ARM binary)
+LOADER.MKV          ──► starts sub/engage (core + modules, static ARM binary)
                             │
                             ├─ ui: menu payload               ──► apl_dispsrv      (OPTIONS menus, overlay)
                             │      settings payload           ──► apl_setting      (Player Settings tile)
                             ├─ external_subtitles: engine     ──► apl_meda_bdplay  (SRT engine)
                             │      native rows, English text  ──► apl_dispsrv      (data only)
-                            ├─ region: PSR20 / DVD region     ──► apl_bdv, apl_meda_dvdv
+                            ├─ region: BD / DVD region        ──► apl_bdv, apl_meda_dvdv
                             ├─ remote: keys payload           ──► apl_mgr          (key filter)
                             ├─ log: log, saving, diagnostics
                             └─ ssh: static Dropbear in RAM, on demand
@@ -239,10 +243,15 @@ UB820-SUBTITLES.MKV ──► starts sub/engage (core + modules, static ARM bina
   for a private copy; no code is changed for either.
 - **`region`**: a Blu-ray's region check is the disc's own program reading
   PSR20, so there is nothing to remove in the player; the module chooses the
-  value. When a BD is mounted it decides the region, and a short-lived guard
-  replaces PSR20 in that disc's `apl_bdv` within about 20 ms of the engine
-  filling it, before First Play (HDMV or BD-J) runs. This is a data write; no
-  code in `apl_bdv` changes. For DVD the module changes the DVD process's own
+  value at its source. `apl_bdv` (started for each disc) asks the drive for
+  its region once, as it starts, and turns the answer into 1, 2 or 4 with
+  three `movs` instructions. A watcher process is told (inotify) when
+  `apl_bdv` is executed, stops it before it has asked the drive, decides the
+  region (for `auto` it reads the disc's files) and changes those three
+  immediates in that process's own copy, so the player itself carries the
+  chosen region into its configuration and PSR20 before any disc program
+  runs. If it ever comes too late, it sets PSR20 instead, and the log says
+  which of the two happened. For DVD the module changes the DVD process's own
   copy of two code sites in `libnavi_api.so`: the branch after the drive's
   region answer (so the disc is never stopped with a region error) and the
   function that gives discs the player's region. The original bytes are
@@ -269,7 +278,7 @@ To write a module of your own, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 The prebuilt `USB-CONTENTS/sub/engage` is reproducible: building this
 repository gives a byte-identical file with SHA-256
-`bd0b1ba5b32ca7ddbb0d6a4e62cff9fc6c2c2c440d992bf328d1c1aa7fe011c9`.
+`521887b27f92a12ce045072aebda39d1c70f1336c50165ca768745c7daf534c6`.
 
 Requirements: Windows with WSL (`Ubuntu`) providing `arm-linux-gnueabihf-gcc`,
 `gcc` and `qemu-arm`.
@@ -308,8 +317,8 @@ python source/tests/run_tests.py
   encrypted (CSS) DVD from another region may still not play even though the
   player no longer refuses it; unencrypted discs are the realistic case. It
   has not been tested with a foreign-region disc.
-- **Blu-ray `auto`** does not analyse discs that check their region in Java
-  (BD-J); choose a region letter for those.
+- **Blu-ray `auto`** (experimental, `bd_auto=1`) does not analyse discs that
+  check their region in Java (BD-J); choose a region letter for those.
 - External subtitles: at most 64 entries per folder (use subfolders), full
   paths up to 250 bytes, and the chosen file is remembered for the current
   playback only.

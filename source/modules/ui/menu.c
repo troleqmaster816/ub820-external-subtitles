@@ -10,6 +10,10 @@
  * player's own OPTIONS lists (FUN_001a1454): OK takes the highlighted value,
  * Return keeps the old one. Everything else is reached through files in /tmp.
  *
+ * Like the stock categories, the page is shown as soon as the focus is on its
+ * tile (m.preview: no row highlighted, keys still go to the root column); OK
+ * or Right moves the focus into it, Return back to the tile.
+ *
  * Overlay: the UB820 Helper page can also open outside OPTIONS (home screen,
  * menus, playback) when the Netflix button is set to open it (remote module).
  * apl_mgr's key filter then sends key presses through UB_KEYS_FIFO and drops
@@ -115,6 +119,7 @@ struct menu_state {
  int log_view; unsigned int log_first,log_count; char *log_lines[LOG_LINES];
  unsigned int drop_kind,drop_sel,drop_count;
  int overlay;               /* the open page is the overlay, not OPTIONS */
+ int preview;               /* shown for the focused tile, not entered yet */
  int keys_fd,keys_open;     /* UB_KEYS_FIFO, read end */
  unsigned int ticks,keys_retry;
 };
@@ -139,7 +144,7 @@ static void close_child(int restore){
  Widget w=m.window;
  close_list();
  if(m.overlay){m.overlay=0;unlink(UB_OVERLAY_OPEN);restore=0;}
- m.window=0;m.active=0;m.log_view=0;m.drop_kind=DROP_NONE;
+ m.window=0;m.active=0;m.preview=0;m.log_view=0;m.drop_kind=DROP_NONE;
  if(w){unregister_window(w);gtk_widget_destroy(w);}
  m.fixed=m.title=m.info=m.footer=0;memset(m.rows,0,sizeof m.rows);
  if(restore&&ub_original_refresh&&m.ctx&&root_window(m.ctx)==m.owner)ub_original_refresh();
@@ -263,11 +268,12 @@ static void render(void){
  }
  for(i=0;i<VIEW_ROWS;i++){
   unsigned int n=m.first+i;
-  if(n<total){CTK_button_set_text(cast(m.rows[i],CTK_button_get_type()),row_text(n,row,sizeof row));gtk_widget_show(m.rows[i]);gtk_widget_set_sensitive(m.rows[i],1);gtk_widget_set_state(m.rows[i],n==m.selected?2:0);}
+  if(n<total){CTK_button_set_text(cast(m.rows[i],CTK_button_get_type()),row_text(n,row,sizeof row));gtk_widget_show(m.rows[i]);gtk_widget_set_sensitive(m.rows[i],1);gtk_widget_set_state(m.rows[i],n==m.selected&&!m.preview?2:0);}
   else gtk_widget_hide(m.rows[i]);
  }
  render_drop();
  if(m.drop_kind!=DROP_NONE)ha_copy(text,"Up/Down: choose   OK: take   Return: keep as it was",sizeof text);
+ else if(m.preview)snprintf(text,sizeof text,"%s\nOK: open   OPTIONS: close",notice()[0]?notice():m.kind==PAGE_HELPER?"":m.status.message);
  else snprintf(text,sizeof text,"%s\nUp/Down: choose   OK: select   %s",notice()[0]?notice():m.kind==PAGE_HELPER?"":m.status.message,m.overlay?"Return: close":"Return: back   OPTIONS: close");
  gtk_label_set_text(cast(m.footer,gtk_label_get_type()),text);
 }
@@ -418,7 +424,8 @@ static void open_drop(unsigned int kind){
  else if(kind==DROP_DVD){m.drop_count=HA_DVD_CHOICES;m.drop_sel=hs.dvd_choice<HA_DVD_CHOICES?hs.dvd_choice:0;}
  else{
   if(!hs.region_known){set_notice("Blu-ray region needs the region module ([region] in modules.cfg)");m.drop_kind=DROP_NONE;render();return;}
-  m.drop_count=HA_REGION_CHOICES;m.drop_sel=ha_region_index(hs.region_choice);
+  m.drop_count=ha_region_count(&hs);m.drop_sel=ha_region_index(hs.region_choice);
+  if(m.drop_sel>=m.drop_count)m.drop_sel=0;
  }
  render();
 }
@@ -539,13 +546,31 @@ unsigned int ub_hook_root_builder(int update){
  else if(*field(ctx,SELECT_OFF)==0xff)*field(ctx,SELECT_OFF)=n;
  present_root();ensure_timer();return n+want;
 }
+static void sync_preview(void);
 void ub_hook_refresh(void){
  if(m.refresh_guard){if(ub_original_refresh)ub_original_refresh();return;}
  m.refresh_guard=1;
  if(m.active&&!m.overlay&&!owner_alive())close_child(0);
  if(ub_original_refresh)ub_original_refresh();
- if(m.ctx&&ub_get_ctx&&ub_get_ctx(0x27)==m.ctx&&root_window(m.ctx)==m.owner){present_root();if(m.active&&!m.overlay){gtk_widget_show(m.window);render();}}
+ if(m.ctx&&ub_get_ctx&&ub_get_ctx(0x27)==m.ctx&&root_window(m.ctx)==m.owner){present_root();sync_preview();if(m.active&&!m.overlay){gtk_widget_show(m.window);render();}}
  m.refresh_guard=0;
+}
+/* The page of the focused root tile is shown without being entered, as the
+ * stock categories show theirs; it goes when the focus leaves our tiles. */
+static void sync_preview(void){
+ unsigned int s,kind;
+ if(m.overlay||!m.ctx||!m.owner||!ub_get_ctx||ub_get_ctx(0x27)!=m.ctx||root_window(m.ctx)!=m.owner)return;
+ if(m.active&&!m.preview)return;
+ s=*field(m.ctx,SELECT_OFF);
+ if(*field(m.ctx,PAGE_OFF)!=0||!m.count||s<m.base||s>=m.base+m.count||!custom_descriptor(&((struct descriptor *)((char *)m.ctx+ROW_OFF))[s])){
+  if(m.active)close_child(0);
+  return;
+ }
+ kind=m.kinds[s-m.base];
+ if(m.active&&m.kind==kind)return;
+ if(m.active)close_child(0);
+ m.preview=1;open_child(kind);
+ if(!m.active)m.preview=0;
 }
 /* A key for the open page (OPTIONS or overlay). */
 enum { PK_DONE, PK_CLOSE, PK_EXIT, PK_OTHER };
@@ -603,21 +628,31 @@ void ub_hook_input(void *data,int source,int condition){
 }
 int ub_hook_key_router(void){
  unsigned int key=ub_get_key?ub_get_key(ub_event):0;void *ctx=ub_get_ctx?ub_get_ctx(0x27):0;unsigned int s;
+ int rc;
  if(m.active&&m.overlay)return ub_original_key_router?ub_original_key_router():0;
- if(m.active){
+ if(m.active&&!m.preview){
   if(!owner_alive()){close_child(0);return ub_original_key_router?ub_original_key_router():0;}
   switch(page_key(key)){
   case PK_EXIT:close_child(1);return ub_original_key_router?ub_original_key_router():0;
-  case PK_CLOSE:close_child(1);present_root();return 0;
+  /* Return: the focus goes back to the tile, the page stays as its preview */
+  case PK_CLOSE:m.preview=1;m.drop_kind=DROP_NONE;m.log_view=0;render();ub_hook_refresh();return 0;
   /* Playback/status keys still reach stock global handling after closing the
    * child. Unknown direction/repeat keys must never mutate hidden stock rows. */
-  case PK_OTHER:close_child(1);return ub_original_key_router?ub_original_key_router():0;
+  case PK_OTHER:close_child(1);rc=ub_original_key_router?ub_original_key_router():0;sync_preview();return rc;
   default:return 0;
   }
  }
  if(ctx&&ctx==m.ctx&&root_window(ctx)==m.owner&&*field(ctx,PAGE_OFF)==0&&(key==KEY_OK||key==KEY_RIGHT)){
   s=*field(ctx,SELECT_OFF);
-  if(m.count&&s>=m.base&&s<m.base+m.count){open_child(m.kinds[s-m.base]);return 0;}
+  if(m.count&&s>=m.base&&s<m.base+m.count){
+   unsigned int kind=m.kinds[s-m.base];
+   if(m.active&&m.kind!=kind)close_child(0);
+   if(!m.active)open_child(kind);
+   if(m.active){m.preview=0;render();}
+   return 0;
+  }
  }
- return ub_original_key_router?ub_original_key_router():0;
+ rc=ub_original_key_router?ub_original_key_router():0;
+ sync_preview();
+ return rc;
 }

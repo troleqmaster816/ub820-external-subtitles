@@ -226,7 +226,7 @@ static struct { Widget window,fixed,title,footer,rows[ROWS],values[ROWS],list,li
 static char log_text[LOG_BYTES+1];
 static unsigned int sub_rows(unsigned int *ids){unsigned int n=0;ids[n++]=S_REGION;if(hs.dvd_known)ids[n++]=S_DVD;if(hs.netflix_known)ids[n++]=S_NETFLIX;if(hs.ssh_enabled)ids[n++]=S_SSH;ids[n++]=S_LOG;ids[n++]=S_SAVE;return n;}
 #define SUB_ROWS_MAX 6u
-static unsigned int list_count(void){return s.listing==LIST_NETFLIX?HA_NETFLIX_CHOICES:s.listing==LIST_DVD?HA_DVD_CHOICES:HA_REGION_CHOICES;}
+static unsigned int list_count(void){return s.listing==LIST_NETFLIX?HA_NETFLIX_CHOICES:s.listing==LIST_DVD?HA_DVD_CHOICES:ha_region_count(&hs);}
 static const char *list_label(unsigned int k){return s.listing==LIST_NETFLIX?ha_netflix_labels[k]:s.listing==LIST_DVD?ha_dvd_labels[k]:ha_region_labels[k];}
 static Widget label(const char *name,int x,int y,int w,int h){
  Widget l=CTK_label_new("");if(!l)return 0;
@@ -341,7 +341,7 @@ static int sub_ok(void){
  switch(ids[s.selected]){
  case S_REGION:
   if(!hs.region_known){ha_copy(hs.notice,"Needs the region module ([region] in modules.cfg)",sizeof hs.notice);break;}
-  s.listing=LIST_REGION;s.drop_sel=ha_region_index(hs.region_choice);break;
+  s.listing=LIST_REGION;s.drop_sel=ha_region_index(hs.region_choice);if(s.drop_sel>=ha_region_count(&hs))s.drop_sel=0;break;
  case S_DVD:
   s.listing=LIST_DVD;s.drop_sel=hs.dvd_choice<HA_DVD_CHOICES?hs.dvd_choice:0;break;
  case S_NETFLIX:

@@ -52,8 +52,8 @@ def build_helper():
  run(args,'helper-compile.log')
  smoke=run(['qemu-arm',linux(out),'--selftest'],'helper-selftest.log')
  listing=run(['qemu-arm',linux(out),'--modules'],'helper-modules.log')
- digest=run(['qemu-arm',linux(out),'--hash',linux(USB/'UB820-SUBTITLES.MKV')],'helper-hash-test.log').strip()
- assert digest==hashlib.sha256((USB/'UB820-SUBTITLES.MKV').read_bytes()).hexdigest()
+ digest=run(['qemu-arm',linux(out),'--hash',linux(USB/'LOADER.MKV')],'helper-hash-test.log').strip()
+ assert digest==hashlib.sha256((USB/'LOADER.MKV').read_bytes()).hexdigest()
  return out,smoke.strip(),listing
 
 def build_tool():

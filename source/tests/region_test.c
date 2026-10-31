@@ -25,25 +25,30 @@ static void menu_set(const char *text){FILE *f=fopen(UB_REGION_REQUEST,"w");fput
 static void test_menu(void){
  char buf[512];int saved_region=bd_region;
  unlink(UB_REGION_STATUS);unlink(UB_REGION_REQUEST);unlink(UB_CONFIG_DIR "/ub820_menu.cfg");
- bd_region=BD_AUTO;bd_present=0;bd_player=0;decision_mode=0;menu_seq=0;menu_message[0]=0;
- menu_status();read_text(UB_REGION_STATUS,buf,sizeof buf);CHECK(!strcmp(buf,"0 auto 0 0 \n"));
+ bd_auto=1;bd_region=BD_AUTO;bd_present=0;bd_player=0;decision_mode=0;menu_seq=0;menu_message[0]=0;
+ menu_status();read_text(UB_REGION_STATUS,buf,sizeof buf);CHECK(!strcmp(buf,"0 auto 0 0 1 \n"));
  /* a BD with the player's region known: auto keeps B */
  bd_present=1;bd_player=2;decision_mode='K';
- menu_status();read_text(UB_REGION_STATUS,buf,sizeof buf);CHECK(!strcmp(buf,"0 auto 2 2 \n"));
+ menu_status();read_text(UB_REGION_STATUS,buf,sizeof buf);CHECK(!strcmp(buf,"0 auto 2 2 1 \n"));
  menu_set("set A 5\n");menu_request();menu_status();
  CHECK(bd_region==BD_A);CHECK(access(UB_REGION_REQUEST,F_OK)!=0);
- read_text(UB_REGION_STATUS,buf,sizeof buf);CHECK(!strcmp(buf,"5 A 2 2 saved\n")); /* this disc keeps its decision */
+ read_text(UB_REGION_STATUS,buf,sizeof buf);CHECK(!strcmp(buf,"5 A 2 2 1 saved\n")); /* this disc keeps its decision */
  read_text(UB_CONFIG_DIR "/ub820_menu.cfg",buf,sizeof buf);CHECK(strstr(buf,"[region]\nbd_region=A\n"));
  CHECK(strstr(log_text(),"Blu-ray region chosen in the menu: A (saved); it applies from the next disc on"));
  menu_set("set Z 6\n");menu_request();menu_status();
- CHECK(bd_region==BD_A);read_text(UB_REGION_STATUS,buf,sizeof buf);CHECK(!strcmp(buf,"6 A 2 2 unknown choice Z\n"));
+ CHECK(bd_region==BD_A);read_text(UB_REGION_STATUS,buf,sizeof buf);CHECK(!strcmp(buf,"6 A 2 2 1 unknown choice Z\n"));
+ /* without bd_auto, auto is refused and not saved */
+ bd_auto=0;menu_set("set auto 8\n");menu_request();menu_status();CHECK(bd_region==BD_A);
+ read_text(UB_REGION_STATUS,buf,sizeof buf);CHECK(!strcmp(buf,"8 A 2 2 0 auto is off (bd_auto=0)\n"));
+ read_text(UB_CONFIG_DIR "/ub820_menu.cfg",buf,sizeof buf);CHECK(!strstr(buf,"bd_region=auto"));
+ bd_auto=1;
  menu_set("set stock 7\n");menu_request();CHECK(bd_region==BD_STOCK);
  read_text(UB_CONFIG_DIR "/ub820_menu.cfg",buf,sizeof buf);CHECK(strstr(buf,"bd_region=stock\n"));CHECK(!strstr(buf,"bd_region=A"));
  /* read back at start: the menu file wins over modules.cfg */
  {FILE *f=fopen(UB_CONFIG_DIR "/modules.cfg","w");fputs("[region]\nbd_region=C\n",f);fclose(f);}
  bd_region=BD_AUTO;ub_config_load();CHECK(bd_region==BD_STOCK);
  /* the next disc follows the new choice */
- bd_region=BD_A;decide_bd(0,1);CHECK(decision_mode=='F'&&decision_value==1);guard_stop();
+ bd_region=BD_A;decide_bd(0,1);CHECK(decision_mode=='F'&&decision_value==1);
  decision_mode=0;bd_present=0;bd_region=saved_region;
 }
 
@@ -116,6 +121,7 @@ int main(void){
  snprintf(path,sizeof path,"%s/VIDEO_TS/VIDEO_TS.IFO",dvd);put(path,ifo,sizeof ifo);
 
  ub_log_open();ub_log_level=UB_DEBUG;
+ bd_region=BD_AUTO;bd_auto=1;   /* the disc analysis below decides as auto */
  disc_root(root,&seen);
  CHECK(seen!=0);
  disc_root(root,&seen); /* same disc: analysed once */
@@ -133,43 +139,80 @@ int main(void){
   {char *a=strstr(t,"Blu-ray found");CHECK(a&&!strstr(a+1,"Blu-ray found"));}
   CHECK(strstr(t,"tested regions: B"));
  }
- /* auto: the HDMV program tests B, so the decision is the mask B; the
-  * guard started for it is stopped when the BD leaves. */
+ /* auto: the HDMV program tests B, so the decision is the mask B; it is
+  * forgotten when the BD leaves. */
  CHECK(decision_mode=='M'&&decision_value==2);
  snprintf(path,sizeof path,"%s/BDMV/index.bdmv",root);unlink(path);
  seen=0x8000000000000001ull;disc_root(root,&seen);
- CHECK(seen==0);CHECK(!decision_mode);CHECK(!guard_pid);
+ CHECK(seen==0);CHECK(!decision_mode);
+ snprintf(path,sizeof path,"%s/BDMV/index.bdmv",root);put(path,idx,sizeof idx);
  /* Fixed regions and the BD-J case. */
  bd_region=BD_A;decide_bd(2,0);CHECK(decision_mode=='F'&&decision_value==1);decide_clear();
  bd_region=BD_ABC;decide_bd(0,1);CHECK(decision_mode=='F'&&decision_value==7);decide_clear();
- bd_region=BD_AUTO;decide_bd(0,1);CHECK(decision_mode=='K');CHECK(!guard_pid);decide_clear();
+ bd_region=BD_AUTO;decide_bd(0,1);CHECK(decision_mode=='K');decide_clear();
  /* Region choice from a decision and the player's region. */
  CHECK(region_for('M',1,2)==1);CHECK(region_for('M',6,2)==2);CHECK(region_for('M',3,4)==1);
  CHECK(region_for('F',4,2)==4);CHECK(region_for('F',3,2)==2);CHECK(region_for('K',0,2)==2);
- /* The guard against a fake apl_bdv: same executable (this test), the
-  * player's region B at 0x00aeaec0, PSR20 filled 300 ms after it starts. */
+ /* The source movs: each drive answer becomes the decision's region. */
+ {unsigned char b[3];bd_source_bytes('F',7,b);CHECK(b[0]==7&&b[1]==7&&b[2]==7);
+  bd_source_bytes('M',3,b);CHECK(b[0]==1&&b[1]==2&&b[2]==1);
+  bd_source_bytes('K',0,b);CHECK(b[0]==1&&b[1]==2&&b[2]==4);}
+ /* The watcher against a fake apl_bdv (this test's executable named
+  * apl_bdv): FUN_0004a5b8's three movs at their addresses, the region slot
+  * at 0x00aeaec0 and PSR20 at 0x00b35b6c. It "asks the drive" (the slot
+  * gets the immediate of the answer's movs) 300 ms after it starts, or at
+  * once in the late rounds, and the engine copies the slot into PSR20 100
+  * ms later; the exit status is the PSR20 the disc saw.
+  * Rounds: A early, A|B|C early, auto early (the disc tests B, the drive
+  * says A), A late (PSR20 set instead), auto with no disc (left alone),
+  * A with apl_bdv already running when the watcher starts (left alone). */
  {
-  struct stat st;CHECK(!stat("/proc/self/exe",&st));
+  static const struct { int region,late,drive,disc,before; uint32_t want; const char *log; } rounds[]={
+   {BD_A,0,1,1,0,1,"drive A/B/C -> A/A/A (bd_region setting)"},
+   {BD_ABC,0,1,1,0,7,"drive A/B/C -> A|B|C/A|B|C/A|B|C (bd_region setting)"},
+   {BD_AUTO,0,0,1,0,2,"drive A/B/C -> B/B/B (auto: the disc's HDMV program tests these regions)"},
+   {BD_A,1,1,1,0,1,"had already asked the drive (B); PSR20 is set instead"},
+   {BD_AUTO,0,0,0,0,1,"no Blu-ray files within 1000 ms"},
+   {BD_A,0,1,1,1,2,"BD region watcher"},
+  };
+  struct stat st;unsigned r;CHECK(!stat("/proc/self/exe",&st));
   bdv_file.dev=st.st_dev;bdv_file.ino=st.st_ino;bdv_file.size=st.st_size;bdv_file.mtime=st.st_mtime;bdv_file.ok=1;
-  for(int round=0;round<2;round++){
-   uint32_t want=round?7u:1u;int status=0;pid_t fake=fork();
+  bd_test_root=root;
+  for(r=0;r<sizeof rounds/sizeof *rounds;r++){
+   int status=0;pid_t fake;
+   if(!rounds[r].disc)bd_test_root=dvd;
+   bd_region=rounds[r].region;
+   if(!rounds[r].before){watcher_start();CHECK(watcher_pid>0);usleep(100000);}   /* its first scan: what runs already is left alone */
+   fake=fork();
    if(!fake){
-    volatile uint32_t *player,*psr;
-    prctl(PR_SET_NAME,"apl_bdv");prctl(PR_SET_PTRACER,PR_SET_PTRACER_ANY);
-    if(mmap((void *)0xaea000,0x1000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0)==MAP_FAILED)_exit(100);
-    if(mmap((void *)0xb35000,0x1000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0)==MAP_FAILED)_exit(101);
-    player=(volatile uint32_t *)0xaeaec0;psr=(volatile uint32_t *)0xb35b6c;
-    *player=2;*psr=0;usleep(300000);*psr=2;   /* the engine fills PSR20 */
+    volatile uint32_t *slot,*psr;volatile unsigned char *code;
+    static const uint32_t answer[3]={0x4a738,0x4a7bc,0x4a7c2};
+    prctl(PR_SET_PTRACER,PR_SET_PTRACER_ANY);
+    if(mmap((void *)0x4a000,0x1000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0)==MAP_FAILED)_exit(100);
+    if(mmap((void *)0xaea000,0x1000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0)==MAP_FAILED)_exit(101);
+    if(mmap((void *)0xb35000,0x1000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0)==MAP_FAILED)_exit(102);
+    code=(volatile unsigned char *)0x4a000;slot=(volatile uint32_t *)0xaeaec0;psr=(volatile uint32_t *)0xb35b6c;
+    code[0x738]=1;code[0x739]=0x23;code[0x7bc]=2;code[0x7bd]=0x23;code[0x7c2]=4;code[0x7c3]=0x23;
+    *slot=0;*psr=0;
+    if(rounds[r].late)*slot=code[answer[rounds[r].drive]-0x4a000];
+    prctl(PR_SET_NAME,"apl_bdv");
+    usleep(300000);
+    *slot=code[answer[rounds[r].drive]-0x4a000];   /* the drive's answer */
+    usleep(100000);*psr=*slot;                      /* the engine fills PSR20 */
     usleep(400000);_exit((int)*psr);
    }
-   bd_region=round?BD_ABC:BD_A;decide_bd(0,0);   /* starts the guard */
-   CHECK(guard_pid>0);
+   if(rounds[r].before){usleep(100000);watcher_start();CHECK(watcher_pid>0);}
    waitpid(fake,&status,0);
-   CHECK(WIFEXITED(status)&&WEXITSTATUS(status)==(int)want);
-   decide_clear();
+   CHECK(WIFEXITED(status)&&WEXITSTATUS(status)==(int)rounds[r].want);
+   if(!WIFEXITED(status)||WEXITSTATUS(status)!=(int)rounds[r].want)printf("round %u: status %d\n",r,WIFEXITED(status)?WEXITSTATUS(status):-1);
+   usleep(50000);
+   CHECK(strstr(log_text(),rounds[r].log));
+   watcher_stop();bd_test_root=root;
   }
-  usleep(100000);
-  {char *t=log_text();CHECK(strstr(t,"BD disc sees region A instead of the player's B"));CHECK(strstr(t,"BD disc sees region A|B|C instead of the player's B"));}
+  {char *t=log_text();
+   CHECK(strstr(t,"BD region set at the source in apl_bdv PID"));CHECK(strstr(t,"before it asked the drive"));
+   CHECK(strstr(t,"was B; set to A"));CHECK(strstr(t,"sees region A|B|C (PSR20)"));}
+  bd_test_root=0;bd_region=BD_AUTO;
  }
  /* HDMV heuristic: copies of the register, NE and direct PSR20 compares. */
  {static const unsigned char c2[]={
@@ -182,6 +225,7 @@ int main(void){
  decide_clear();
  test_menu();
  test_dvd();
+ watcher_stop();
  printf("%s (%d failures)\n",failures?"region_test FAILED":"region_test passed",failures);
  return failures!=0;
 }

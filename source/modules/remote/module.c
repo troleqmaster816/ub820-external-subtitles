@@ -32,7 +32,7 @@ static int keys_ok;
 
 enum { NETFLIX_STOCK, NETFLIX_NOTHING, NETFLIX_HELPER };
 static const char *const netflix_names[]={"netflix","nothing","helper",0};
-static int netflix_key=NETFLIX_STOCK;
+static int netflix_key=NETFLIX_HELPER;
 
 /* One marker file present or absent; 0 ok. */
 static int marker(const char *path,int present){

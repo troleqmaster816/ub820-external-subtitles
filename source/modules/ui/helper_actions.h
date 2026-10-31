@@ -18,7 +18,7 @@
 struct helper_state {
  int ssh_enabled,ssh_running; unsigned int ssh_wait;
  int log_always; unsigned int save_seq,save_ticks,save_counter;
- int region_known; char region_choice[8]; unsigned int region_disc,region_player,region_seq,region_wait,region_counter;
+ int region_known,region_auto; char region_choice[8]; unsigned int region_disc,region_player,region_seq,region_wait,region_counter;
  int netflix_known; unsigned int netflix_choice,netflix_seq,netflix_wait,netflix_counter;
  int dvd_known; unsigned int dvd_choice,dvd_seq,dvd_wait,dvd_counter;
  char notice[128];
@@ -45,24 +45,28 @@ static int ha_request(const char *path,const char *text,size_t n){
 static unsigned int ha_parse(const char **p){unsigned int v=0;while(**p>='0'&&**p<='9')v=v*10+(unsigned int)(*(*p)++-'0');return v;}
 
 /* ---- Blu-ray region ---- */
-static const char *const ha_region_names[]={"auto","A","B","C","ABC","stock"};
-static const char *const ha_region_labels[]={"Auto","A","B","C","A+B+C","Player default"};
+/* Auto is last and listed only when the region module allows it (bd_auto). */
+static const char *const ha_region_names[]={"stock","A","B","C","ABC","auto"};
+static const char *const ha_region_labels[]={"Player default","A","B","C","A+B+C","Auto"};
 #define HA_REGION_CHOICES 6u
+#define HA_REGION_AUTO 5u
+static unsigned int ha_region_count(const struct helper_state *s){return s->region_auto?HA_REGION_CHOICES:HA_REGION_CHOICES-1;}
 static unsigned int ha_region_index(const char *name){unsigned int i;for(i=0;i<HA_REGION_CHOICES;i++)if(!strcmp(name,ha_region_names[i]))return i;return 0;}
 static const char *ha_region_label(const struct helper_state *s){return s->region_known?ha_region_labels[ha_region_index(s->region_choice)]:"-";}
 static const char *ha_disc_letters(unsigned int v){return v==1?"A":v==2?"B":v==4?"C":v==7?"A+B+C":"";}
-/* "<seq> <choice> <disc> <player> <message>" from the region module; 1 if
+/* "<seq> <choice> <disc> <player> <auto> <message>" from the region module; 1 if
  * shown state changed. */
 static int ha_region_poll(struct helper_state *s){
- char buf[160],choice[8],before[8];const char *p=buf;unsigned int seq,disc,player,i=0,disc_before=s->region_disc;int known=s->region_known;
+ char buf[160],choice[8],before[8];const char *p=buf;unsigned int seq,disc,player,autok,i=0,disc_before=s->region_disc;int known=s->region_known,auto_before=s->region_auto;
  ha_copy(before,s->region_choice,sizeof before);
  if(!ha_read_line(UB_REGION_STATUS,buf,sizeof buf)){s->region_known=0;return known;}
  seq=ha_parse(&p);if(*p++!=' ')return 0;
  while(*p&&*p!=' '&&i+1<sizeof choice)choice[i++]=*p++;
  choice[i]=0;if(*p++!=' ')return 0;
  disc=ha_parse(&p);if(*p++!=' ')return 0;
- player=ha_parse(&p);if(*p==' ')p++;
- s->region_known=1;s->region_disc=disc;s->region_player=player;
+ player=ha_parse(&p);if(*p++!=' ')return 0;
+ autok=ha_parse(&p);if(*p==' ')p++;
+ s->region_known=1;s->region_disc=disc;s->region_player=player;s->region_auto=autok==1;
  if(!s->region_wait||seq==s->region_seq)ha_copy(s->region_choice,choice,sizeof s->region_choice);
  if(s->region_wait&&seq==s->region_seq){
   s->region_wait=0;
@@ -70,7 +74,7 @@ static int ha_region_poll(struct helper_state *s){
   else snprintf(s->notice,sizeof s->notice,"Blu-ray region: %s, %s",ha_region_label(s),p);
   return 1;
  }
- return !known||disc!=disc_before||strcmp(before,s->region_choice);
+ return !known||disc!=disc_before||auto_before!=s->region_auto||strcmp(before,s->region_choice);
 }
 /* The region value of the row, in words about what the player does (the
  * disc's own regions are not known): "Auto (player's own: B)", "Auto (set
@@ -79,9 +83,9 @@ static const char *ha_region_value(const struct helper_state *s,char *buf,size_t
  unsigned int k=ha_region_index(s->region_choice);const char *now=ha_disc_letters(s->region_disc),*own=ha_disc_letters(s->region_player);
  if(!s->region_known)return "not available";
  if(!now[0])ha_copy(buf,ha_region_labels[k],cap);
- else if(k==0&&s->region_disc==s->region_player)snprintf(buf,cap,"Auto (player's own: %s)",now);
- else if(k==0)snprintf(buf,cap,"Auto (set to %s for this disc)",now);
- else if(k==HA_REGION_CHOICES-1&&s->region_disc==s->region_player)snprintf(buf,cap,"%s (%s)",ha_region_labels[k],own[0]?own:now);
+ else if(k==HA_REGION_AUTO&&s->region_disc==s->region_player)snprintf(buf,cap,"Auto (player's own: %s)",now);
+ else if(k==HA_REGION_AUTO)snprintf(buf,cap,"Auto (set to %s for this disc)",now);
+ else if(k==0&&s->region_disc==s->region_player)snprintf(buf,cap,"%s (%s)",ha_region_labels[k],own[0]?own:now);
  else if(strcmp(now,ha_region_labels[k]))snprintf(buf,cap,"%s (this disc still: %s)",ha_region_labels[k],now);
  else ha_copy(buf,ha_region_labels[k],cap);
  return buf;
@@ -92,7 +96,7 @@ static void ha_region_set(struct helper_state *s,unsigned int next){
  char text[48];int n;
  if(!s->region_known){ha_copy(s->notice,"Needs the region module ([region] in modules.cfg)",sizeof s->notice);return;}
  if(s->region_wait){ha_copy(s->notice,"Saving...",sizeof s->notice);return;}
- if(next>=HA_REGION_CHOICES||next==ha_region_index(s->region_choice))return;
+ if(next>=ha_region_count(s)||next==ha_region_index(s->region_choice))return;
  if(!++s->region_counter)s->region_counter=1;
  n=snprintf(text,sizeof text,"set %s %u\n",ha_region_names[next],s->region_counter);
  if(ha_request(UB_REGION_REQUEST,text,(size_t)n)){ha_copy(s->notice,"Cannot contact the helper",sizeof s->notice);return;}
