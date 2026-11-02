@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="google-site-verification" content="eV9VRc8sZF8d8QM3g39OcjbH8Pmuc740llJssateqyQ" />
+  <title>UB820 Helper — Panasonic DP-UB820 external subtitles and tools</title>
+  <meta name="description" content="UB820 Helper: external SRT subtitles, region choices, a configurable Netflix button and diagnostic tools for the Panasonic DP-UB820. Installation, screenshots and documentation.">
+  <link rel="canonical" href="https://troleqmaster816.github.io/ub820-external-subtitles/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="UB820 Helper">
+  <meta property="og:description" content="External subtitles and modular tools for the Panasonic DP-UB820. Full documentation and screenshots.">
+  <meta property="og:url" content="https://troleqmaster816.github.io/ub820-external-subtitles/">
+  <meta property="og:image" content="https://troleqmaster816.github.io/ub820-external-subtitles/images/helper-overlay.jpg">
+  <style>
+:root { color-scheme: light; --ink: #1f2328; --muted: #59636e; --line: #d1d9e0; --soft: #f6f8fa; --link: #0969da; }
+* { box-sizing: border-box; }
+html { scroll-padding-top: 24px; }
+body { margin: 0; background: #fff; color: var(--ink); font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; overflow-wrap: break-word; }
+a { color: var(--link); text-underline-offset: 3px; }
+a:hover { text-decoration-thickness: 2px; }
+a:focus-visible, [tabindex]:focus-visible { outline: 3px solid var(--link); outline-offset: 4px; }
+.skip-link { position: absolute; top: -100px; left: 16px; padding: 8px 16px; background: #fff; z-index: 2; }
+.skip-link:focus { top: 12px; }
+.site-header { border-bottom: 1px solid var(--line); background: var(--soft); }
+.header-inner, main, footer { width: min(100% - 48px, 980px); margin-inline: auto; }
+.header-inner { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-block: 17px; font-size: 14px; }
+.brand { font-weight: 650; color: var(--ink); text-decoration: none; }
+.repo-link { font-weight: 600; }
+main { padding-block: 34px 48px; min-width: 0; }
+h1, h2, h3 { line-height: 1.3; font-weight: 650; scroll-margin-top: 24px; }
+h1 { font-size: 2.15rem; margin: 0 0 22px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+h2 { font-size: 1.5rem; margin: 40px 0 18px; padding-bottom: 9px; border-bottom: 1px solid var(--line); }
+h3 { font-size: 1.15rem; margin: 28px 0 14px; }
+p, ul, ol, pre, blockquote, .table-scroll { margin-block: 0 18px; }
+li > p { margin-block: 12px; }
+li + li { margin-top: 5px; }
+ul, ol { padding-left: 28px; }
+img { max-width: 100%; height: auto; vertical-align: middle; border-radius: 6px; }
+img:hover { opacity: .95; }
+code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; font-size: .85em; }
+code { padding: .18em .38em; border-radius: 4px; background: #eff1f3; }
+pre { max-width: 100%; padding: 18px; overflow-x: auto; background: var(--soft); border: 1px solid #e7ebef; border-radius: 6px; line-height: 1.55; white-space: pre; overflow-wrap: normal; }
+pre code { padding: 0; background: none; font-size: inherit; }
+blockquote { padding: 2px 18px; border-left: 4px solid var(--line); color: var(--muted); }
+blockquote p:last-child { margin-bottom: 0; }
+.alert { padding-block: 12px; }
+.alert-title { font-weight: 650; margin-bottom: 8px; }
+.alert-tip { border-left-color: #1a7f37; }
+.alert-tip .alert-title { color: #1a7f37; }
+.alert-note { border-left-color: var(--link); }
+.alert-note .alert-title { color: var(--link); }
+.table-scroll { max-width: 100%; overflow-x: auto; border-radius: 5px; }
+table { width: 100%; border-collapse: collapse; font-size: .93rem; }
+th, td { padding: 10px 13px; border: 1px solid var(--line); text-align: left; vertical-align: top; min-width: 85px; }
+th { font-weight: 650; background: var(--soft); }
+tr:nth-child(even) { background: #fafbfc; }
+td img { display: block; width: 100%; min-width: 220px; }
+footer { padding-block: 24px 32px; border-top: 1px solid var(--line); font-size: 14px; color: var(--muted); }
+@media (max-width: 600px) { .header-inner, main, footer { width: calc(100% - 32px); } main { padding-top: 24px; } h1 { font-size: 1.8rem; } h2 { font-size: 1.3rem; } th, td { padding: 8px 10px; } }
+@media print { .site-header, .skip-link, footer { display: none; } main { width: 100%; } .table-scroll, pre { overflow: visible; } td img { min-width: 0; } a { color: inherit; } }
+</style>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to documentation</a>
+  <header class="site-header"><div class="header-inner"><a class="brand" href="https://troleqmaster816.github.io/ub820-external-subtitles/">UB820 Helper</a><a class="repo-link" href="https://github.com/troleqmaster816/ub820-external-subtitles">View on GitHub ↗</a></div></header>
+  <main id="content"><article>
+<h1 id="ub820-helper">UB820 Helper</h1>
+<p>A RAM-only, modular add-on for the <strong>Panasonic DP-UB820</strong> Ultra HD Blu-ray
+player (firmware <strong>1.82</strong>, and <strong>1.85</strong>). It adds external <code>.srt</code> subtitles,
+a <strong>UB820 Helper</strong> menu in OPTIONS and in Player Settings, Blu-ray and DVD
+region choices, a configurable Netflix button and a few diagnostic tools.
+Nothing is written to flash, EEPROM or the drive: a full power cycle removes
+everything.</p>
+<blockquote class="alert alert-tip"><p class="alert-title">Tip</p>
+<p><strong>Press the Netflix button on the remote</strong> and the <strong>UB820 Helper</strong> window
+opens over whatever is on screen: the home screen, a menu or a film. Press
+it again, or Return, to close it. This is the default; the button can also
+be set back to Netflix or to do nothing.</p>
+</blockquote>
+<p align="center">
+<a aria-label="Open full-size image: The UB820 Helper window opened with the Netflix button over the home screen" href="images/helper-overlay.jpg"><img alt="The UB820 Helper window opened with the Netflix button over the home screen" decoding="async" loading="eager" src="images/helper-overlay.jpg" width="640"/></a>
+</p>
+<p>Each feature is a separate module that you can switch on or off in one
+settings file, and new modules can be added without touching the others.</p>
+<blockquote class="alert alert-note"><p class="alert-title">Note</p>
+<p>Developed and tested on a DP-UB820 with firmware 1.82. Support for 1.85 is
+built from a comparison of the two firmware versions and has not been
+confirmed on a 1.85 player yet. This is an unofficial project with no
+affiliation to Panasonic.</p>
+</blockquote>
+<h2 id="contents">Contents</h2>
+<ul>
+<li><a href="#features">Features</a></li>
+<li><a href="#screenshots">Screenshots</a></li>
+<li><a href="#requirements">Requirements</a></li>
+<li><a href="#installation">Installation</a></li>
+<li><a href="#using-the-menus">Using the menus</a></li>
+<li><a href="#configuration-submodulescfg">Configuration</a></li>
+<li><a href="#firmware-support">Firmware support</a></li>
+<li><a href="#how-it-works">How it works</a></li>
+<li><a href="#building-from-source">Building from source</a></li>
+<li><a href="#known-limitations">Known limitations</a></li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+<li><a href="#license">License</a></li>
+</ul>
+<h2 id="features">Features</h2>
+<div aria-label="Scrollable table" class="table-scroll" role="region" tabindex="0"><table>
+<thead>
+<tr>
+<th>Module</th>
+<th>What it does</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>external_subtitles</code></td>
+<td>External <code>.srt</code> subtitles from the USB stick, chosen during playback in OPTIONS &gt; <strong>External Subtitles</strong>: browse folders, pick a file, switch On/Off. Disc-like look (white text, neutral black outline, stable bottom line). Also unlocks the player's own hidden subtitle rows in OPTIONS (size, sync, character code, on/off), with English text where the firmware has no translation.</td>
+<td>on</td>
+</tr>
+<tr>
+<td><code>ui</code></td>
+<td>The menus: <strong>External Subtitles</strong> and <strong>UB820 Helper</strong> in OPTIONS, and the same UB820 Helper as a tile in <strong>Player Settings &gt; System</strong>, reachable without a disc.</td>
+<td>on</td>
+</tr>
+<tr>
+<td><code>region</code></td>
+<td><strong>Blu-ray region</strong> the disc sees (fixed A/B/C or all three; an experimental <code>auto</code> is off by default). <strong>DVD region</strong>, best effort (no region error, or a fixed region 1-8). Region diagnostics in the log.</td>
+<td>on</td>
+</tr>
+<tr>
+<td><code>remote</code></td>
+<td>What the remote's <strong>Netflix</strong> button does: open Netflix as usual, nothing, or open the UB820 Helper menu as an overlay anywhere (home screen, menus, playback).</td>
+<td>on</td>
+</tr>
+<tr>
+<td><code>log</code></td>
+<td>The helper log: level, saving it to the stick (on request or continuously), and optional detailed diagnostics of the player (crashes, hangs, kernel messages).</td>
+<td>on</td>
+</tr>
+<tr>
+<td><code>ssh</code></td>
+<td>An <strong>on-demand</strong> diagnostic SSH server (Dropbear), started from the menu. Key or password login.</td>
+<td><strong>off</strong></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="screenshots">Screenshots</h2>
+<p>Photos of a DP-UB820 with the English menu language.</p>
+<div aria-label="Scrollable table" class="table-scroll" role="region" tabindex="0"><table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a aria-label="Open full-size image: External Subtitles in OPTIONS: the .srt file browser" href="images/subtitle-browser.jpg"><img alt="External Subtitles in OPTIONS: the .srt file browser" decoding="async" loading="lazy" src="images/subtitle-browser.jpg"/></a></td>
+<td><a aria-label="Open full-size image: An external subtitle during playback" href="images/subtitle-playback.jpg"><img alt="An external subtitle during playback" decoding="async" loading="lazy" src="images/subtitle-playback.jpg"/></a></td>
+</tr>
+<tr>
+<td><strong>External Subtitles</strong> in OPTIONS: browse the stick and pick a <code>.srt</code> file</td>
+<td>The chosen file on screen, in the disc-like style</td>
+</tr>
+<tr>
+<td><a aria-label="Open full-size image: The player's own subtitle rows, unlocked" href="images/subtitle-settings.jpg"><img alt="The player's own subtitle rows, unlocked" decoding="async" loading="lazy" src="images/subtitle-settings.jpg"/></a></td>
+<td><a aria-label="Open full-size image: UB820 Helper in OPTIONS" href="images/options-helper.jpg"><img alt="UB820 Helper in OPTIONS" decoding="async" loading="lazy" src="images/options-helper.jpg"/></a></td>
+</tr>
+<tr>
+<td>The player's hidden subtitle rows (size, position, sync, character code), unlocked</td>
+<td><strong>UB820 Helper</strong> in OPTIONS, shown as soon as its tile has the focus</td>
+</tr>
+<tr>
+<td><a aria-label="Open full-size image: Choosing the Blu-ray region" href="images/bd-region-list.jpg"><img alt="Choosing the Blu-ray region" decoding="async" loading="lazy" src="images/bd-region-list.jpg"/></a></td>
+<td><a aria-label="Open full-size image: The UB820 Helper overlay" href="images/helper-overlay.jpg"><img alt="The UB820 Helper overlay" decoding="async" loading="lazy" src="images/helper-overlay.jpg"/></a></td>
+</tr>
+<tr>
+<td>Choosing the Blu-ray region from a list</td>
+<td>The same menu as an overlay, opened with the Netflix button</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="requirements">Requirements</h2>
+<ul>
+<li>A Panasonic DP-UB820 with firmware <strong>1.82</strong> or <strong>1.85</strong>. Every module
+checks the exact SHA-256 of each program it changes and leaves anything
+else alone; on any other firmware the helper changes nothing.</li>
+<li>A USB stick formatted as <strong>FAT32</strong>.</li>
+<li>A way to launch the loader file from the stick with the player's usual
+loader start-up procedure.</li>
+</ul>
+<h2 id="installation">Installation</h2>
+<ol>
+<li>
+<p>Copy <strong>the contents</strong> of <a href="https://github.com/troleqmaster816/ub820-external-subtitles/tree/main/USB-CONTENTS"><code>USB-CONTENTS/</code></a> to the <strong>root</strong> of
+the USB stick, keeping the <code>sub</code> folder:</p>
+<pre><code>USB root
+├── LOADER.MKV            loader (launch this one)
+└── sub/
+    ├── engage            the helper: all modules + RAM loader
+    ├── modules.cfg       settings: which modules run, and their options
+    └── sub.srt           default subtitle used by the player (fallback)
+</code></pre>
+<p>Put your own <code>.srt</code> files anywhere on the stick; subfolders work.</p>
+</li>
+<li>
+<p><strong>Fully power-cycle the player</strong> (unplug it, or turn Quick Start off), so
+the helper starts fresh. Standby keeps whatever already runs in RAM.</p>
+</li>
+<li>
+<p>Insert the stick and launch <code>LOADER.MKV</code>. The player then says
+the file cannot be opened. This is expected: the file only starts the
+helper and has nothing to play. Dismiss the message.</p>
+</li>
+<li>
+<p>The helper is now running until the next power cycle. Start a disc and
+press <strong>OPTIONS</strong> to find <strong>External Subtitles</strong> and <strong>UB820 Helper</strong>, or
+open <strong>Setup &gt; Player Settings &gt; System &gt; UB820 Helper</strong> without a disc.</p>
+</li>
+</ol>
+<h2 id="using-the-menus">Using the menus</h2>
+<div aria-label="Scrollable table" class="table-scroll" role="region" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Up / Down</td>
+<td>move between rows (scroll in the log view)</td>
+</tr>
+<tr>
+<td>OK / Right</td>
+<td>enter the page; then open a folder, select a file, open a list, run an action</td>
+</tr>
+<tr>
+<td>Return / Left</td>
+<td>close a list or the log view, then go back to the tile</td>
+</tr>
+<tr>
+<td>OPTIONS</td>
+<td>close everything as usual</td>
+</tr>
+</tbody>
+</table></div>
+<p>As with the player's own categories, a page is shown as soon as its tile on
+the left has the focus; OK or Right moves into it.</p>
+<p>A row with several values (Subtitles On/Off, Blu-ray region, DVD region,
+Netflix button) opens a list beside it with the current value highlighted:
+<strong>OK</strong> takes the highlighted one, <strong>Return</strong> keeps the old one.</p>
+<p><strong>External Subtitles</strong> (OPTIONS, during playback). The header shows the
+current folder and state, for example <code>On | /mnt/usb/SUB/movie.srt</code>. Rows:
+<strong>[..] Up one folder</strong>, <strong>Subtitles: On/Off</strong>, <strong>Refresh files</strong>, then the
+subfolders, then the <code>.srt</code> files. A chosen file takes over at the current
+film position; choosing it again re-reads it.</p>
+<p><strong>UB820 Helper</strong> (OPTIONS, Player Settings &gt; System, or the Netflix button):</p>
+<ul>
+<li><strong>Blu-ray region</strong>: <strong>Player default</strong> (default), <strong>A</strong>, <strong>B</strong>, <strong>C</strong> or
+<strong>A+B+C</strong> (and <strong>Auto</strong> when <code>bd_auto=1</code>). The row says what the disc in
+the drive sees, e.g. <code>A (this disc still: B)</code> until the next disc. A new
+choice applies from the next disc on.</li>
+<li><strong>DVD region</strong>: <strong>Player default</strong> (default), <strong>Auto</strong>, <strong>No region
+check</strong>, or a region <strong>1</strong>-<strong>8</strong>. Applies within a second; restart a DVD
+that already stopped with a region error. See <a href="#known-limitations">the limits</a>.</li>
+<li><strong>Netflix button</strong>: <strong>UB820 Helper</strong> (default), <strong>Netflix</strong> or <strong>Does
+nothing</strong>. <strong>UB820 Helper</strong> opens this menu as an overlay wherever you are,
+and Return or the Netflix button closes it. While the overlay is open the
+remote only works the overlay.</li>
+<li><strong>Start SSH</strong> / <strong>Stop SSH</strong>, when <code>[ssh]</code> is enabled.</li>
+<li><strong>Helper log</strong>: the last lines of the helper log, on screen.</li>
+<li><strong>Save log to USB</strong>: writes the log to <code>sub/ub820_submenu.log</code>. With
+<code>save=always</code> the row only says that this happens automatically.</li>
+</ul>
+<p>Choices made in the menu are saved on the stick in <code>sub/ub820_menu.cfg</code>.</p>
+<h2 id="configuration-submodulescfg">Configuration: <code>sub/modules.cfg</code></h2>
+<p>The helper reads this file once at start; power-cycle and launch the loader
+again after editing it. Each <code>[section]</code> is one module, and <code>enabled=0</code>
+switches it off. Choices made in the UB820 Helper menu are saved to
+<code>sub/ub820_menu.cfg</code>, which is read after <code>modules.cfg</code> and wins; delete it to
+go back to <code>modules.cfg</code> alone. Invalid or out-of-range values are ignored
+(the default stays) and noted in the log as <code>config:</code> lines.</p>
+<h3 id="external_subtitles"><code>[external_subtitles]</code></h3>
+<div aria-label="Scrollable table" class="table-scroll" role="region" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Values</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>font_percent</code></td>
+<td><code>122</code></td>
+<td>90 to 150</td>
+<td>Font scale.</td>
+</tr>
+<tr>
+<td><code>position</code></td>
+<td><code>-8</code></td>
+<td>-10 to 10</td>
+<td>Vertical step; lower numbers move the text down.</td>
+</tr>
+<tr>
+<td><code>bottom_align</code></td>
+<td><code>1</code></td>
+<td>0 or 1</td>
+<td><code>1</code> keeps one- and two-line cues on the same bottom line; <code>0</code> is the stock behaviour.</td>
+</tr>
+<tr>
+<td><code>native_options</code></td>
+<td><code>1</code></td>
+<td>0 or 1</td>
+<td>The player's own size, sync, character code and on/off rows in OPTIONS.</td>
+</tr>
+<tr>
+<td><code>english_text</code></td>
+<td><code>1</code></td>
+<td>0 or 1</td>
+<td>English text for those rows in menu languages where the firmware has none.</td>
+</tr>
+</tbody>
+</table></div>
+<p>The player's own subtitle position and size settings keep working.</p>
+<h3 id="region"><code>[region]</code></h3>
+<div aria-label="Scrollable table" class="table-scroll" role="region" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Values</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>bd_region</code></td>
+<td><code>stock</code></td>
+<td><code>stock</code>, <code>A</code>, <code>B</code>, <code>C</code>, <code>ABC</code>, <code>auto</code></td>
+<td>Region a Blu-ray sees. <code>stock</code> leaves the player alone; <code>A</code>/<code>B</code>/<code>C</code> force one region; <code>ABC</code> sets all three bits (only for discs that test a bit mask); <code>auto</code> needs <code>bd_auto=1</code>.</td>
+</tr>
+<tr>
+<td><code>bd_auto</code></td>
+<td><code>0</code></td>
+<td>0 or 1</td>
+<td>Experimental: allows <code>bd_region=auto</code>, which keeps the player's region unless the disc's HDMV program accepts only other regions (discs that check in Java, BD-J, keep the player's region). With 0, <code>auto</code> is not offered in the menus and counts as <code>stock</code>.</td>
+</tr>
+<tr>
+<td><code>dvd_region</code></td>
+<td><code>stock</code></td>
+<td><code>stock</code>, <code>free</code>, <code>1</code>-<code>8</code>, <code>auto</code></td>
+<td>DVD region, best effort. <code>free</code>: a disc is never stopped with a region error; <code>1</code>-<code>8</code>: also the region discs see; <code>auto</code>: no region error, and a disc that excludes the player's region sees the first one it allows.</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="remote"><code>[remote]</code></h3>
+<div aria-label="Scrollable table" class="table-scroll" role="region" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Values</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>netflix_key</code></td>
+<td><code>helper</code></td>
+<td><code>helper</code>, <code>netflix</code>, <code>nothing</code></td>
+<td>What the Netflix button does. <code>nothing</code> drops the key the way the firmware does on models without Netflix; <code>helper</code> opens and closes the UB820 Helper overlay.</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="log"><code>[log]</code></h3>
+<div aria-label="Scrollable table" class="table-scroll" role="region" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Values</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>level</code></td>
+<td><code>info</code></td>
+<td><code>errors</code>, <code>info</code>, <code>debug</code></td>
+<td>Detail of the helper log. Errors are always kept.</td>
+</tr>
+<tr>
+<td><code>save</code></td>
+<td><code>menu</code></td>
+<td><code>off</code>, <code>menu</code>, <code>always</code></td>
+<td>When the log goes to <code>sub/ub820_submenu.log</code>: <code>menu</code> when you choose <strong>Save log to USB</strong>; <code>always</code> a few seconds after each change and at once after a crash report, keeping the previous run's log as <code>sub/ub820_submenu.prev.log</code>; <code>off</code> never.</td>
+</tr>
+<tr>
+<td><code>diagnostics</code></td>
+<td><code>0</code></td>
+<td>0 or 1</td>
+<td>Detailed diagnostics of the player itself: crash reports, stuck or spinning threads, programs starting and ending, kernel messages, low memory, and a load line every minute. Best with <code>save=always</code>.</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="ssh"><code>[ssh]</code></h3>
+<div aria-label="Scrollable table" class="table-scroll" role="region" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Values</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled</code></td>
+<td><code>0</code></td>
+<td>0 or 1</td>
+<td><code>1</code> adds <strong>Start SSH</strong> to the UB820 Helper menu. Nothing listens until you start it there.</td>
+</tr>
+<tr>
+<td><code>auth</code></td>
+<td><code>key</code></td>
+<td><code>key</code>, <code>password</code></td>
+<td><code>key</code>: log in with a key whose public half is in <code>sub/authorized_keys</code> on the stick. <code>password</code>: the password is the one line in <code>sub/ssh_password</code> on the stick.</td>
+</tr>
+<tr>
+<td><code>port</code></td>
+<td><code>2222</code></td>
+<td>1024 to 65535</td>
+<td>TCP port.</td>
+</tr>
+<tr>
+<td><code>guard</code></td>
+<td><code>0</code></td>
+<td>0 or 1</td>
+<td>Logs every program a session starts, and ends a session whose shells keep starting each other. Diagnostic.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Connect with <code>ssh root@&lt;player-ip&gt; -p 2222</code>; the menu shows the exact line
+after you start the server. <strong>Key login is recommended.</strong> With a password,
+it sits in clear text on the stick (the helper hands Dropbear only a <code>$6$</code>
+hash), and the player has no firewall, so anyone on your network can reach
+the port. The server runs only after you start it and is gone after a power
+cycle.</p>
+<h2 id="firmware-support">Firmware support</h2>
+<div aria-label="Scrollable table" class="table-scroll" role="region" tabindex="0"><table>
+<thead>
+<tr>
+<th>Firmware</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1.82</td>
+<td>Everything; tested on a player.</td>
+</tr>
+<tr>
+<td>1.85</td>
+<td>Everything except the English text of the native subtitle rows (the firmware's language file changed); not yet confirmed on a player.</td>
+</tr>
+<tr>
+<td>other</td>
+<td>Nothing is changed.</td>
+</tr>
+</tbody>
+</table></div>
+<p>For 1.85, programs that are byte for byte the same as in 1.82 take the 1.82
+code as it is; <code>apl_bdv</code> keeps its code and only its region data moved;
+<code>apl_mgr</code> and <code>apl_setting</code> changed, so their payloads carry their own 1.85
+addresses, each one checked against the 1.82 machine code. Every decision is
+in the helper log. Expected hashes are in the module manifests
+(<code>source/modules/*/*.json</code>) and in <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/source/core/injector.c"><code>source/core/injector.c</code></a>.</p>
+<h2 id="how-it-works">How it works</h2>
+<pre><code>LOADER.MKV          ──► starts sub/engage (core + modules, static ARM binary)
+                            │
+                            ├─ ui: menu payload               ──► apl_dispsrv      (OPTIONS menus, overlay)
+                            │      settings payload           ──► apl_setting      (Player Settings tile)
+                            ├─ external_subtitles: engine     ──► apl_meda_bdplay  (SRT engine)
+                            │      native rows, English text  ──► apl_dispsrv      (data only)
+                            ├─ region: BD / DVD region        ──► apl_bdv, apl_meda_dvdv
+                            ├─ remote: keys payload           ──► apl_mgr          (key filter)
+                            ├─ log: log, saving, diagnostics
+                            └─ ssh: static Dropbear in RAM, on demand
+</code></pre>
+<ul>
+<li><strong>Core</strong> (<a href="https://github.com/troleqmaster816/ub820-external-subtitles/tree/main/source/core"><code>source/core/</code></a>) finds the player's processes once
+per second, checks each program's exact hash, installs payloads with
+<a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/source/core/injector.c"><code>injector.c</code></a> (ptrace, hook trampolines checked
+against the original bytes), calls every module part, writes the log and
+reads the settings. The module interface is <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/source/core/ub.h"><code>ub.h</code></a>.
+A payload carries one set of addresses per supported firmware build.</li>
+<li><strong>Circuit breaker.</strong> If a player process ends after a module part changed
+it, that part stays off until the next power cycle, and the log says which.</li>
+<li><strong>The stick is not mounted in Linux.</strong> The player reaches it only through
+its own user-space file layer, <code>libufs</code>. The helper carries a small tool,
+<a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/source/tools/ufs/ufs.c"><code>tools/ufs</code></a>, linked against the player's own
+libc and <code>libufs.so</code>, that copies single files between the stick and <code>/tmp</code>
+the way the player itself does.</li>
+<li><strong>Linux 4.4.</strong> The player runs Linux 4.4 with 32-bit programs. The helper's
+periodic work uses <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/source/core/sys.c"><code>sys.c</code></a>, which calls 4.4 syscalls
+directly instead of newer ones the kernel lacks; <code>tests/sys_check.c</code>
+verifies this under <code>qemu-arm -strace</code>.</li>
+<li><strong><code>ui</code></strong> (<a href="https://github.com/troleqmaster816/ub820-external-subtitles/tree/main/source/modules/ui"><code>source/modules/ui/</code></a>):
+<a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/source/modules/ui/menu.c"><code>menu.c</code></a> runs inside <code>apl_dispsrv</code> and adds the
+two OPTIONS categories with the player's own CTK/GTK widgets; the same page
+also opens as an overlay when the Netflix button is set to do so.
+<a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/source/modules/ui/settings.c"><code>settings.c</code></a> runs inside <code>apl_setting</code>
+(started only while Player Settings is open) and adds the System tile and
+its submenu. Both share <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/source/modules/ui/helper_actions.h"><code>helper_actions.h</code></a>
+and talk to the other modules only through files in <code>/tmp</code>
+(<a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/source/core/helper_menu.h"><code>helper_menu.h</code></a>), so each module keeps
+working without them.</li>
+<li><strong><code>external_subtitles</code></strong>: <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/source/modules/external_subtitles/backend.c"><code>backend.c</code></a>
+runs inside <code>apl_meda_bdplay</code>, hooks the native subtitle functions and
+restarts the stock SRT parser on the chosen file. The menu and the backend
+exchange fixed-size, versioned records in <code>/tmp</code>
+(<a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/source/modules/external_subtitles/protocol.h"><code>protocol.h</code></a>). The native
+rows are shown by setting one cached flag in <code>apl_dispsrv</code>, and their
+English text comes from swapping two read-only pages of the language file
+for a private copy; no code is changed for either.</li>
+<li><strong><code>region</code></strong>: a Blu-ray's region check is the disc's own program reading
+PSR20, so there is nothing to remove in the player; the module chooses the
+value at its source. <code>apl_bdv</code> (started for each disc) asks the drive for
+its region once, as it starts, and turns the answer into 1, 2 or 4 with
+three <code>movs</code> instructions. A watcher process is told (inotify) when
+<code>apl_bdv</code> is executed, stops it before it has asked the drive, decides the
+region (for <code>auto</code> it reads the disc's files) and changes those three
+immediates in that process's own copy, so the player itself carries the
+chosen region into its configuration and PSR20 before any disc program
+runs. If it ever comes too late, it sets PSR20 instead, and the log says
+which of the two happened. For DVD the module changes the DVD process's own
+copy of two code sites in <code>libnavi_api.so</code>: the branch after the drive's
+region answer (so the disc is never stopped with a region error) and the
+function that gives discs the player's region. The original bytes are
+checked before each change and put back for <code>stock</code>.</li>
+<li><strong><code>remote</code></strong>: <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/source/modules/remote/keys.c"><code>keys.c</code></a> runs inside
+<code>apl_mgr</code>, which asks a key filter about every remote and HDMI-CEC key. It
+drops the Netflix key, or sends it (and, while the overlay is open, every
+key) through a FIFO to the overlay in <code>apl_dispsrv</code>. If nothing reads the
+FIFO, keys go through as usual, so the remote cannot get stuck.</li>
+<li><strong><code>log</code></strong> keeps the runtime log in <code>/tmp/ub820_submenu.log</code> (the oldest half
+is dropped at 256 KB). With <code>diagnostics=1</code> it also reports crashes (the
+kernel's <code>core_pattern</code> is pointed at the helper, which logs registers and
+code addresses from the core's notes and discards the rest), stuck or
+spinning threads, programs starting and ending, kernel messages and low
+memory.</li>
+<li><strong><code>ssh</code></strong> runs a prebuilt static <a href="https://matt.ucc.asn.au/dropbear/">Dropbear</a>
+from RAM; see <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/source/tools/ssh/README.md"><code>source/tools/ssh/</code></a>. Programs it
+starts get default signal handling and no inherited descriptors; <strong>Stop
+SSH</strong> also ends open sessions.</li>
+</ul>
+<p>To write a module of your own, see <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/CONTRIBUTING.md"><code>CONTRIBUTING.md</code></a>.</p>
+<h2 id="building-from-source">Building from source</h2>
+<p>The prebuilt <code>USB-CONTENTS/sub/engage</code> is reproducible: building this
+repository gives a byte-identical file with SHA-256
+<code>521887b27f92a12ce045072aebda39d1c70f1336c50165ca768745c7daf534c6</code>.</p>
+<p>Requirements: Windows with WSL (<code>Ubuntu</code>) providing <code>arm-linux-gnueabihf-gcc</code>,
+<code>gcc</code> and <code>qemu-arm</code>.</p>
+<pre><code class="language-bash">python source/build.py --helper
+</code></pre>
+<p>builds the helper from the committed <a href="https://github.com/troleqmaster816/ub820-external-subtitles/tree/main/source/generated"><code>source/generated/</code></a>
+files (no firmware needed) and self-tests it under <code>qemu-arm</code>.</p>
+<p>The full build recompiles the payloads, regenerates the hook trampolines
+from the stock firmware executables and links <code>tools/ufs</code> against the
+player's <code>libufs.so</code> and <code>libc-2.20-2014.11.so</code>. None of the firmware files
+are included in this repository. It also needs the Python packages
+<code>pyelftools</code>, <code>capstone</code> and <code>keystone-engine</code>:</p>
+<pre><code class="language-bash">UB820_FIRMWARE_DIR=/path/to/v182/appfs/dtvrec/bin \
+UB820_FIRMWARE_DIR_185=/path/to/v185/appfs/dtvrec/bin python source/build.py
+</code></pre>
+<p><code>UB820_ROOTFS_LIB</code> overrides where the stock <code>libc-2.20-2014.11.so</code> is
+(default: <code>&lt;1.82 firmware&gt;/rootfs/lib</code>). Output goes to <code>source/build/</code>.</p>
+<p>Host tests (x86, in WSL); with <code>UB820_FIRMWARE_DIR</code> set they also check the
+English-text page swap against the real language file:</p>
+<pre><code class="language-bash">python source/tests/run_tests.py
+</code></pre>
+<h2 id="known-limitations">Known limitations</h2>
+<ul>
+<li><strong>DVD region</strong> is best effort. The drive keeps its own region, so an
+encrypted (CSS) DVD from another region may still not play even though the
+player no longer refuses it; unencrypted discs are the realistic case. It
+has not been tested with a foreign-region disc.</li>
+<li><strong>Blu-ray <code>auto</code></strong> (experimental, <code>bd_auto=1</code>) does not analyse discs that
+check their region in Java (BD-J); choose a region letter for those.</li>
+<li>External subtitles: at most 64 entries per folder (use subfolders), full
+paths up to 250 bytes, and the chosen file is remembered for the current
+playback only.</li>
+<li>A media or state change may close an open menu; open it again.</li>
+<li>Not covered by testing so far: unusual filename encodings, very large or
+corrupt <code>.srt</code> files, removing the stick while a file is being read, and
+firmware 1.85 on a real player.</li>
+</ul>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<ul>
+<li><strong>The menu does not appear.</strong> Power-cycle the player fully, launch the
+loader again before starting a disc, then read the log (on the stick, or
+in the menu if it appears): look for <code>Installed apl_dispsrv</code>, <code>giving up installing</code>, or a line saying that a process ended and a part is off.</li>
+<li><strong>No log on the stick.</strong> With <code>save=menu</code> the log is written only when you
+choose <strong>Save log to USB</strong>; the menu then says whether it worked. With
+<code>save=always</code> a failure is logged as <code>cannot save the log to the stick</code> and
+retried every minute.</li>
+<li><strong>The player crashes, freezes or reboots.</strong> Set <code>save=always</code> and
+<code>diagnostics=1</code>, power-cycle, reproduce it with the stick inserted, then
+read <code>sub/ub820_submenu.log</code> (or <code>sub/ub820_submenu.prev.log</code>). Look for
+<code>crash:</code>, <code>diag:</code> and <code>kernel:</code> lines just before the end.</li>
+<li><strong>Settings are ignored.</strong> The log starts with <code>config: copied /mnt/usb/sub/modules.cfg from the stick</code> when the file was read; otherwise
+a <code>config:</code> line gives the reason. The file is read only at start.</li>
+<li><strong>Anything misbehaves.</strong> Remove the stick and power-cycle the player:
+every change lives in RAM.</li>
+</ul>
+<h2 id="license">License</h2>
+<p>Released under the MIT License, see <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/LICENSE"><code>LICENSE</code></a>.</p>
+<p>Third-party components in the binaries: the helper <code>engage</code> is statically
+linked with the GNU C Library (LGPL-2.1-or-later); its complete source and
+build are in this repository, so it can be rebuilt and relinked. It embeds
+the prebuilt <a href="https://matt.ucc.asn.au/dropbear/">Dropbear</a> binaries, which
+are statically linked with <a href="https://musl.libc.org/">musl</a>; their license
+texts are in <a href="https://github.com/troleqmaster816/ub820-external-subtitles/tree/main/source/tools/ssh/licenses"><code>source/tools/ssh/licenses/</code></a>.</p>
+<p>This project is not affiliated with Panasonic. It modifies running processes
+on your own device and is provided as is, with no warranty.</p>
+
+  </article></main>
+  <footer>Documentation from the <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/README.md">project README</a>. <a href="https://github.com/troleqmaster816/ub820-external-subtitles">Source code on GitHub</a>.</footer>
+</body>
+</html>
