@@ -1,3 +1,5 @@
+<meta name="google-site-verification" content="eV9VRc8sZF8d8QM3g39OcjbH8Pmuc740llJssateqyQ" />
+
 # UB820 Helper
 
 A RAM-only, modular add-on for the **Panasonic DP-UB820** Ultra HD Blu-ray
