@@ -1,10 +1,17 @@
 /* Host test of the region module's disc parsers on synthetic discs. */
+#define UB_BD_RAM_DIR UB_TEST_DIR "/region-ram"
 #include "../modules/region/module.c"
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
 
 static int failures;
+/* Host tests never install ARM payloads. Use a tiny explicit asset fixture
+ * when exercising atomic configuration publication instead of an ARM DSO. */
+const struct ub_payload ub_payload_region_launch={0};
+const unsigned char ub_asset_region_bd_preload[]={'x'};
+const size_t ub_asset_region_bd_preload_size=1;
+const char ub_asset_region_bd_preload_sha256[]="2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881";
 #define CHECK(c) do{if(!(c)){printf("FAIL %s:%d: %s\n",__FILE__,__LINE__,#c);failures++;}}while(0)
 struct ub_module *const ub_modules[]={&ub_module_region,0};
 /* config.c saves menu choices; on the host the stick is not involved */
@@ -20,6 +27,25 @@ static char *log_text(void){
 
 static void read_text(const char *path,char *buf,size_t cap){FILE *f=fopen(path,"r");size_t n=f?fread(buf,1,cap-1,f):0;if(f)fclose(f);buf[n]=0;}
 static void menu_set(const char *text){FILE *f=fopen(UB_REGION_REQUEST,"w");fputs(text,f);fclose(f);}
+static void test_bd_launch_ownership(void){
+ struct ub_part part={0};struct ub_bd_launch_config c;int fd,saved=bd_region;unsigned saved_ok=bdv_file.ok;
+ bd_region=BD_A;bdv_file.ok=1;bd_launch_armed=0;bd_launch_part=&part;
+ part.target.verified=1;part.target.pid=getpid();part.target.installed=0;
+ CHECK(!bd_launch_publish());CHECK(bd_launch_ready);
+ fd=open(UB_BD_LAUNCH_CONFIG,O_RDONLY);CHECK(fd>=0);if(fd>=0){CHECK(read(fd,&c,sizeof c)==sizeof c);close(fd);CHECK(c.policy==1&&c.magic==UB_BD_LAUNCH_MAGIC);}
+ /* A pending hook already excludes the legacy source writer. */
+ watcher_start();CHECK(!watcher_pid);
+ launch_prepare(&part,&part.target);CHECK(!part.target.retry&&!watcher_pid);
+ part.target.installed=1;launch_step(&part,&part.target);CHECK(bd_launch_armed&&!watcher_pid);
+ /* Make atomic policy publication fail. It must not leave an old choice,
+  * and must not introduce a second source writer beside the existing hook. */
+ unlink(UB_BD_LAUNCH_CONFIG);CHECK(!mkdir(UB_BD_LAUNCH_CONFIG,0700));
+ CHECK(bd_launch_publish()<0&&!bd_launch_ready);watcher_start();CHECK(!watcher_pid);
+ CHECK(!rmdir(UB_BD_LAUNCH_CONFIG));
+ menu_set("set A 301\n");menu_request();CHECK(bd_region==BD_A&&bd_launch_ready); /* same-choice retry */
+ launch_step(&part,&part.target);CHECK(bd_launch_armed&&!watcher_pid);
+ bd_launch_part=0;bd_launch_armed=bd_launch_ready=0;bdv_file.ok=(int)saved_ok;bd_region=saved;
+}
 /* The UB820 Helper menu: status for the menu, a choice applied and saved to
  * sub/ub820_menu.cfg (read back over modules.cfg), invalid choices refused. */
 static void test_menu(void){
@@ -253,6 +279,7 @@ int main(void){
  decide_clear();
  test_menu();
  test_dvd();
+ test_bd_launch_ownership();
  watcher_stop();
  printf("%s (%d failures)\n",failures?"region_test FAILED":"region_test passed",failures);
  return failures!=0;

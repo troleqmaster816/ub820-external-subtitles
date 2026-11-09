@@ -7,11 +7,11 @@
  *   1, 2 or 4 with one movs each; FUN_0004aea0 keeps it at 0x00aeaec0,
  *   GetMM_PlayerConfig (FUN_00049148) hands it to the engine, and
  *   BDROM_PCE_LB_SetPlayerConfigPSR (FUN_000a3e14) copies it into PSR20
- *   (0x00b35b6c), which the disc's HDMV or BD-J program reads. A watcher
- *   process catches each new apl_bdv before it has asked the drive and
- *   changes those three immediates (see "BD region at the source"), so the
- *   player itself carries the chosen region everywhere; if it was too late,
- *   it sets PSR20 instead, and the log says which happened.
+ *   (0x00b35b6c), which the disc's HDMV or BD-J program reads. A verified
+ *   launcher hook in apl_medm adds a private preloader only to future BD
+ *   launches. Its normal ELF constructor changes those three immediates
+ *   before native main and region initialization. The old watcher/PSR20
+ *   correction remains a best-effort fallback if the launcher cannot arm.
  *   bd_region: stock leave the player alone (default)
  *              auto  only with bd_auto=1 (off by default, experimental):
  *                    keep the player's region unless the disc's HDMV
@@ -51,6 +51,9 @@
 #include "helper_menu.h"
 #include "storage.h"
 #include "action_ipc.h"
+#include "assets.h"
+#include "bd_launch.h"
+#include "bd_policy.h"
 #include <errno.h>
 #include <dirent.h>
 #include <fcntl.h>
@@ -108,14 +111,7 @@ static unsigned decision_value;
  * apl_bdv, 0 until known). */
 static int bd_present;
 static uint32_t bd_player;
-static uint32_t region_for(char mode,unsigned value,uint32_t player){
- if(mode=='F'&&(value==1||value==2||value==4||value==7))return value;
- if(mode=='M'&&(value&7)){
-  if(value&player&7)return player;
-  return value&1?1:value&2?2:4;
- }
- return player;
-}
+#define region_for ub_bd_region_for
 
 #define BDV_PATH "/usr/dtvrec/bin/apl_bdv"
 #define BDV_PSR20_ADDR 0x00b35b6cu
@@ -131,6 +127,12 @@ static const unsigned char bdv_source_stock[3]={1,2,4};
 static struct { unsigned long long dev,ino; long long size,mtime; int ok; } bdv_file;
 /* What the disc in the running apl_bdv sees (its PSR20), 0 if none. */
 static uint32_t bd_psr;
+/* Ready means both the exact asset and current launch policy are published.
+ * Armed additionally means the media-manager hook has finished installing. */
+static int bd_launch_ready,bd_launch_armed;
+static int bd_launch_pid;
+static struct ub_part *bd_launch_part;
+static int bd_launch_publish(void);
 
 static int bdv_identical(int pid){
  char p[40];struct ub_stat st;
@@ -358,8 +360,8 @@ static void dvd_step(struct ub_part *p,struct ub_target *t){
 }
 
 /* Disc files ---------------------------------------------------------------- */
-static uint32_t be32(const unsigned char *b){return (uint32_t)b[0]<<24|(uint32_t)b[1]<<16|(uint32_t)b[2]<<8|b[3];}
-static uint16_t be16(const unsigned char *b){return (uint16_t)(b[0]<<8|b[1]);}
+#define be32 ub_bd_be32
+#define be16 ub_bd_be16
 static int disc_path(char *out,size_t size,const char *root,const char *tail){
  int n=snprintf(out,size,"%s%s",root,tail);return n<0||(size_t)n>=size?-1:0;
 }
@@ -418,26 +420,7 @@ static int reads_psr20(const unsigned char *c){
  * PSR20 (MOVE rX, PSR20, or copied on with MOVE rY, rX), or PSR20 itself,
  * compared (BC/EQ/NE) or ANDed with an immediate of 1..7. A heuristic: the
  * values a disc compares its player region with are the regions it plays in. */
-static unsigned hdmv_mask_of_object(const unsigned char *c,unsigned cmds){
- uint32_t tracked[8];unsigned count=0,mask=0,i,k;
- for(i=0;i<cmds;i++,c+=12){
-  unsigned grp=(c[0]>>3)&3,sub=c[0]&7,imm1=c[1]>>7,imm2=(c[1]>>6)&1,compare=c[2]&15,setop=c[3]&31;
-  uint32_t d=be32(c+4),s=be32(c+8);int dt=0,st=0;
-  for(k=0;k<count;k++){if(!imm1&&d==tracked[k])dt=1;if(!imm2&&s==tracked[k])st=1;}
-  if(!imm1&&d==0x80000014u)dt=1;
-  if(!imm2&&s==0x80000014u)st=1;
-  if(grp==2&&sub==0&&setop==1&&!imm1&&!(d&0x80000000u)){        /* MOVE rD, x */
-   for(k=0;k<count;k++)if(tracked[k]==d)tracked[k]=tracked[--count]; /* overwritten */
-   if(st&&count<8)tracked[count++]=d;
-   continue;
-  }
-  if((grp==1&&compare>=1&&compare<=3)||(grp==2&&sub==0&&setop==9)){ /* BC EQ NE, AND */
-   if(dt&&imm2&&s>=1&&s<=7)mask|=s;
-   if(st&&imm1&&d>=1&&d<=7)mask|=d;
-  }
- }
- return mask;
-}
+#define hdmv_mask_of_object ub_bd_hdmv_mask
 /* Logs the PSR20 commands and returns the region mask (0 = no HDMV check). */
 static unsigned bd_movie_objects(const char *root){
  char path[512],text[80];size_t size,at;unsigned char *b;unsigned objects,o,logged=0,found=0,mask=0;
@@ -445,9 +428,10 @@ static unsigned bd_movie_objects(const char *root){
  if(!(b=load(path,&size))){ub_log(ID,UB_INFO,"cannot read %s",path);return 0;}
  if(size<50||memcmp(b,"MOBJ",4)){ub_log(ID,UB_INFO,"%s: not a MovieObject.bdmv",path);free(b);return 0;}
  objects=be16(b+48);at=50;
- for(o=0;o<objects&&at+4<=size;o++){
+ for(o=0;o<objects;o++){
+  if(at+4>size){mask=0;break;}
   unsigned cmds=be16(b+at+2),i;at+=4;
-  if(size-at<12*(size_t)cmds)break;
+  if(size-at<12*(size_t)cmds){mask=0;break;}
   for(i=0;i<cmds;i++){
    const unsigned char *c=b+at+12*i;
    if(!reads_psr20(c))continue;
@@ -669,6 +653,11 @@ static int watcher_stop(void){
 static void watcher_start(void){
  pid_t pid;sigset_t term,old;
  if(!watcher_stop())return;
+ /* Never race a pending/installed native launcher. Even unavailable assets
+  * use only the PSR20 fallback once a hook might exist. Source polling is
+  * retained solely when exact verification or installation failed, or the
+  * long-lived launcher process ended and its part tripped. */
+ if(bd_launch_part&&!bd_launch_part->tripped&&bd_launch_part->target.verified!=-1&&!bd_launch_part->target.failed)return;
  if(bd_region==BD_STOCK||!bdv_file.ok)return;
  sigemptyset(&term);sigaddset(&term,SIGTERM);
  if(sigprocmask(SIG_BLOCK,&term,&old))return;
@@ -684,6 +673,53 @@ static void watcher_start(void){
  sigprocmask(SIG_SETMASK,&old,0);
  watcher_pid=pid>0?pid:0;
  if(pid<0)ub_log(ID,UB_ALWAYS,"cannot start the BD region watcher; the BD region is set from the main loop only");
+}
+
+/* Publish native-loader assets only in RAM. Atomic policy replacement makes
+ * each future fork use one complete choice; a failed update removes stale
+ * policy rather than silently launching with the previous selection. */
+static int bd_launch_blob(const char *path,const void *data,size_t size){
+ char temp[256];size_t used=0;ssize_t n;int fd,rc=-1;
+ if(snprintf(temp,sizeof temp,"%s.%d.tmp",path,(int)getpid())>=(int)sizeof temp)return -1;
+ fd=open(temp,O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK,0600);if(fd<0)return -1;
+ while(used<size){n=write(fd,(const char *)data+used,size-used);if(n<0&&errno==EINTR)continue;if(n<=0)break;used+=(size_t)n;}
+ if(used==size&&!fchmod(fd,0600))rc=0;
+ if(close(fd))rc=-1;
+ if(!rc&&rename(temp,path))rc=-1;
+ if(rc)unlink(temp);
+ return rc;
+}
+static int bd_launch_publish(void){
+ struct ub_bd_launch_config c={UB_BD_LAUNCH_MAGIC,1,0,0};struct ub_stat st;char hash[65];
+ bd_launch_ready=0;
+ if(!bdv_file.ok)return -1;
+ if(mkdir(UB_BD_RAM_DIR,0700)&&errno!=EEXIST)goto fail;
+ if(ub_stat(UB_BD_RAM_DIR,&st)||!S_ISDIR(st.mode))goto fail;
+ if(ub_hash_file(UB_BD_PRELOAD,hash)||strcmp(hash,ub_asset_region_bd_preload_sha256)){
+  if(bd_launch_blob(UB_BD_PRELOAD,ub_asset_region_bd_preload,ub_asset_region_bd_preload_size)||
+     ub_hash_file(UB_BD_PRELOAD,hash)||strcmp(hash,ub_asset_region_bd_preload_sha256))goto fail;
+ }
+ c.policy=bd_region==BD_AUTO?-1:(int32_t)bd_region_value[bd_region];
+ if(bd_launch_blob(UB_BD_LAUNCH_CONFIG,&c,sizeof c))goto fail;
+ bd_launch_ready=1;return 0;
+ fail:
+ unlink(UB_BD_LAUNCH_CONFIG);
+ ub_log(ID,UB_ALWAYS,"BD pre-main policy/assets unavailable; native launch and best-effort fallback retained");return -1;
+}
+static void launch_step(struct ub_part *p,struct ub_target *t){
+ bd_launch_part=p;
+ if(!bd_launch_ready)return;
+ if(!watcher_stop())return;
+ if(bd_launch_armed)return;
+ bd_launch_armed=1;bd_launch_pid=t->pid;
+ ub_log(ID,UB_ALWAYS,"BD pre-main launcher armed in apl_medm PID%d; applies to subsequent BD starts, current playback unchanged",t->pid);
+}
+static void launch_prepare(struct ub_part *p,struct ub_target *t){
+ bd_launch_part=p;
+ /* prepare may defer installation through retry: the core checks this before
+  * publishing any branch. Reap the previous source writer first, including
+  * recovery from a failed/mismatched earlier media-manager process. */
+ if(!watcher_stop())t->retry=1;
 }
 
 /* The region value the BD in the drive sees, 0 if none or not known yet. */
@@ -751,7 +787,8 @@ static void menu_request(void){
   if(!watcher_stop()){
    snprintf(menu_message,sizeof menu_message,"busy stopping previous operation; try again");
   }else{
-   rc=ub_setting_set(ID,"bd_region",choice);if(bd_region!=before)watcher_start();
+   rc=ub_setting_set(ID,"bd_region",choice);
+   if(rc>=0&&(bd_region!=before||!bd_launch_ready)){bd_launch_publish();watcher_start();}
   if(rc<0)snprintf(menu_message,sizeof menu_message,"unknown choice %s",choice);
   else if(rc>0)snprintf(menu_message,sizeof menu_message,"not saved to USB (%s)",ub_stick_error(rc));
   else snprintf(menu_message,sizeof menu_message,"saved");
@@ -806,7 +843,19 @@ static void disc_root(const char *root,unsigned long long *seen){
 #define DISC_ROOTS 4
 static void disc_step(struct ub_part *p,struct ub_target *t){
  static char roots[DISC_ROOTS][200];static unsigned long long seen[DISC_ROOTS];static unsigned count,rescan;
+ static unsigned launch_retry;
  (void)p;(void)t;
+ if(bd_launch_armed&&bd_launch_part&&
+    (bd_launch_part->tripped||bd_launch_part->target.pid!=bd_launch_pid||!bd_launch_part->target.installed)){
+  bd_launch_armed=0;
+  ub_log(ID,UB_ALWAYS,"BD pre-main launcher no longer active; best-effort watcher restored");watcher_start();
+ }
+ if(!watcher_pid&&bd_launch_part&&
+    (bd_launch_part->tripped||bd_launch_part->target.failed||bd_launch_part->target.verified==-1))watcher_start();
+ if(!bd_launch_ready&&bdv_file.ok){
+  if(!launch_retry){bd_launch_publish();launch_retry=9;}
+  else launch_retry--;
+ }
  if(watcher_pid>0&&waitpid(watcher_pid,0,WNOHANG)==watcher_pid){
   watcher_pid=0;
   if(watcher_restarts++<5){ub_log(ID,UB_ALWAYS,"BD region watcher ended; started again");watcher_start();}
@@ -839,6 +888,7 @@ static const struct ub_option options[]={
 };
 
 static struct ub_part parts[]={
+ {"BD pre-main launcher","apl_medm", "c092d29f3a16df117ae36d9ac915dd2dad87d1ea1fb9ca29bfcc7bb48d9971a4",&ub_payload_region_launch,1,launch_prepare,launch_step,{0},0,0},
  {"bd","apl_bdv",BDV_SHA256,0,0,0,bd_step,{0},0,0},
  {"dvd","apl_meda_dvdv",DVDV_SHA256,0,0,0,dvd_step,{0},0,0},
  {"disc",0,0,0,0,0,disc_step,{0},0,0},
@@ -850,6 +900,7 @@ static struct ub_part parts[]={
 static void start(struct ub_module *m){
  char h[65];struct ub_stat st;
  (void)m;
+ bd_launch_part=&parts[0];
  unlink(UB_REGION_STATUS);unlink(UB_DVD_STATUS);
  if(bd_region==BD_AUTO&&!bd_auto){bd_region=BD_STOCK;ub_log(ID,UB_ALWAYS,"bd_region=auto needs bd_auto=1; the Blu-ray region is left to the player (stock)");}
  if(ub_hash_file(DVDV_PATH,h)||!ub_firmware_match(h,DVDV_SHA256)||ub_stat(DVDV_PATH,&st))ub_log(ID,UB_ALWAYS,DVDV_PATH " differs from 1.82 and 1.85 or is missing; DVD region guard off");
@@ -860,7 +911,7 @@ static void start(struct ub_module *m){
   if(!v||ub_stat(BDV_PATH,&st)){ub_log(ID,UB_ALWAYS,BDV_PATH " differs from 1.82 and 1.85 or is missing; BD region guard off");return;}
   if(v==185){bdv_region_addr=BDV_REGION_ADDR+BDV_185_SHIFT;bdv_psr20_addr=BDV_PSR20_ADDR+BDV_185_SHIFT;ub_log(ID,UB_ALWAYS,BDV_PATH " is the 1.85 build; BD region uses the +0xF0 data addresses (not confirmed on a player)");}
   REMEMBER(bdv_file,st);}
- watcher_start();
+ bd_launch_publish();watcher_start();
 }
 struct ub_module ub_module_region={
  ID,"Region: BD region chosen per disc (bd_region), DVD region (dvd_region, best effort), disc region diagnostics",

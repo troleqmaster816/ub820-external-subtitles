@@ -92,6 +92,9 @@ static void install(struct ub_part *p,struct ub_target *t){
  int rc;
  if(t->retry){t->retry--;return;}
  if(p->prepare)p->prepare(p,t);
+ /* Preparation may still be draining an earlier owner of this process.
+  * Never publish hooks until that handoff is complete. */
+ if(t->failed||t->retry)return;
  rc=ub_install_payload(t->pid,p->payload);
  if(rc==0){t->installed=1;ub_changed(p);return;}
  if(rc==-2){t->failed=1;return;}

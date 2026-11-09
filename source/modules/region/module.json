@@ -1,5 +1,6 @@
 {
   "id": "region",
   "order": 50,
-  "payloads": []
+  "assets": [{"name":"bd_preload", "source":"bd_preload.c"}],
+  "payloads": [{"name":"launch", "source":"launch.c", "manifest":"launch_hooks.json"}]
 }

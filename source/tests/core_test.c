@@ -26,16 +26,26 @@ static void step_a(struct ub_part *p,struct ub_target *t){steps[0]++;if(!t->stat
 static void step_b(struct ub_part *p,struct ub_target *t){steps[1]++;if(t->state[0]++==1)ub_changed(p);}
 static void step_c(struct ub_part *p,struct ub_target *t){(void)p;(void)t;steps[2]++;}
 static void step_d(struct ub_part *p,struct ub_target *t){steps[3]++;if(!t->state[0]++)ub_changed(p);}
+static void prepare_defer(struct ub_part *p,struct ub_target *t){
+ (void)p;if(!t->state[0]++)t->retry=1;else t->failed=1;
+}
+static void prepare_fail(struct ub_part *p,struct ub_target *t){(void)p;t->failed=1;}
+static const struct ub_payload_variant fixture_variant={.firmware="1.82",.sha256=self_sha};
+static const struct ub_payload fixture_payload={.process="fake_ui",.sha256=self_sha,.variants=&fixture_variant,.variant_count=1};
 
 static struct ub_part ext_parts[]={
  {"a","fake_ui",self_sha,0,1,0,step_a,{0},0,0},
  {"b","fake_ui",self_sha,0,1,0,step_b,{0},0,0},
  {"c","fake_ui","0000000000000000000000000000000000000000000000000000000000000000",0,1,0,step_c,{0},0,0},
 };
-static struct ub_part plain_parts[]={{"d","fake_ui",self_sha,0,0,0,step_d,{0},0,0}};
+static struct ub_part plain_parts[]={
+ {"d","fake_ui",self_sha,0,0,0,step_d,{0},0,0},
+ {"defer","fake_ui",self_sha,&fixture_payload,0,prepare_defer,0,{0},0,0},
+ {"refuse","fake_ui",self_sha,&fixture_payload,0,prepare_fail,0,{0},0,0},
+};
 static struct ub_module ext={"external_subtitles","test",1,ext_options,0,ext_parts,3,0};
 static struct ub_module logm={"log","test",1,log_options,0,0,0,0};
-static struct ub_module plain={"plain","test",1,0,0,plain_parts,1,0};
+static struct ub_module plain={"plain","test",1,0,0,plain_parts,3,0};
 static struct ub_module off={"other","test",1,0,0,0,0,0};
 struct ub_module *const ub_modules[]={&logm,&ext,&plain,&off,0};
 
@@ -63,6 +73,9 @@ int main(void){
  for(int i=0;i<3;i++)ub_core_tick();
  CHECK(steps[0]==3);CHECK(steps[1]==3);CHECK(steps[2]==0);CHECK(steps[3]==3);
  CHECK(ext_parts[2].target.verified==-1);
+ CHECK(plain_parts[1].target.state[0]==2&&plain_parts[1].target.failed);
+ CHECK(!plain_parts[1].target.attempts&&!plain_parts[1].target.installed);
+ CHECK(plain_parts[2].target.failed&&!plain_parts[2].target.attempts&&!plain_parts[2].target.installed);
  CHECK(ext_parts[0].target.changed&&ext_parts[1].target.changed>ext_parts[0].target.changed);
  CHECK(ub_settled("fake_ui"));
  stop(pid);ub_core_tick();

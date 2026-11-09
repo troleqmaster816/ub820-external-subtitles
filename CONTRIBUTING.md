@@ -99,6 +99,28 @@ struct ub_module ub_module_my_feature={
 
 The exported name must be `ub_module_<id>`.
 
+Before installation, `prepare(part, target)` may set `target->retry` to defer
+without consuming an injection attempt, or `target->failed` to refuse this
+process instance. The core checks both before installing any branch. This
+allows an earlier writer to finish and detach before ownership changes.
+
+## Native-loader assets
+
+An optional `assets` list in `module.json` builds DSOs for the native ELF
+loader, separately from the injected payloads:
+
+```json
+"assets": [{"name": "bd_preload", "source": "bd_preload.c"}]
+```
+
+The build embeds `ub_asset_<module>_<name>`, its `_size` and `_sha256` in
+`generated/assets.c` and declares them in `assets.h`. It links these DSOs
+against the firmware's libc with undefined symbols rejected and checks
+required symbol versions against that libc. Constructors are appropriate
+only for this normal loader path; injected payloads still have no constructors.
+The region module publishes its asset atomically in RAM and selects it only
+for the verified BD launch, preserving the environment of other processes.
+
 ## Payloads (code inside a player process)
 
 A payload is a small position-independent shared object with no

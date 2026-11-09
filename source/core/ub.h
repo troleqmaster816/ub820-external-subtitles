@@ -40,7 +40,9 @@ struct ub_part {
  const char *process,*sha256;      /* NULL process: step() runs every second */
  const struct ub_payload *payload; /* optional, installed before step() */
  int guarded;                      /* may be switched off by the circuit breaker */
- void (*prepare)(struct ub_part *,struct ub_target *); /* before each install attempt */
+ /* Before install: setting target->retry defers without consuming an install
+  * attempt; setting target->failed refuses installation for this instance. */
+ void (*prepare)(struct ub_part *,struct ub_target *);
  void (*step)(struct ub_part *,struct ub_target *);
  /* core-owned */
  struct ub_target target;

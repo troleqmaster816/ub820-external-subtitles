@@ -15,7 +15,8 @@ def sh(cmd):
  return r.returncode,r.stdout+r.stderr
 def build(name,sources,defines):
  flags='-std=gnu11 -Wall -Wextra -Werror -Wno-unused-function -DUB_HOST_TEST -pthread'
- if name in ('subtitle_startup_test','ssh_runtime_test'):flags+=' -ffunction-sections -fdata-sections -Wl,--gc-sections'
+ if name in ('subtitle_startup_test','ssh_runtime_test','settings_tile_test'):flags+=' -ffunction-sections -fdata-sections -Wl,--gc-sections'
+ if name=='settings_tile_test':flags+=' -no-pie'
  inc=f'-I{shlex.quote(linux(ROOT/"core"))} -I{shlex.quote(linux(ROOT/"generated"))}'
  defs=' '.join(f"'-D{k}=\"{v}\"'" for k,v in defines.items())
  srcs=' '.join(shlex.quote(linux(ROOT/s)) for s in sources)
@@ -56,7 +57,13 @@ def sys_check():
 
 def main():
  ok=True
+ prefix=subprocess.run([sys.executable,str(ROOT/'tests'/'hook_codegen_test.py')],capture_output=True,text=True)
+ print('hook_codegen_test '+('passed (8 cases)' if not prefix.returncode else 'FAILED\n'+prefix.stdout+prefix.stderr))
+ ok&=not prefix.returncode
  tests=[
+  ('settings_tile_test',['tests/settings_tile_test.c'],{}),
+  ('bd_launch_test',['tests/bd_launch_test.c'],{}),
+  ('bd_preload_test',['tests/bd_preload_test.c'],{}),
   ('subtitle_ui_wait_test',['tests/subtitle_ui_wait_test.c'],{}),
   ('ssh_runtime_test',['tests/ssh_runtime_test.c','core/sys.c'],{}),
   ('subtitle_startup_test',['tests/subtitle_startup_test.c'],{}),
