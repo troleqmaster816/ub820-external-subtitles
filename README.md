@@ -200,6 +200,12 @@ hash), and the player has no firewall, so anyone on your network can reach
 the port. The server runs only after you start it and is gone after a power
 cycle.
 
+The source build provides a RAM home, BusyBox ash and tools, SFTP and SCP.
+See the [SSH runtime documentation](source/tools/ssh/README.md) for paths,
+script handling and reproducible builds. On `codex/stability-fixes`, the
+combined candidate is in `source/build/engage`; the prebuilt
+`USB-CONTENTS/sub/engage` remains the previous version pending hardware tests.
+
 ## Firmware support
 
 | Firmware | Status |
@@ -381,6 +387,9 @@ build are in this repository, so it can be rebuilt and relinked. It embeds
 the prebuilt [Dropbear](https://matt.ucc.asn.au/dropbear/) binaries, which
 are statically linked with [musl](https://musl.libc.org/); their license
 texts are in [`source/tools/ssh/licenses/`](source/tools/ssh/licenses).
+The SSH runtime also bundles BusyBox (GPL-2.0) and OpenSSH-derived SCP/SFTP
+components (BSD-style licenses). Matching BusyBox sources, config and patches
+are included under [`source/tools/ssh/`](source/tools/ssh/README.md).
 
 This project is not affiliated with Panasonic. It modifies running processes
 on your own device and is provided as is, with no warranty.

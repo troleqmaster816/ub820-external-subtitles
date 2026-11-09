@@ -2,16 +2,22 @@
 """Apply the UB820 patches and localoptions.h to a dropbear-2022.83 tree.
 Usage: patch_dropbear.py <dropbear_dir>"""
 import sys, os
+from pathlib import Path
 
 d = sys.argv[1]
 
-LOCALOPTIONS = r'''/* UB820 QoL: on-demand diagnostic SSH. The user home (/root) is read-only and
- * there is no /etc/shadow, so the helper writes these two files and the auth
- * code below reads them instead of ~/.ssh and the shadow password. */
+LOCALOPTIONS = r'''/* UB820 QoL: on-demand diagnostic SSH. The helper prepares this private
+ * RAM environment; no /etc/passwd, system shell, profile or firmware file changes.
+ * Authentication still uses the owner's key or password hash. */
 #define UB820_AUTHKEYS_PATH "/tmp/.ub820_ssh/authorized_keys"
 #define UB820_PWHASH_PATH   "/tmp/.ub820_ssh/pwhash"
+#define UB820_HOME_PATH    "/tmp/.ub820_ssh/home"
+#define UB820_SHELL_PATH   "/tmp/.ub820_ssh/bin/sh"
+#define DEFAULT_ROOT_PATH "/tmp/.ub820_ssh/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/dtvrec/bin"
+#define SFTPSERVER_PATH "/tmp/.ub820_ssh/bin/sftp-server"
+#define DROPBEAR_PATH_SSH_PROGRAM "/tmp/.ub820_ssh/bin/ssh"
 
-/* Server only; keep it small but compatible with current clients. */
+/* Server and an ordinary outbound client; keep authentication stock. */
 #define DROPBEAR_SVR_PASSWORD_AUTH 1
 #define DROPBEAR_SVR_PUBKEY_AUTH 1
 #define DROPBEAR_SVR_MULTIUSER 1
@@ -36,6 +42,43 @@ def patch(path, old, new):
 
 open(os.path.join(d, "localoptions.h"), "w", encoding="utf-8", newline="").write(LOCALOPTIONS)
 print("wrote localoptions.h")
+
+# --- session identity: root's HOME and shell live in RAM, not in /etc ---
+# Override only the authenticated account's copied passwd fields. UID/GID,
+# password, root-login policy, key options and command execution stay stock.
+# Do this before shell validation so authentication and session startup agree.
+patch("svr-auth.c",
+      "\t\tfill_passwd(username);\n",
+      "\t\tfill_passwd(username);\n"
+      "\t\tif (ses.authstate.pw_name && ses.authstate.pw_uid == 0 &&\n"
+      "\t\t\t\tstrcmp(ses.authstate.pw_name, \"root\") == 0) {\n"
+      "\t\t\tm_free(ses.authstate.pw_dir);\n"
+      "\t\t\tm_free(ses.authstate.pw_shell);\n"
+      "\t\t\tses.authstate.pw_dir = m_strdup(UB820_HOME_PATH);\n"
+      "\t\t\tses.authstate.pw_shell = m_strdup(UB820_SHELL_PATH);\n"
+      "\t\t}\n")
+# The private shell cannot appear in the immutable /etc/shells. Recognize only
+# this exact managed root shell, and require that the helper prepared it.
+patch("svr-auth.c",
+      "\tsetusershell();\n\twhile ((listshell = getusershell()) != NULL) {",
+      "\tsetusershell();\n"
+      "\tif (ses.authstate.pw_uid == 0 &&\n"
+      "\t\t\tstrcmp(ses.authstate.pw_name, \"root\") == 0 &&\n"
+      "\t\t\tstrcmp(usershell, UB820_SHELL_PATH) == 0 &&\n"
+      "\t\t\taccess(usershell, X_OK) == 0) {\n"
+      "\t\tgoto goodshell;\n"
+      "\t}\n"
+      "\twhile ((listshell = getusershell()) != NULL) {")
+
+# An unknown host with no controlling TTY must fail cleanly when stdin closes,
+# not spin forever trying to flush a newline that can never arrive. A lone
+# newline is itself a rejected answer; do not consume another input line.
+patch("cli-kex.c",
+      "\t\tresponse = getc(stdin);\n\t\t/* flush stdin buffer */\n"
+      "\t\twhile ((getchar()) != '\\n');",
+      "\t\tint discard;\n\t\tresponse = getc(stdin);\n"
+      "\t\tif (response != EOF && response != '\\n')\n"
+      "\t\t\twhile ((discard = getchar()) != '\\n' && discard != EOF) {}")
 
 # --- password: read the helper's hash file instead of /etc/shadow ---
 pw = "svr-authpasswd.c"
@@ -64,7 +107,7 @@ patch(pw,
       "\t\tif (passwdcrypt == NULL) passwdcrypt = ses.authstate.pw_passwd;\n"
       "\t\ttestcrypt = crypt(password, passwdcrypt);")
 
-# --- pubkey: fixed authorized_keys path (home dir is read-only) ---
+# --- pubkey: fixed private authorization file managed by the helper ---
 pk = "svr-authpubkey.c"
 old = (
     '\t/* check file permissions, also whether file exists */\n'
@@ -86,7 +129,7 @@ old = (
     '\t\t}\n'
     '\t}')
 new = (
-    '\t/* UB820: /root is read-only on this device, so authorized_keys is kept at\n'
+    '\t/* UB820: the helper owns this private RAM authorization file;\n'
     '\t * a fixed path written by the helper; the home/.ssh checks do not apply. */\n'
     '\t(void)len; (void)checkpubkeyperms;\n'
     '\tfilename = m_strdup(UB820_AUTHKEYS_PATH);\n'
@@ -96,30 +139,16 @@ new = (
     '\t}')
 patch(pk, old, new)
 
-# --- time: the player's Linux 4.4 has no clock_gettime64 ---
-# musl 1.2 tries syscall 403 (clock_gettime64) first on every call and falls
-# back on ENOSYS; the 4.4 kernel logs each failure with a register dump.
-# These take the place of musl's own __clock_gettime (used inside musl:
-# time(), timed waits) and __clock_gettime64 (what clock_gettime and
-# gettimeofday resolve to), so musl's clock_gettime.o is not linked at all.
-TIME32 = r'''/* UB820: clock_gettime through the 32-bit syscall that Linux 4.4 has
- * (included at the end of dbutil.c, linked into dropbear and dropbearkey).
- * time_t stays 64-bit in musl; the kernel value is 32-bit until 2038. */
-#include <time.h>
-#include <unistd.h>
-#define UB820_NR_CLOCK_GETTIME32 263
-int __clock_gettime(clockid_t clk, struct timespec *ts) {
-	long t[2];
-	if (syscall(UB820_NR_CLOCK_GETTIME32, clk, t)) return -1;
-	ts->tv_sec = t[0];
-	ts->tv_nsec = t[1];
-	return 0;
-}
-int __clock_gettime64(clockid_t clk, struct timespec *ts) __attribute__((alias("__clock_gettime")));
-'''
-open(os.path.join(d, "ub820_time32.c"), "w", encoding="utf-8", newline="").write(TIME32)
-print("wrote ub820_time32.c")
-with open(os.path.join(d, "dbutil.c"), "a", encoding="utf-8", newline="") as f:
-    f.write('\n#include "ub820_time32.c"\n')
-print("patched dbutil.c")
+# --- old-kernel ABI: one shared compatibility object in every tool ---
+# Modern musl normally probes statx/time64 first. The player's kernel logs each
+# missing syscall, so use the explicit Linux 4.4 ABI without repeated probes.
+compat = Path(__file__).with_name("linux44_compat.c")
+Path(d, "ub820_linux44_compat.c").write_bytes(compat.read_bytes())
+Path(d, "ub820_ssh_shell_spawn.c").write_bytes(Path(__file__).with_name("ssh_shell_spawn.c").read_bytes())
+patch("Makefile.in", "COMMONOBJS=dbutil.o buffer.o dbhelpers.o",
+      "COMMONOBJS=ub820_linux44_compat.o ub820_ssh_shell_spawn.o dbutil.o buffer.o dbhelpers.o")
+patch("Makefile.in", "SCPOBJS=scp.o progressmeter.o atomicio.o scpmisc.o compat.o",
+      "SCPOBJS=ub820_linux44_compat.o ub820_ssh_shell_spawn.o scp.o progressmeter.o atomicio.o scpmisc.o compat.o")
+patch("Makefile.in", "LDFLAGS=@LDFLAGS@", "LDFLAGS=@LDFLAGS@ -Wl,--wrap=posix_spawn")
+print("wrote shared Linux 4.4 and implicit-shell objects for each SSH tool")
 print("OK")

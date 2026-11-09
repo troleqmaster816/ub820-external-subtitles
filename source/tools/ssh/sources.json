@@ -1,0 +1,22 @@
+{
+  "toolchain": {
+    "url": "https://musl.cc/arm-linux-musleabihf-cross.tgz",
+    "sha512": "fe006d9176cedb453fd817f892f61f6bac273c15879f9c537e22c75b8da4995991211f6d23b0c0c97a87121fe55cf9f9f29cc3d1cf9376804535f07b6c017729"
+  },
+  "dropbear": {
+    "version": "2022.83",
+    "url": "https://github.com/mkj/dropbear/archive/refs/tags/DROPBEAR_2022.83.tar.gz",
+    "sha256": "e02c5c36eb53bfcd3f417c6e40703a50ec790a1a772269ea156a2ccef14998d2"
+  },
+  "busybox": {
+    "version": "1.37.0",
+    "url": "https://busybox.net/downloads/busybox-1.37.0.tar.bz2",
+    "archive": "src/busybox-1.37.0.tar.bz2",
+    "sha256": "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
+  },
+  "sftp": {
+    "url": "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-10.6p2.tar.gz",
+    "sha256": "9ae44872090cf2f06b3cf9ff147e7f16f309671340763ed2f99248398ae29d5b",
+    "verified_against": "https://www.openssh.org/txt/release-10.6p2"
+  }
+}

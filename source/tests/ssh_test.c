@@ -98,14 +98,23 @@ static void test_clean_exec(void){
   /* what a loader might leave behind */
   sigemptyset(&usr1);sigaddset(&usr1,SIGUSR1);sigaddset(&usr1,SIGCHLD);sigprocmask(SIG_BLOCK,&usr1,0);
   signal(SIGINT,SIG_IGN);signal(SIGCHLD,SIG_IGN);
+  umask(000);
+  /* Stress cleanup beyond the old 256-descriptor collection limit. */
+  for(int i=0;i<600;i++)if(open("/dev/null",O_RDONLY)<0)_exit(100);
   dup2(open("/dev/null",O_RDONLY),9);
-  char *argv[]={"/bin/sh","-c","grep -E 'SigBlk|SigIgn' /proc/self/status > " UB_LOG_FILE ".clean; ls /proc/$$/fd >> " UB_LOG_FILE ".clean",0};
+  char *argv[]={"/bin/sh","-c","grep -E 'SigBlk|SigIgn' /proc/self/status > " UB_LOG_FILE ".clean; ls /proc/$$/fd >> " UB_LOG_FILE ".clean; umask >> " UB_LOG_FILE ".clean",0};
   clean_exec(argv,0);
  }
  waitpid(c,&status,0);CHECK(WIFEXITED(status));
  {int fd=open(out,O_RDONLY);ssize_t n=fd>=0?read(fd,text,sizeof text-1):0;if(fd>=0)close(fd);text[n>0?n:0]=0;}
  CHECK(strstr(text,"SigBlk:\t0000000000000000"));CHECK(strstr(text,"SigIgn:\t0000000000000000"));
  CHECK(strstr(text,"\n0\n1\n")); /* 10 is the shell saving stdout for >> */CHECK(!strstr(text,"\n9\n"));
+ CHECK(strstr(text,"\n0022\n"));
+ for(char *line=text;line&&*line;){
+  char *end;long fd=strtol(line,&end,10);
+  if(end!=line&&(*end=='\n'||!*end)&&strcmp(line,"0022\n"))CHECK(fd<20);
+  line=strchr(line,'\n');if(line)line++;
+ }
 }
 static void test_dropbear_pid(void){
  char msg[200];pid_t c;
@@ -132,6 +141,15 @@ static void test_dropbear_pid(void){
  stop_ssh(msg,sizeof msg);CHECK(!strcmp(msg,"not running"));
  unlink(DROPBEAR_BIN);
 }
+static void test_lost_child_ownership(void){
+ struct sigaction ignored,old;unsigned long long started;char *argv[]={"/bin/true",0};
+ memset(&ignored,0,sizeof ignored);ignored.sa_handler=SIG_IGN;sigemptyset(&ignored.sa_mask);
+ CHECK(!sigaction(SIGCHLD,&ignored,&old));started=ub_now_ms();
+ CHECK(run(argv,2)==-1);CHECK(ub_now_ms()-started<1000);
+ CHECK(!sigaction(SIGCHLD,&old,0));
+ /* A stale non-child PID is never a guard the helper owns or may signal. */
+ guard_pid=getpid();guard_stop();CHECK(!guard_pid);CHECK(!kill(getpid(),0));
+}
 
 int main(void){
  int f=0;
@@ -143,6 +161,7 @@ int main(void){
  test_guard();
  test_clean_exec();
  test_dropbear_pid();
+ test_lost_child_ownership();
  printf("%s (%d failures)\n",failures?"ssh_test FAILED":"ssh_test passed",failures);
  return failures!=0;
 }

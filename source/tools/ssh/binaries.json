@@ -1,0 +1,26 @@
+{
+  "dropbear": {
+    "bytes": 248096,
+    "sha256": "384c71ffefdf11f7af0436f821f6fe9de73b582261d87490fa0a37eb75a2b7f9"
+  },
+  "dropbearkey": {
+    "bytes": 145152,
+    "sha256": "0d4a23da37a73a66fcfba6d1ef6642e556e0492bab6aefa6706d5321c12d2223"
+  },
+  "busybox": {
+    "bytes": 980796,
+    "sha256": "002b0a0b01f8f92ad03eee0e46e888de7a4f42ad2962a7f5cfb75a22e6802112"
+  },
+  "sftp-server": {
+    "bytes": 103920,
+    "sha256": "77d348cbb269a47fc70fac60f307d67098c5de0566e88a68d7e1e59fbb310609"
+  },
+  "scp": {
+    "bytes": 62912,
+    "sha256": "2ebc29e4e9473c92dbb81a28cbf497b2508ce1a0376a1930372532dc39dcd8b8"
+  },
+  "dbclient": {
+    "bytes": 199088,
+    "sha256": "373f3876b6a43d97ed703699e943e27667ad1346c88096b1f91459f9dc6ff240"
+  }
+}
