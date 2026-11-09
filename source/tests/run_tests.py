@@ -4,7 +4,7 @@ Optional: UB820_FIRMWARE_DIR=<v182>/dtvrec/bin also runs the English-text page
 test against the real apl_lang.dat (<v182>/dtvrec/data/lang/apl_lang.dat).
 """
 from pathlib import Path
-import os,re,struct,subprocess,sys
+import os,re,struct,subprocess,sys,shlex
 ROOT=Path(__file__).resolve().parent.parent
 TMP='/tmp/ub820-tests'
 
@@ -14,10 +14,11 @@ def sh(cmd):
  r=subprocess.run(['wsl.exe','-d','Ubuntu','--','bash','-lc',cmd],capture_output=True,text=True,encoding='utf-8',errors='replace')
  return r.returncode,r.stdout+r.stderr
 def build(name,sources,defines):
- flags='-std=gnu11 -Wall -Wextra -Werror -Wno-unused-function -DUB_HOST_TEST'
- inc=f'-I{linux(ROOT/"core")} -I{linux(ROOT/"generated")}'
+ flags='-std=gnu11 -Wall -Wextra -Werror -Wno-unused-function -DUB_HOST_TEST -pthread'
+ if name=='subtitle_startup_test':flags+=' -ffunction-sections -fdata-sections -Wl,--gc-sections'
+ inc=f'-I{shlex.quote(linux(ROOT/"core"))} -I{shlex.quote(linux(ROOT/"generated"))}'
  defs=' '.join(f"'-D{k}=\"{v}\"'" for k,v in defines.items())
- srcs=' '.join(linux(ROOT/s) for s in sources)
+ srcs=' '.join(shlex.quote(linux(ROOT/s)) for s in sources)
  return sh(f'mkdir -p {TMP} && gcc {flags} {inc} {defs} {srcs} -o {TMP}/{name}')
 
 def decode_lang(dat,pages):
@@ -40,9 +41,9 @@ def sys_check():
  """The ARM helper code under qemu-arm -strace: no syscall Linux 4.4 lacks."""
  srcs=[ROOT/'tests'/'sys_check.c',*sorted((ROOT/'core').glob('*.c')),*sorted((ROOT/'modules').glob('*/module.c')),*sorted((ROOT/'generated').glob('*.c'))]
  flags='-std=gnu11 -static -mthumb -march=armv7-a -mfpu=neon -mfloat-abi=hard -Os -Wall -Wextra -Werror -Wno-unused-function -fno-strict-aliasing -DUB_HOST_TEST'
- inc=f'-I{linux(ROOT/"core")} -I{linux(ROOT/"generated")}'
+ inc=f'-I{shlex.quote(linux(ROOT/"core"))} -I{shlex.quote(linux(ROOT/"generated"))}'
  defs=f"'-DUB_CONFIG_DIR=\"{TMP}/syscfg\"' '-DUB_LOG_FILE=\"{TMP}/sys.log\"'"
- rc,out=sh(f'mkdir -p {TMP}/syscfg && arm-linux-gnueabihf-gcc {flags} {inc} {defs} {" ".join(linux(s) for s in srcs)} -o {TMP}/sys_check')
+ rc,out=sh(f'mkdir -p {TMP}/syscfg && arm-linux-gnueabihf-gcc {flags} {inc} {defs} {" ".join(shlex.quote(linux(s)) for s in srcs)} -o {TMP}/sys_check')
  if rc:print('sys_check BUILD FAILED'+chr(10)+out);return False
  # the helper sends stderr, and with it the trace, to its log
  rc,out=sh(f'cd {TMP} && rm -f sys.log && qemu-arm -strace ./sys_check 2>&1; s=$?; cat sys.log; exit $s')
@@ -56,6 +57,14 @@ def sys_check():
 def main():
  ok=True
  tests=[
+  ('subtitle_startup_test',['tests/subtitle_startup_test.c'],{}),
+  ('native_text_test',['tests/native_text_test.c'],{}),
+  ('native_text_supervisor_test',['tests/native_text_supervisor_test.c'],{}),
+  ('injector_test',['tests/injector_test.c','core/sys.c','core/log.c'],{'UB_LOG_FILE':TMP+'/injector.log'}),
+  ('action_ipc_test',['tests/action_ipc_test.c','core/sys.c'],{}),
+  ('keys_delivery_test',['tests/keys_delivery_test.c'],{}),
+  ('subtitle_backend_test',['tests/subtitle_backend_test.c'],{}),
+  ('subtitle_style_test',['tests/subtitle_style_test.c'],{}),
   ('core_test',['tests/core_test.c','core/core.c','core/config.c','core/log.c','core/sys.c','core/procmem.c','core/injector.c'],
    {'UB_CONFIG_DIR':TMP+'/cfg','UB_LOG_FILE':TMP+'/core.log'}),
   ('region_test',['tests/region_test.c','core/log.c','core/sys.c','core/procmem.c','core/injector.c','core/config.c'],
@@ -74,7 +83,7 @@ def main():
  for name,sources,defines in tests:
   rc,out=build(name,sources,defines)
   if rc:print(name,'BUILD FAILED\n'+out);ok=False;continue
-  rc,out=sh(f'{TMP}/{name}');print(out.strip().splitlines()[-1] if out.strip() else name+': no output')
+  rc,out=sh(f'{TMP}/{name}');summary=[line for line in out.splitlines() if line.startswith(name+' passed') or line.startswith(name+' FAILED')];print(summary[-1] if summary else (out.strip().splitlines()[-1] if out.strip() else name+': no output'))
   if rc:print(out);ok=False
  fw=os.environ.get('UB820_FIRMWARE_DIR')
  dat=Path(fw).parent/'data'/'lang'/'apl_lang.dat' if fw else None

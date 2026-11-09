@@ -35,14 +35,29 @@ const char *ub_install_stage(void);
  * syscall rc. See `engage --probe`. */
 int ub_probe(int pid);
 /* 0 replaced (or already replaced), 1 current bytes match neither, negative:
- * the step that failed; the target is unchanged unless the swap succeeded. */
+ * the step that failed. Failed swaps restore anonymous original bytes and
+ * protection, or quarantine the process if recovery cannot be verified. */
 enum { UB_OVERLAY_ARGS=-1, UB_OVERLAY_STOP=-2, UB_OVERLAY_READ=-3, UB_OVERLAY_MAP=-4,
-       UB_OVERLAY_FILL=-5, UB_OVERLAY_SEAL=-6, UB_OVERLAY_SWAP=-7, UB_OVERLAY_VERIFY=-8 };
+       UB_OVERLAY_FILL=-5, UB_OVERLAY_SEAL=-6, UB_OVERLAY_SWAP=-7, UB_OVERLAY_VERIFY=-8, UB_OVERLAY_RECOVER=-9 };
 int ub_overlay_pages(int pid,uint32_t address,const unsigned char *expected,const unsigned char *replacement,uint32_t length);
 /* Stops every thread of pid (ptrace), calls fn(pid, mem, arg) with mem an
  * open /proc/<pid>/mem, and lets the process go on. Returns fn's result, or
- * -1 if the process could not be stopped (fn is then not called). */
+ * -1 if the process could not be stopped (fn is then not called). A callback
+ * result of -2 means its rollback failed: quarantine rather than resume. */
 int ub_while_stopped(int pid,int (*fn)(int pid,int mem,void *arg),void *arg);
+/* Complete deferred, nonblocking detach after a thread took longer than the
+ * pause deadline (e.g. uninterruptible I/O). Call once per supervisor tick. */
+void ub_injector_poll(void);
+struct ub_code_patch {
+ uint32_t address,length;
+ const unsigned char *expected,*alternate,*replacement;
+};
+/* One stopped transaction: preflight every executable mapping and byte range,
+ * reject every thread PC within a range, then write and verify all sites.
+ * replacement is also an accepted input, alternate may be NULL. 0 success,
+ * 1 unknown bytes, -1 safely aborted/retry, -2 rollback failed/quarantined. */
+int ub_patch_code(int pid,const struct ub_code_patch *patches,unsigned count);
+
 const char *ub_overlay_error(int rc);
 int ub_hash_file(const char *path,char result[65]);
 /* Whether a file whose SHA-256 is have may stand in for the 1.82 file

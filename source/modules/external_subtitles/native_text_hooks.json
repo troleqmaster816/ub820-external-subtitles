@@ -1,0 +1,29 @@
+{
+  "program": "apl_dispsrv",
+  "firmware": "1.82",
+  "sha256": "3ca762ac044acba426c45be240075f2644fc9f645a0fbbb1aabc4c8656dcec1d",
+  "initialization": "Natural native OPTIONS record builder; CTK callback is registered on the UI thread, never from ptrace bootstrap. Supervisor verifies the exact CTK/mulang/language hashes and mapped bases first.",
+  "hooks": [
+    {
+      "target": "0x1974c0",
+      "replacement": "ub_hook_native_rows",
+      "original_pointer": "ub_original_native_rows",
+      "prototype": "void fn(void)",
+      "note": "Native row-mask builder runs before native OPTIONS widgets. First four bytes push {r4,r5,r6,lr}; movs r0,#0x27 match in 1.82/1.85. Does not overlap ui/menu hooks."
+    }
+  ],
+  "bindings": [
+    {
+      "symbol": "ub_gettext_slot",
+      "value": "0x29b139c8",
+      "kind": "data_pointer",
+      "note": "CTK callback slot; supervisor requires libctk mapped at 0x29ad0000 and exact known hash. Unknown installed callbacks are left alone."
+    },
+    {
+      "symbol": "ub_stock_gettext_callback",
+      "value": "0x16d74",
+      "kind": "arm_function_pointer",
+      "note": "Stock canonical dgettext_ppro2 PLT address loaded as callback by FUN_00024ec4 in both exact executable versions. Wrapper preserves this original callback rather than assuming the slot contains the exported libmulang address."
+    }
+  ]
+}

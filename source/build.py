@@ -52,8 +52,11 @@ def build_helper():
  run(args,'helper-compile.log')
  smoke=run(['qemu-arm',linux(out),'--selftest'],'helper-selftest.log')
  listing=run(['qemu-arm',linux(out),'--modules'],'helper-modules.log')
- digest=run(['qemu-arm',linux(out),'--hash',linux(USB/'LOADER.MKV')],'helper-hash-test.log').strip()
- assert digest==hashlib.sha256((USB/'LOADER.MKV').read_bytes()).hexdigest()
+ # Exercise file hashing using a generated text fixture, independent of media.
+ fixture=BUILD/'hash-selftest.txt'
+ fixture.write_bytes(b'UB820 helper SHA-256 self-test\n')
+ digest=run(['qemu-arm',linux(out),'--hash',linux(fixture)],'helper-hash-test.log').strip()
+ assert digest==hashlib.sha256(fixture.read_bytes()).hexdigest()
  return out,smoke.strip(),listing
 
 def build_tool():

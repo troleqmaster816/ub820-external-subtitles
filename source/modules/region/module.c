@@ -50,6 +50,8 @@
 #include "payloads.h"
 #include "helper_menu.h"
 #include "storage.h"
+#include "action_ipc.h"
+#include <errno.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -148,6 +150,8 @@ static void dvd_describe(char *out,size_t size);
  * place as soon as the verified libnavi_api.so is mapped, before the first
  * sector read if it can; the main loop (dvd_step) keeps it afterwards. */
 static pid_t dvd_guard_pid;
+static volatile sig_atomic_t dvd_guard_cancel;
+static void dvd_guard_cancelled(int sig){(void)sig;dvd_guard_cancel=1;}
 static struct { unsigned long long dev,ino; long long size,mtime; int ok; } dvdv_file,navi_file;
 static int same_file(const char *path,unsigned long long dev,unsigned long long ino,long long size,long long mtime){
  struct ub_stat st;return !ub_stat(path,&st)&&st.dev==dev&&st.ino==ino&&st.size==size&&st.mtime==mtime;
@@ -169,7 +173,7 @@ static int find_dvdv(void){
 static void dvd_guard_run(void){
  struct timespec start,seen;int pid=0;char path[600],text[64];uint32_t base;
  ub_now(&start);
- while(since_ms(&start)<GUARD_SECONDS*1000){
+ while(!dvd_guard_cancel&&since_ms(&start)<GUARD_SECONDS*1000){
   if(!pid){if((pid=find_dvdv()))ub_now(&seen);else{ub_sleep_ms(GUARD_POLL_MS);continue;}}
   if(kill(pid,0))break;
   base=ub_map_base(pid,"/libnavi_api.so",path,sizeof path);
@@ -180,17 +184,41 @@ static void dvd_guard_run(void){
  if(!pid)ub_log(ID,UB_INFO,"DVD region guard: no apl_meda_dvdv appeared within %d s",GUARD_SECONDS);
  _exit(0);
 }
-static void dvd_guard_stop(void){
- if(dvd_guard_pid>0){kill(dvd_guard_pid,SIGKILL);waitpid(dvd_guard_pid,0,0);}
- dvd_guard_pid=0;
+/* A guard may own a stopped patch transaction. Never SIGKILL it midway:
+ * request cancellation, then let it restore/detach before handing ownership
+ * to the main loop or publishing a new configuration. */
+static int dvd_guard_stop(void){
+ if(dvd_guard_pid>0){
+  unsigned long long until=ub_now_ms()+1000;int status;pid_t r;
+  do{r=waitpid(dvd_guard_pid,&status,WNOHANG);}while(r<0&&errno==EINTR);
+  if(!r){
+   kill(dvd_guard_pid,SIGTERM);
+   do{
+    r=waitpid(dvd_guard_pid,&status,WNOHANG);
+    if(r>0||(r<0&&errno==ECHILD))break;
+    if(r<0&&errno!=EINTR)return 0;
+    if(ub_now_ms()>=until)return 0; /* retain ownership and retry next tick */
+    ub_sleep_ms(1);
+   }while(1);
+  }else if(r<0&&errno!=ECHILD)return 0;
+ }
+ dvd_guard_pid=0;return 1;
 }
 static void dvd_guard_start(void){
- pid_t pid;
- dvd_guard_stop();
+ pid_t pid;sigset_t term,old;
+ if(!dvd_guard_stop())return;
  if(dvd_region==DVD_STOCK)return;
  if(!dvdv_file.ok||!navi_file.ok){ub_log(ID,UB_ALWAYS,"apl_meda_dvdv or libnavi_api.so not verified; the DVD region is set from the main loop only (up to 1 s late)");return;}
+ sigemptyset(&term);sigaddset(&term,SIGTERM);
+ if(sigprocmask(SIG_BLOCK,&term,&old))return;
  pid=fork();
- if(!pid)dvd_guard_run();
+ if(!pid){
+  struct sigaction action;memset(&action,0,sizeof action);action.sa_handler=dvd_guard_cancelled;sigemptyset(&action.sa_mask);
+  dvd_guard_cancel=0;sigaction(SIGTERM,&action,0);
+  sigdelset(&old,SIGTERM);sigprocmask(SIG_SETMASK,&old,0);
+  dvd_guard_run();
+ }
+ sigprocmask(SIG_SETMASK,&old,0);
  dvd_guard_pid=pid>0?pid:0;
 }
 static void decide_set(char mode,unsigned value,const char *why){
@@ -247,32 +275,36 @@ static unsigned dvd_mask(void){
  }
  return 0;
 }
-/* Puts n code bytes at address in pid to want (or back to stock): 0 done,
- * 1 changed now, -1 the bytes are neither (not touched). ours() accepts a
- * patched variant left by an earlier choice. */
-static int code_set(int pid,uint32_t address,const unsigned char *stock,const unsigned char *want,size_t n,int (*ours)(const unsigned char *)){
- unsigned char now[4];
- if(n>sizeof now||ub_mem_read(pid,address,now,n))return -1;
- if(!memcmp(now,want,n))return 0;
- if(memcmp(now,stock,n)&&!(ours&&ours(now)))return -1;
- return ub_mem_write(pid,address,want,n)?-1:1;
-}
-static int source_ours(const unsigned char *b){return b[1]==0x20&&b[2]==0x70&&b[3]==0x47;}
-static int gate_ours(const unsigned char *b){return !memcmp(b,gate_free,2);}
-/* The DVD region choice in one apl_meda_dvdv whose libnavi_api.so (verified)
- * is mapped at base: the gate, the region source, and SPRM20 for the disc
- * already running. Returns 1 if anything changed, -1 on unexpected code. */
+static int source_ours(const unsigned char *b){return b[0]&&!(b[0]&(b[0]-1))&&b[1]==0x20&&b[2]==0x70&&b[3]==0x47;}
+/* One stopped transaction validates BOTH sites before modifying either.
+ * -1 unknown bytes (permanent), -2 safely deferred, -3 quarantined. */
 static int dvd_apply(int pid,uint32_t base,int quiet){
- unsigned mask=dvd_mask();unsigned char source[4];uint16_t sprm,want;int g,s,changed=0;
- g=code_set(pid,base+(NAVI_GATE-NAVI_LINK_BASE),gate_stock,dvd_region==DVD_STOCK?gate_stock:gate_free,2,gate_ours);
+ unsigned mask=dvd_mask();unsigned char source[4],old_gate[2],old_source[4];uint16_t sprm,want;int rc,changed,source_changed;
+ uint32_t gate=base+(NAVI_GATE-NAVI_LINK_BASE),src=base+(NAVI_REGION_SOURCE-NAVI_LINK_BASE);
+ const unsigned char *gate_want=dvd_region==DVD_STOCK?gate_stock:gate_free;
+ struct ub_code_patch patches[2];
+ if(ub_mem_read(pid,gate,old_gate,2)||ub_mem_read(pid,src,old_source,4))return -2;
+ if((memcmp(old_gate,gate_stock,2)&&memcmp(old_gate,gate_free,2))||
+    (memcmp(old_source,source_stock,4)&&!source_ours(old_source))){
+  if(!quiet)ub_log(ID,UB_ALWAYS,"apl_meda_dvdv PID%d: unexpected code in libnavi_api.so; DVD region left alone",pid);
+  return -1;
+ }
  if(mask){source[0]=(unsigned char)mask;source[1]=0x20;source[2]=0x70;source[3]=0x47;}
  else memcpy(source,source_stock,4);
- s=code_set(pid,base+(NAVI_REGION_SOURCE-NAVI_LINK_BASE),source_stock,source,4,source_ours);
- if(g<0||s<0){if(!quiet)ub_log(ID,UB_ALWAYS,"apl_meda_dvdv PID%d: unexpected code in libnavi_api.so; DVD region left alone",pid);return -1;}
- changed=g||s;
- /* SPRM20 of the running disc: the chosen region, or back to the player's */
+ source_changed=memcmp(old_source,source,4)!=0;
+ changed=memcmp(old_gate,gate_want,2)!=0||source_changed;
+ if(changed){
+  patches[0]=(struct ub_code_patch){gate,2,old_gate,0,gate_want};
+  patches[1]=(struct ub_code_patch){src,4,old_source,0,source};
+  rc=ub_patch_code(pid,patches,2);
+  if(rc){
+   if(rc==-2)return -3;
+   if(rc==1)return -1;
+   return -2;
+  }
+ }
  want=(uint16_t)(mask?mask:dvd_player);
- if(want&&!ub_mem_read(pid,base+(NAVI_SPRM20-NAVI_LINK_BASE),&sprm,2)&&sprm&&sprm!=want&&(mask||s>0))
+ if(want&&!ub_mem_read(pid,base+(NAVI_SPRM20-NAVI_LINK_BASE),&sprm,2)&&sprm&&sprm!=want&&(mask||source_changed))
   if(!ub_mem_write(pid,base+(NAVI_SPRM20-NAVI_LINK_BASE),&want,2))changed=1;
  return changed;
 }
@@ -290,6 +322,7 @@ static void dvd_step(struct ub_part *p,struct ub_target *t){
  static char checked_path[600];static int checked;
  char path[600],regions[32],text[64];uint32_t base;uint16_t v;unsigned char passed,source[4];(void)p;
  if(t->state[2]<0)return;
+ if(!dvd_guard_stop())return; /* the guard retains ownership until reaped */
  base=ub_map_base(t->pid,"/libnavi_api.so",path,sizeof path);if(!base)return;
  if(!t->state[2]){
   char h[65];
@@ -305,6 +338,7 @@ static void dvd_step(struct ub_part *p,struct ub_target *t){
     !ub_mem_read(t->pid,base+(NAVI_SPRM20-NAVI_LINK_BASE),&v,2)&&v)dvd_player=v;
  if(t->state[4]>=0&&(t->state[4]!=dvd_region+1||t->state[5]!=(int)dvd_mask())){
   int r=dvd_apply(t->pid,base,0);
+  if(r==-2)return; /* busy PC/stop failure: retry without caching success */
   if(r<0)t->state[4]=-1;
   else{
    t->state[4]=dvd_region+1;t->state[5]=(int)dvd_mask();
@@ -453,12 +487,10 @@ static void decide_bd(unsigned hdmv_mask,int first_play_bdj){
  * new apl_bdv: inotify reports the program file being opened by its exec,
  * and /proc is also checked every 20 ms in case that report does not come.
  * It stops the process (ptrace, all threads), checks that its region slot
- * is still 0 (it has not asked the drive yet), decides (auto reads the
- * disc's files; apl_medm starts apl_bdv for a disc it has mounted), sets the
+ * is still 0 (an early-start heuristic), sets the
  * three movs of FUN_0004a5b8 so that the drive's answer becomes the chosen
- * region, and lets it go on. The player then carries that region itself
- * (region slot, configuration, PSR20), so there is no moment in which the
- * disc could see another. Afterwards it checks PSR20; only if it was too
+ * region, and lets it go on. Auto disc analysis is prepared before stopping.
+ * A zero slot cannot rule out a value already computed in a register. Afterwards it checks PSR20; only if it was too
  * late to change the source does it set PSR20 instead, as the old guard did.
  * Every catch is logged with how it went. */
 #define WATCH_POLL_MS 20
@@ -476,10 +508,21 @@ static void bd_source_bytes(char mode,unsigned value,unsigned char out[3]){
  * changed, 0 already so, -1 one of the instructions is not "movs r3,#imm"
  * (nothing is written then). */
 static int bd_source_patch(int mem,const unsigned char want[3]){
- unsigned char now[3][2];unsigned i;int changed=0;
- for(i=0;i<3;i++)if(pread(mem,now[i],2,(off_t)bdv_source[i])!=2||now[i][1]!=0x23)return -1;
- for(i=0;i<3;i++)if(now[i][0]!=want[i]){if(pwrite(mem,&want[i],1,(off_t)bdv_source[i])!=1)return -1;changed=1;}
+ unsigned char now[3][2],verify[2];unsigned i,written=0;int changed=0;
+ for(i=0;i<3;i++)if(pread(mem,now[i],2,(off_t)bdv_source[i])!=2||now[i][1]!=0x23||
+    !(now[i][0]==1||now[i][0]==2||now[i][0]==4||now[i][0]==7))return -1;
+ /* Each site remains the same single 16-bit movs instruction; no instruction
+  * boundary changes. All threads are already stopped by ub_while_stopped. */
+ for(i=0;i<3;i++)if(now[i][0]!=want[i]){
+  written=i+1;
+  if(pwrite(mem,&want[i],1,(off_t)bdv_source[i])!=1||pread(mem,verify,2,(off_t)bdv_source[i])!=2||verify[0]!=want[i]||verify[1]!=0x23)goto rollback;
+  changed=1;
+ }
  return changed;
+ rollback:
+ for(i=written;i>0;i--)if(pwrite(mem,now[i-1],2,(off_t)bdv_source[i-1])!=2||
+     pread(mem,verify,2,(off_t)bdv_source[i-1])!=2||memcmp(verify,now[i-1],2))return -2;
+ return -1;
 }
 /* The mounted BD: /mnt/odd or a UDF/ISO 9660 mount with BDMV/index.bdmv. */
 static int bd_root(char *out,size_t size){
@@ -493,33 +536,40 @@ static int bd_root(char *out,size_t size){
  }
  return 0;
 }
+static volatile sig_atomic_t watcher_cancel;
+static void watcher_cancelled(int sig){(void)sig;watcher_cancel=1;}
 struct bd_catch {
  char mode; unsigned value; const char *why;
  uint32_t slot; int early,patched,no_disc,waited_ms; unsigned char bytes[3];
 };
-/* Runs while the new apl_bdv is stopped. */
+/* Only bounded memory checks and writes while stopped. Disc I/O is prepared
+ * beforehand; a zero slot remains a best-effort early indicator. */
 static int bd_catch_stopped(int pid,int mem,void *arg){
- struct bd_catch *c=arg;char root[200];(void)pid;
+ struct bd_catch *c=arg;(void)pid;
  if(pread(mem,&c->slot,4,(off_t)bdv_region_addr)!=4)return -1;
  c->early=c->slot==0;
- if(bd_region==BD_AUTO){
-  while(!bd_root(root,sizeof root)){
-   if(c->waited_ms>=WATCH_DISC_WAIT_MS){c->no_disc=1;return 0;}
-   ub_sleep_ms(10);c->waited_ms+=10;
-  }
-  {int bdj=bd_index(root);unsigned mask=bd_movie_objects(root);c->mode=bd_decide(mask,bdj,&c->value,&c->why);}
- }else c->mode=bd_decide(0,0,&c->value,&c->why);
  if(!c->early||!c->mode||c->mode=='K')return 0;
  bd_source_bytes(c->mode,c->value,c->bytes);
  c->patched=bd_source_patch(mem,c->bytes);
- return 0;
+ return c->patched==-2?-2:0; /* unverified rollback keeps the target stopped */
 }
 /* One new apl_bdv: change the source, then check (or, if too late, set)
  * PSR20 for the life of the process or GUARD_SECONDS. */
 static void watcher_handle(int pid,unsigned long long started_ms,const char *how){
  struct bd_catch c;int rc,told=0;unsigned long long after,until;uint32_t slot,psr,want;
  memset(&c,0,sizeof c);
+ if(bd_region==BD_AUTO){
+  char root[200];
+  while(!bd_root(root,sizeof root)){
+   if(watcher_cancel)return;
+   if(c.waited_ms>=WATCH_DISC_WAIT_MS){ub_log(ID,UB_ALWAYS,"BD region: no Blu-ray files within %d ms of apl_bdv PID%d starting; auto decides on the main loop",WATCH_DISC_WAIT_MS,pid);return;}
+   ub_sleep_ms(10);c.waited_ms+=10;
+  }
+  {int bdj=bd_index(root);unsigned mask=bd_movie_objects(root);c.mode=bd_decide(mask,bdj,&c.value,&c.why);}
+ }else c.mode=bd_decide(0,0,&c.value,&c.why);
+ if(watcher_cancel)return;
  rc=ub_while_stopped(pid,bd_catch_stopped,&c);
+ if(rc==-2){ub_log(ID,UB_ALWAYS,"BD source rollback failed; PID%d remains quarantined",pid);return;}
  after=ub_now_ms()-started_ms;
  if(rc<0){
   c.mode=bd_region==BD_AUTO?0:bd_decide(0,0,&c.value,&c.why);
@@ -529,9 +579,9 @@ static void watcher_handle(int pid,unsigned long long started_ms,const char *how
  else if(!c.early)ub_log(ID,UB_ALWAYS,"BD region: apl_bdv PID%d %s and stopped %llu ms later had already asked the drive (%s); PSR20 is set instead",pid,how,after,bd_letters(c.slot));
  else if(c.patched<0)ub_log(ID,UB_ALWAYS,"BD region: unexpected code in apl_bdv PID%d; PSR20 is set instead",pid);
  else ub_log(ID,UB_ALWAYS,"BD region set at the source in apl_bdv PID%d (%s, stopped %llu ms later, before it asked the drive%s): drive A/B/C -> %s/%s/%s (%s)",
-             pid,how,after,c.waited_ms?", disc files read while stopped":"",bd_letters(c.bytes[0]),bd_letters(c.bytes[1]),bd_letters(c.bytes[2]),c.why);
+             pid,how,after,c.waited_ms?", disc files prepared before stopping":"",bd_letters(c.bytes[0]),bd_letters(c.bytes[1]),bd_letters(c.bytes[2]),c.why);
  if(!c.mode)return;
- for(until=ub_now_ms()+GUARD_SECONDS*1000ull;ub_now_ms()<until;ub_sleep_ms(GUARD_POLL_MS)){
+ for(until=ub_now_ms()+GUARD_SECONDS*1000ull;!watcher_cancel&&ub_now_ms()<until;ub_sleep_ms(GUARD_POLL_MS)){
   if(kill(pid,0)||ub_mem_read(pid,bdv_region_addr,&slot,4)||ub_mem_read(pid,bdv_psr20_addr,&psr,4))break; /* this disc's apl_bdv ended */
   if(!psr)continue;
   want=region_for(c.mode,c.value,slot);
@@ -583,7 +633,7 @@ static void watcher_run(void){
  int in=inotify_init1(IN_NONBLOCK|IN_CLOEXEC),wd=in>=0?inotify_add_watch(in,BDV_PATH,IN_OPEN):-1;
  unsigned long long burst=0,signalled=0,first;char buf[512];
  ub_log(ID,UB_INFO,"BD region watcher: %s",wd>=0?"apl_bdv starts are reported (inotify); /proc is also checked every 20 ms":"/proc is checked every 20 ms");
- for(;;){
+ while(!watcher_cancel){
   unsigned long long now=ub_now_ms();int pid,wait=now<burst?1:WATCH_POLL_MS;
   if(wd>=0){
    struct pollfd pf={in,POLLIN,0};
@@ -599,16 +649,39 @@ static void watcher_run(void){
 }
 static pid_t watcher_pid;
 static unsigned watcher_restarts;
-static void watcher_stop(void){
- if(watcher_pid>0){kill(watcher_pid,SIGKILL);waitpid(watcher_pid,0,0);}
- watcher_pid=0;
+static int watcher_stop(void){
+ if(watcher_pid>0){
+  unsigned long long until=ub_now_ms()+1000;int status;pid_t r;
+  do{r=waitpid(watcher_pid,&status,WNOHANG);}while(r<0&&errno==EINTR);
+  if(!r){
+   kill(watcher_pid,SIGTERM);
+   do{
+    r=waitpid(watcher_pid,&status,WNOHANG);
+    if(r>0||(r<0&&errno==ECHILD))break;
+    if(r<0&&errno!=EINTR)return 0;
+    if(ub_now_ms()>=until)return 0;
+    ub_sleep_ms(1);
+   }while(1);
+  }else if(r<0&&errno!=ECHILD)return 0;
+ }
+ watcher_pid=0;return 1;
 }
 static void watcher_start(void){
- pid_t pid;
- watcher_stop();
+ pid_t pid;sigset_t term,old;
+ if(!watcher_stop())return;
  if(bd_region==BD_STOCK||!bdv_file.ok)return;
+ sigemptyset(&term);sigaddset(&term,SIGTERM);
+ if(sigprocmask(SIG_BLOCK,&term,&old))return;
  pid=fork();
- if(!pid){pid_t parent=getppid();prctl(PR_SET_PDEATHSIG,SIGKILL);if(getppid()!=parent)_exit(0);watcher_run();_exit(0);}
+ if(!pid){
+  struct sigaction action;pid_t parent=getppid();
+  memset(&action,0,sizeof action);action.sa_handler=watcher_cancelled;sigemptyset(&action.sa_mask);
+  watcher_cancel=0;sigaction(SIGTERM,&action,0);prctl(PR_SET_PDEATHSIG,SIGTERM);
+  sigdelset(&old,SIGTERM);sigprocmask(SIG_SETMASK,&old,0);
+  if(getppid()!=parent)_exit(0);
+  watcher_run();_exit(0);
+ }
+ sigprocmask(SIG_SETMASK,&old,0);
  watcher_pid=pid>0?pid:0;
  if(pid<0)ub_log(ID,UB_ALWAYS,"cannot start the BD region watcher; the BD region is set from the main loop only");
 }
@@ -646,37 +719,47 @@ static void dvd_menu_status(void){
  memcpy(last,line,sizeof last);
 }
 static void dvd_menu_request(void){
- char buf[64],choice[16];unsigned seq;int fd,rc;ssize_t n;
- fd=open(UB_DVD_REQUEST,O_RDONLY);if(fd<0)return;
- n=read(fd,buf,sizeof buf-1);close(fd);unlink(UB_DVD_REQUEST);
- if(n<=0)return;
- buf[n]=0;
+ char buf[64],choice[16],reply[UB_ACTION_PATH],line[160];unsigned seq;int rc,n;
+ if(!ub_action_receive(UB_DVD_REQUEST,buf,sizeof buf,reply,sizeof reply))return;
  if(sscanf(buf,"set %15s %u",choice,&seq)!=2){ub_log(ID,UB_INFO,"ignored DVD menu request");return;}
+ if(!dvd_guard_stop()){
+  dvd_seq=seq;snprintf(dvd_message,sizeof dvd_message,"busy stopping previous operation; try again");
+  n=snprintf(line,sizeof line,"%u %s %s\n",dvd_seq,dvd_region_names[dvd_region],dvd_message);
+  if(n>0&&(size_t)n<sizeof line)ub_action_reply(reply,line,(size_t)n);
+  return;
+ }
  rc=ub_setting_set(ID,"dvd_region",choice);
  dvd_seq=seq;
  if(rc<0)snprintf(dvd_message,sizeof dvd_message,"unknown choice %s",choice);
  else if(rc>0)snprintf(dvd_message,sizeof dvd_message,"not saved to USB (%s)",ub_stick_error(rc));
  else snprintf(dvd_message,sizeof dvd_message,"saved");
+ n=snprintf(line,sizeof line,"%u %s %s\n",dvd_seq,dvd_region_names[dvd_region],dvd_message);
+ if(n>0&&(size_t)n<sizeof line)ub_action_reply(reply,line,(size_t)n);
  ub_log(ID,UB_ALWAYS,"DVD region chosen in the menu: %s (%s)",dvd_region_names[dvd_region],dvd_message);
 }
-/* "set <choice> <seq>" from the menu: apply, save to the stick, answer. */
+/* Each client receives its own acknowledgement; global status is observational. */
 static void menu_request(void){
- char buf[64],choice[16];unsigned seq;int fd,rc;ssize_t n;
- fd=open(UB_REGION_REQUEST,O_RDONLY);if(fd<0)return;
- n=read(fd,buf,sizeof buf-1);close(fd);unlink(UB_REGION_REQUEST);
- if(n<=0)return;
- buf[n]=0;
+ char buf[64],choice[16],reply[UB_ACTION_PATH],line[200];unsigned seq;int rc,n;
+ if(!ub_action_receive(UB_REGION_REQUEST,buf,sizeof buf,reply,sizeof reply))return;
  if(sscanf(buf,"set %15s %u",choice,&seq)!=2){ub_log(ID,UB_INFO,"ignored menu request");return;}
  menu_seq=seq;
  if(!bd_auto&&!strcmp(choice,"auto")){
   snprintf(menu_message,sizeof menu_message,"auto is off (bd_auto=0)");
-  ub_log(ID,UB_ALWAYS,"Blu-ray region auto refused: bd_auto=0 in modules.cfg");return;
+  ub_log(ID,UB_ALWAYS,"Blu-ray region auto refused: bd_auto=0 in modules.cfg");
+ }else{
+  int before=bd_region;
+  if(!watcher_stop()){
+   snprintf(menu_message,sizeof menu_message,"busy stopping previous operation; try again");
+  }else{
+   rc=ub_setting_set(ID,"bd_region",choice);if(bd_region!=before)watcher_start();
+  if(rc<0)snprintf(menu_message,sizeof menu_message,"unknown choice %s",choice);
+  else if(rc>0)snprintf(menu_message,sizeof menu_message,"not saved to USB (%s)",ub_stick_error(rc));
+  else snprintf(menu_message,sizeof menu_message,"saved");
+  }
+  ub_log(ID,UB_ALWAYS,"Blu-ray region chosen in the menu: %s (%s); it applies from the next disc on",bd_region_names[bd_region],menu_message);
  }
- {int before=bd_region;rc=ub_setting_set(ID,"bd_region",choice);if(bd_region!=before)watcher_start();}
- if(rc<0)snprintf(menu_message,sizeof menu_message,"unknown choice %s",choice);
- else if(rc>0)snprintf(menu_message,sizeof menu_message,"not saved to USB (%s)",ub_stick_error(rc));
- else snprintf(menu_message,sizeof menu_message,"saved");
- ub_log(ID,UB_ALWAYS,"Blu-ray region chosen in the menu: %s (%s); it applies from the next disc on",bd_region_names[bd_region],menu_message);
+ n=snprintf(line,sizeof line,"%u %s %u %u %d %s\n",menu_seq,bd_region_names[bd_region],(unsigned)disc_sees(),(unsigned)bd_player,bd_auto,menu_message);
+ if(n>0&&(size_t)n<sizeof line)ub_action_reply(reply,line,(size_t)n);
 }
 static unsigned count_dir(const char *path){
  static struct ub_dir d;const char *e;unsigned n=0;

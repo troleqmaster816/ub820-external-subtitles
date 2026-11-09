@@ -6,6 +6,11 @@
       "name": "engine",
       "source": "backend.c",
       "manifest": "backend_hooks.json"
+    },
+    {
+      "name": "native_text",
+      "source": "native_text.c",
+      "manifest": "native_text_hooks.json"
     }
   ]
 }

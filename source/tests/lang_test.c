@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#define UB_LANG_BUILD_ONLY 1
 #include "../modules/external_subtitles/english_text.h"
 struct ub_module *const ub_modules[]={0};
 

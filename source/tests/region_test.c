@@ -56,12 +56,13 @@ static void test_menu(void){
  * buffer below 4 GB in this process, written through /proc/self/mem like
  * apl_meda_dvdv's), and the DVD menu files. */
 static void test_dvd(void){
- size_t size=0x80000;unsigned char *lib=mmap(0,size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_32BIT,-1,0);
- uint32_t base=(uint32_t)(uintptr_t)lib;int pid=getpid();uint16_t sprm;char buf[256];
+ size_t size=0x80000;unsigned char *lib=mmap(0,size,PROT_READ|PROT_WRITE|PROT_EXEC,MAP_SHARED|MAP_ANONYMOUS|MAP_32BIT,-1,0);
+ uint32_t base=(uint32_t)(uintptr_t)lib;pid_t pid;uint16_t sprm;char buf[256];
  unsigned char *gate=lib+(NAVI_GATE-NAVI_LINK_BASE),*src=lib+(NAVI_REGION_SOURCE-NAVI_LINK_BASE);
  uint16_t *sprm20=(uint16_t *)(lib+(NAVI_SPRM20-NAVI_LINK_BASE));
  int saved=dvd_region;
  CHECK(lib!=MAP_FAILED);if(lib==MAP_FAILED)return;
+ pid=fork();CHECK(pid>=0);if(pid<0){munmap(lib,size);return;}if(!pid){prctl(PR_SET_PTRACER,PR_SET_PTRACER_ANY);for(;;)pause();}
  memcpy(gate,gate_stock,2);memcpy(src,source_stock,4);*sprm20=2;dvd_player=2;dvd_allowed=0;
  /* stock: nothing changes */
  dvd_region=DVD_STOCK;CHECK(dvd_apply(pid,base,1)==0);CHECK(!memcmp(gate,gate_stock,2)&&!memcmp(src,source_stock,4)&&*sprm20==2);
@@ -80,6 +81,29 @@ static void test_dvd(void){
  dvd_region=6;dvd_apply(pid,base,1);CHECK(*sprm20==0x20);
  dvd_region=DVD_STOCK;CHECK(dvd_apply(pid,base,1)==1);
  CHECK(!memcmp(gate,gate_stock,2)&&!memcmp(src,source_stock,4)&&*sprm20==2);
+ /* A guard already in flight may finish its old patch, but the menu must
+  * reap it BEFORE publishing stock. It cannot overwrite stock afterwards. */
+ {
+  int ready[2];char byte;sigset_t term,old;volatile unsigned *finished=(volatile unsigned *)lib;
+  *finished=0;CHECK(!pipe(ready));sigemptyset(&term);sigaddset(&term,SIGTERM);CHECK(!sigprocmask(SIG_BLOCK,&term,&old));
+  dvd_region=DVD_R1;dvd_guard_pid=fork();CHECK(dvd_guard_pid>=0);
+  if(!dvd_guard_pid){
+   struct sigaction action;memset(&action,0,sizeof action);action.sa_handler=dvd_guard_cancelled;sigemptyset(&action.sa_mask);sigaction(SIGTERM,&action,0);
+   dvd_guard_cancel=0;sigprocmask(SIG_SETMASK,&old,0);close(ready[0]);
+   if(write(ready[1],"r",1)!=1)_exit(90);
+   close(ready[1]);while(!dvd_guard_cancel)pause();
+   *finished=dvd_apply(pid,base,1)<0?2u:1u;_exit(0);
+  }
+  sigprocmask(SIG_SETMASK,&old,0);close(ready[1]);CHECK(read(ready[0],&byte,1)==1);close(ready[0]);
+  {FILE *f=fopen(UB_DVD_REQUEST,"w");CHECK(f!=0);if(f){fputs("set stock 99\n",f);fclose(f);}}
+  dvd_menu_request();CHECK(!dvd_guard_pid&&dvd_region==DVD_STOCK&&*finished==1);
+  CHECK(src[0]==1&&source_ours(src)); /* old transaction finished first */
+  CHECK(dvd_apply(pid,base,1)>=0);CHECK(!memcmp(gate,gate_stock,2)&&!memcmp(src,source_stock,4)&&*sprm20==2);
+ }
+ /* Neither site is modified if the other fails the preflight. */
+ memcpy(gate,gate_stock,2);src[0]=0xff;dvd_region=DVD_FREE;
+ CHECK(dvd_apply(pid,base,1)==-1);CHECK(!memcmp(gate,gate_stock,2));
+ memcpy(src,source_stock,4);
  /* unknown code is left alone */
  gate[0]=0xff;dvd_region=DVD_FREE;CHECK(dvd_apply(pid,base,1)==-1);CHECK(gate[0]==0xff);
  (void)sprm;
@@ -92,6 +116,7 @@ static void test_dvd(void){
  read_text(UB_CONFIG_DIR "/ub820_menu.cfg",buf,sizeof buf);CHECK(strstr(buf,"dvd_region=3\n"));
  {FILE *f=fopen(UB_DVD_REQUEST,"w");fputs("set world 5\n",f);fclose(f);}
  dvd_menu_request();CHECK(dvd_region==3);
+ kill(pid,SIGKILL);waitpid(pid,0,0);
  munmap(lib,size);dvd_region=saved;dvd_allowed=0;
 }
 
@@ -206,6 +231,9 @@ int main(void){
    CHECK(WIFEXITED(status)&&WEXITSTATUS(status)==(int)rounds[r].want);
    if(!WIFEXITED(status)||WEXITSTATUS(status)!=(int)rounds[r].want)printf("round %u: status %d\n",r,WIFEXITED(status)?WEXITSTATUS(status):-1);
    usleep(50000);
+   /* Readiness I/O no longer freezes the fake player. It can exit before
+    * the independent one-second no-disc deadline; await only that log. */
+   if(!rounds[r].disc)for(unsigned spin=0;spin<120&&!strstr(log_text(),rounds[r].log);spin++)usleep(10000);
    CHECK(strstr(log_text(),rounds[r].log));
    watcher_stop();bd_test_root=root;
   }

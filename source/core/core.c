@@ -161,6 +161,7 @@ void ub_core_start(void){
 }
 void ub_core_tick(void){
  struct ub_module *m;struct ub_part *p;
+ ub_injector_poll();
  scan();
  FOR_PARTS(m,p)if(m->enabled)tick(p);
 }

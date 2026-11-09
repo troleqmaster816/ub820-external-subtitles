@@ -17,6 +17,7 @@
 #include "ub.h"
 #include "storage.h"
 #include "helper_menu.h"
+#include "action_ipc.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -64,9 +65,11 @@ static void start(struct ub_module *m){
 }
 
 /* Status for the menu: "<seq> <code> <text>", replaced atomically. */
+static char action_reply[UB_ACTION_PATH];
 static void answer(unsigned seq,int code,const char *text){
  char line[160];int n=snprintf(line,sizeof line,"%u %d %s\n",seq,code,text),fd;
  if(n<0||n>=(int)sizeof line)return;
+ if(ub_action_reply(action_reply,line,(size_t)n))ub_log(ID,UB_ALWAYS,"cannot acknowledge log-save request");
  fd=open(UB_STORAGE_STATUS ".tmp",O_WRONLY|O_CREAT|O_TRUNC,0600);if(fd<0)return;
  if(write(fd,line,(size_t)n)!=n){close(fd);unlink(UB_STORAGE_STATUS ".tmp");return;}
  if(close(fd)||rename(UB_STORAGE_STATUS ".tmp",UB_STORAGE_STATUS))unlink(UB_STORAGE_STATUS ".tmp");
@@ -92,13 +95,10 @@ static void keep_saved(void){
  kept.size=st.size;kept.pause=SAVE_PAUSE;
 }
 static void step(struct ub_part *p,struct ub_target *t){
- char buf[64];unsigned seq;int fd,rc;ssize_t n;
+ char buf[64];unsigned seq;int rc;
  (void)p;(void)t;
  if(save==SAVE_ALWAYS)keep_saved();
- fd=open(UB_STORAGE_REQUEST,O_RDONLY);if(fd<0)return;
- n=read(fd,buf,sizeof buf-1);close(fd);unlink(UB_STORAGE_REQUEST);
- if(n<=0)return;
- buf[n]=0;
+ if(!ub_action_receive(UB_STORAGE_REQUEST,buf,sizeof buf,action_reply,sizeof action_reply))return;
  if(sscanf(buf,"save-log %u",&seq)!=1){ub_log(ID,UB_INFO,"ignored storage request");return;}
  if(save==SAVE_OFF){answer(seq,10,"saving is off ([log] save=off)");return;}
  ub_log(ID,UB_INFO,"saving the log to %s",UB_STICK_LOG);

@@ -171,27 +171,34 @@ static void snapshot(void) {
 static int finish(int result,const char *message) {
  state.result=result;copy(state.message,message,sizeof(state.message));snapshot();return result;
 }
-static void sort_items(void) {
+struct ub_catalogue {
+ uint32_t count;
+ char dir[UB_PATH_BYTES],message[128];
+ struct ub_item items[UB_MAX_ITEMS];
+};
+static void sort_items(struct ub_catalogue *list) {
  uint32_t i,j;struct ub_item temp;
- for(i=1;i<state.count;i++)for(j=i;j>0;j--) {
-  struct ub_item *a=&state.items[j-1],*b=&state.items[j];
+ for(i=1;i<list->count;i++)for(j=i;j>0;j--) {
+  struct ub_item *a=&list->items[j-1],*b=&list->items[j];
   if(a->kind>b->kind || (a->kind==b->kind && name_compare(a->name,b->name)<=0))break;
   temp=*a;*a=*b;*b=temp;
  }
 }
-static int catalogue(const char *path) {
+/* Does not read controller/native state. UFS may block on slow media. */
+static int scan_catalogue(const char *path,struct ub_catalogue *list) {
  uint32_t handle=0,result=0,n=0,limited=0;int rc=0;
  unsigned char record[0x120];char full[UB_PATH_BYTES],parent[UB_PATH_BYTES];
- if(!valid_path(path))return finish(UB_BAD_PATH,"Invalid USB directory");
- zero(state.items,sizeof(state.items));state.count=0;
- copy(state.dir,path,sizeof(state.dir));
- if(UFS_OpenDir(path,&handle)!=0)return finish(UB_IO_ERROR,"Cannot open USB directory");
+ zero(list,sizeof(*list));
+ if(!valid_path(path)){copy(list->message,"Invalid USB directory",sizeof(list->message));return UB_BAD_PATH;}
+ zero(list->items,sizeof(list->items));list->count=0;
+ copy(list->dir,path,sizeof(list->dir));
+ if(UFS_OpenDir(path,&handle)!=0){copy(list->message,"Cannot open USB directory",sizeof(list->message));return UB_IO_ERROR;}
  if(!equal(path,"/mnt/usb")) {
   unsigned long k=length(path,UB_PATH_BYTES);
   copy(parent,path,sizeof(parent));while(k>8 && parent[k-1]!='/')k--;
   parent[k>8?k-1:8]=0;
-  state.items[0].kind=UB_KIND_DIR;copy(state.items[0].name,"..",UB_NAME_BYTES);
-  copy(state.items[0].path,parent,UB_PATH_BYTES);state.count=1;
+  list->items[0].kind=UB_KIND_DIR;copy(list->items[0].name,"..",UB_NAME_BYTES);
+  copy(list->items[0].path,parent,UB_PATH_BYTES);list->count=1;
  }
  for(n=0;n<8192;n++) {
   char *name=(char *)record+11;uint32_t kind;
@@ -202,16 +209,34 @@ static int catalogue(const char *path) {
   kind=record[10]==4?UB_KIND_DIR:(record[10]==8 && srt_name(name)?UB_KIND_FILE:0);
   if(!kind)continue;
   if(!join(full,path,name)){limited=1;continue;}
-  if(state.count==UB_MAX_ITEMS){limited=1;continue;}
-  state.items[state.count].kind=kind;
-  copy(state.items[state.count].name,name,UB_NAME_BYTES);
-  copy(state.items[state.count].path,full,UB_PATH_BYTES);state.count++;
+  if(list->count==UB_MAX_ITEMS){limited=1;continue;}
+  list->items[list->count].kind=kind;
+  copy(list->items[list->count].name,name,UB_NAME_BYTES);
+  copy(list->items[list->count].path,full,UB_PATH_BYTES);list->count++;
  }
  if(UFS_CloseDir(handle)!=0)rc=1;
- if(rc){zero(state.items,sizeof(state.items));state.count=0;return finish(UB_IO_ERROR,"USB directory read failed");}
+ if(rc){zero(list->items,sizeof(list->items));list->count=0;copy(list->message,"USB directory read failed",sizeof(list->message));return UB_IO_ERROR;}
  if(n==8192)limited=1;
- sort_items();
- return finish(limited?UB_LIMIT:UB_OK,limited?"Directory limited to64 entries; shorten long paths":"Choose a subtitle file");
+ sort_items(list);
+ copy(list->message,limited?"Directory limited to64 entries; shorten long paths":"Choose a subtitle file",sizeof(list->message));
+ return limited?UB_LIMIT:UB_OK;
+}
+/* Called with gate held; retain the old catalogue while the scan runs.
+ * A Close/Open during UFS invalidates this result without publishing a list
+ * into the new playback epoch. Only this worker owns catalogue requests. */
+static int catalogue(const char *path) {
+ struct ub_catalogue list;char directory[UB_PATH_BYTES];
+ uint32_t epoch=state.epoch,generation=atomic_read(&lifecycle);int rc;
+ if(!valid_path(path))return finish(UB_BAD_PATH,"Invalid USB directory");
+ copy(directory,path,sizeof(directory));
+ gate_unlock();
+ rc=scan_catalogue(directory,&list);
+ gate_lock();
+ if(epoch!=state.epoch || generation!=atomic_read(&lifecycle))
+  return finish(UB_STALE,"Playback changed; refresh the menu");
+ state.count=list.count;copy(state.dir,list.dir,sizeof(state.dir));
+ for(uint32_t i=0;i<UB_MAX_ITEMS;i++)state.items[i]=list.items[i];
+ return finish(rc,list.message);
 }
 static int listed_file(const char *path) {
  uint32_t i;for(i=0;i<state.count;i++)if(state.items[i].kind==UB_KIND_FILE && equal(path,state.items[i].path))return 1;
@@ -343,12 +368,14 @@ static int process(const struct ub_request *r) {
  return finish(UB_BAD_PATH,"Unknown menu request");
 }
 
-static int write_status(void) {
+/* The worker captured this immutable snapshot under gate. No native hook
+ * waits for filesystem writes or rename, and a later dirty event is retained. */
+static int write_status(const struct ub_status *published) {
  const char *tmp=UB_STATUS_FILE ".tmp";int fd;unsigned long done=0;long n;
  fd=open(tmp,1|0x40|0x200|0x800|0x20000,0600);
  if(fd<0)return -1;
- while(done<sizeof(state)) {
-  n=write(fd,(const char *)&state+done,sizeof(state)-done);
+ while(done<sizeof(*published)) {
+  n=write(fd,(const char *)published+done,sizeof(*published)-done);
   if(n<=0){close(fd);unlink(tmp);return -1;}done+=(unsigned long)n;
  }
  if(close(fd)!=0){unlink(tmp);return -1;}
@@ -367,21 +394,25 @@ static int request_read(struct ub_request *r) {
  return done==sizeof(*r) && n==0;
 }
 static void *worker(void *unused) {
- struct ub_request request;uint32_t tick=0;unsigned long old_signature; (void)unused;
+ struct ub_request request;struct ub_status published;
+ uint32_t tick=0;unsigned long old_signature;int publish,have_request;(void)unused;
  gate_lock();initialize();
  if(catalogue("/mnt/usb/sub")==UB_IO_ERROR)catalogue("/mnt/usb");
- snapshot();write_status();gate_unlock();
+ snapshot();published=state;status_dirty=0;gate_unlock();
+ if(write_status(&published)){gate_lock();status_dirty=1;gate_unlock();}
  for(;;) {
-  usleep(200000);gate_lock();
-  if(request_read(&request) && (int32_t)(request.seq-last_seq)>0) {
-   process(&request);write_status();
+  usleep(200000);have_request=request_read(&request);gate_lock();publish=0;
+  if(have_request && (int32_t)(request.seq-last_seq)>0) {
+   process(&request);publish=1;
   }
-  if(status_dirty){snapshot();write_status();status_dirty=0;}
+  if(status_dirty){snapshot();status_dirty=0;publish=1;}
   if(++tick==5) {
    tick=0;old_signature=state.active*2+state.enabled;snapshot();
-   if(old_signature!=state.active*2+state.enabled)write_status();
+   if(old_signature!=state.active*2+state.enabled)publish=1;
   }
+  if(publish)published=state;
   gate_unlock();
+  if(publish && write_status(&published)){gate_lock();status_dirty=1;gate_unlock();}
  }
  return (void *)0;
 }

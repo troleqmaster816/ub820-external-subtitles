@@ -13,9 +13,15 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdint.h>
+#include "payload_time.h"
+#include "action_ipc.h"
 
 #define HA_SSH_ENABLED "/tmp/ub820_ssh.enabled"
 struct helper_state {
+ char action_session[UB_ACTION_SESSION+1];
+ uint32_t region_deadline,dvd_deadline,netflix_deadline,ssh_deadline,save_deadline;
+ unsigned int ssh_seq,ssh_counter;
  int ssh_enabled,ssh_running; unsigned int ssh_wait;
  int log_always; unsigned int save_seq,save_ticks,save_counter;
  int region_known,region_auto; char region_choice[8]; unsigned int region_disc,region_player,region_seq,region_wait,region_counter;
@@ -33,14 +39,45 @@ static int ha_read_line(const char *path,char *buf,size_t cap){
  n=read(fd,buf,cap-1);close(fd);if(n<=0)return 0;
  buf[n]=0;buf[strcspn(buf,"\n")]=0;return 1;
 }
-/* Writes a request atomically (temp file + rename): 0 ok. */
-static int ha_request(const char *path,const char *text,size_t n){
- char temp[96];int fd,ok;
- snprintf(temp,sizeof temp,"%s.ui-%ld",path,(long)getpid());
- fd=open(temp,O_WRONLY|O_CREAT|O_TRUNC,0600);if(fd<0)return -1;
- ok=write(fd,text,n)==(ssize_t)n;if(close(fd))ok=0;
- if(ok&&!rename(temp,path))return 0;
- unlink(temp);return -1;
+/* Random session IDs prevent acknowledgements from a previous payload or
+ * another menu from matching even when both local counters start at one. */
+static int ha_action_session(struct helper_state *s){
+ unsigned char random[16];static const char hex[]="0123456789abcdef";size_t done=0;ssize_t n;int fd;
+ if(s->action_session[0])return 0;
+ fd=open("/dev/urandom",O_RDONLY);if(fd<0)return -1;
+ while(done<sizeof random){n=read(fd,random+done,sizeof random-done);if(n<0&&errno==EINTR)continue;if(n<=0){close(fd);return -1;}done+=(size_t)n;}
+ close(fd);for(done=0;done<sizeof random;done++){s->action_session[2*done]=hex[random[done]>>4];s->action_session[2*done+1]=hex[random[done]&15];}
+ s->action_session[UB_ACTION_SESSION]=0;return 0;
+}
+static int ha_action_now(uint32_t *now){return ub_payload_now(now);}
+static int ha_action_send_timeout(struct helper_state *s,const char *base,const char *text,size_t n,unsigned seq,uint32_t *deadline,uint32_t timeout){
+ char path[UB_ACTION_PATH];uint32_t now;
+ if(ha_action_now(&now)||ha_action_session(s)||ub_action_path(path,sizeof path,base,'q',s->action_session,seq))return -1;
+ *deadline=now+timeout;
+ return ub_action_envelope(path,text,n,*deadline);
+}
+static int ha_action_send(struct helper_state *s,const char *base,const char *text,size_t n,unsigned seq,uint32_t *deadline){return ha_action_send_timeout(s,base,text,n,seq,deadline,30u);}
+static void ha_action_cancel(const struct helper_state *s,const char *base,unsigned seq){
+ char path[UB_ACTION_PATH];if(!s->action_session[0]||!seq)return;
+ if(!ub_action_path(path,sizeof path,base,'q',s->action_session,seq))unlink(path);
+ if(!ub_action_path(path,sizeof path,base,'r',s->action_session,seq))unlink(path);
+}
+/* 1 our reply, 0 pending, -1 expired/unreadable clock. The queue file can
+ * already have been claimed at timeout: do not claim the change was undone. */
+static int ha_action_poll(const struct helper_state *s,const char *base,unsigned seq,uint32_t deadline,char *buf,size_t cap){
+ char path[UB_ACTION_PATH],message[512],*body;uint32_t now,expires;int fd;ssize_t n;
+ if(ub_action_path(path,sizeof path,base,'r',s->action_session,seq)||ha_action_now(&now))return -1;
+ fd=open(path,O_RDONLY);
+ if(fd>=0){
+  do{n=read(fd,message,sizeof message-1);}while(n<0&&errno==EINTR);
+  close(fd);
+  if(n>0){
+   message[n]=0;body=ub_action_body(message,&expires);
+   if(body&&(int32_t)(now-expires)<0){ha_copy(buf,body,cap);buf[strcspn(buf,"\n")]=0;unlink(path);return 1;}
+  }
+ }
+ if((int32_t)(now-deadline)>=0){ha_action_cancel(s,base,seq);return -1;}
+ return 0;
 }
 static unsigned int ha_parse(const char **p){unsigned int v=0;while(**p>='0'&&**p<='9')v=v*10+(unsigned int)(*(*p)++-'0');return v;}
 
@@ -57,9 +94,15 @@ static const char *ha_disc_letters(unsigned int v){return v==1?"A":v==2?"B":v==4
 /* "<seq> <choice> <disc> <player> <auto> <message>" from the region module; 1 if
  * shown state changed. */
 static int ha_region_poll(struct helper_state *s){
+ int answered=0,reply;
  char buf[160],choice[8],before[8];const char *p=buf;unsigned int seq,disc,player,autok,i=0,disc_before=s->region_disc;int known=s->region_known,auto_before=s->region_auto;
  ha_copy(before,s->region_choice,sizeof before);
- if(!ha_read_line(UB_REGION_STATUS,buf,sizeof buf)){s->region_known=0;return known;}
+ if(s->region_wait){
+  reply=ha_action_poll(s,UB_REGION_REQUEST,s->region_seq,s->region_deadline,buf,sizeof buf);
+  if(reply<0){s->region_wait=0;ha_copy(s->notice,"No confirmation from helper; result unknown",sizeof s->notice);return 1;}
+  answered=reply==1;
+ }
+ if(!answered&&!ha_read_line(UB_REGION_STATUS,buf,sizeof buf)){s->region_known=0;return known;}
  seq=ha_parse(&p);if(*p++!=' ')return 0;
  while(*p&&*p!=' '&&i+1<sizeof choice)choice[i++]=*p++;
  choice[i]=0;if(*p++!=' ')return 0;
@@ -67,8 +110,8 @@ static int ha_region_poll(struct helper_state *s){
  player=ha_parse(&p);if(*p++!=' ')return 0;
  autok=ha_parse(&p);if(*p==' ')p++;
  s->region_known=1;s->region_disc=disc;s->region_player=player;s->region_auto=autok==1;
- if(!s->region_wait||seq==s->region_seq)ha_copy(s->region_choice,choice,sizeof s->region_choice);
- if(s->region_wait&&seq==s->region_seq){
+ if(!s->region_wait||(answered&&seq==s->region_seq))ha_copy(s->region_choice,choice,sizeof s->region_choice);
+ if(s->region_wait&&(answered&&seq==s->region_seq)){
   s->region_wait=0;
   if(!strcmp(p,"saved"))snprintf(s->notice,sizeof s->notice,"Blu-ray region: %s. Takes effect with the next disc.",ha_region_label(s));
   else snprintf(s->notice,sizeof s->notice,"Blu-ray region: %s, %s",ha_region_label(s),p);
@@ -99,7 +142,7 @@ static void ha_region_set(struct helper_state *s,unsigned int next){
  if(next>=ha_region_count(s)||next==ha_region_index(s->region_choice))return;
  if(!++s->region_counter)s->region_counter=1;
  n=snprintf(text,sizeof text,"set %s %u\n",ha_region_names[next],s->region_counter);
- if(ha_request(UB_REGION_REQUEST,text,(size_t)n)){ha_copy(s->notice,"Cannot contact the helper",sizeof s->notice);return;}
+ if(ha_action_send(s,UB_REGION_REQUEST,text,(size_t)n,s->region_counter,&s->region_deadline)){ha_copy(s->notice,"Cannot contact the helper",sizeof s->notice);return;}
  ha_copy(s->region_choice,ha_region_names[next],sizeof s->region_choice); /* the helper confirms */
  s->region_seq=s->region_counter;s->region_wait=1;ha_copy(s->notice,"Saving...",sizeof s->notice);
 }
@@ -112,15 +155,21 @@ static unsigned int ha_dvd_index(const char *name,size_t n){unsigned int i;for(i
 /* "<seq> <choice> <message>" from the region module; 1 if shown state
  * changed. */
 static int ha_dvd_poll(struct helper_state *s){
+ int answered=0,reply;
  char buf[160];const char *p=buf,*name;unsigned int seq,choice,before=s->dvd_choice;int known=s->dvd_known;
- if(!ha_read_line(UB_DVD_STATUS,buf,sizeof buf)){s->dvd_known=0;return known;}
+ if(s->dvd_wait){
+  reply=ha_action_poll(s,UB_DVD_REQUEST,s->dvd_seq,s->dvd_deadline,buf,sizeof buf);
+  if(reply<0){s->dvd_wait=0;ha_copy(s->notice,"No confirmation from helper; result unknown",sizeof s->notice);return 1;}
+  answered=reply==1;
+ }
+ if(!answered&&!ha_read_line(UB_DVD_STATUS,buf,sizeof buf)){s->dvd_known=0;return known;}
  seq=ha_parse(&p);if(*p++!=' ')return 0;
  name=p;while(*p&&*p!=' ')p++;
  choice=ha_dvd_index(name,(size_t)(p-name));
  if(*p==' ')p++;
  s->dvd_known=1;
- if(!s->dvd_wait||seq==s->dvd_seq)s->dvd_choice=choice;
- if(s->dvd_wait&&seq==s->dvd_seq){
+ if(!s->dvd_wait||(answered&&seq==s->dvd_seq))s->dvd_choice=choice;
+ if(s->dvd_wait&&(answered&&seq==s->dvd_seq)){
   s->dvd_wait=0;
   if(!strcmp(p,"saved"))snprintf(s->notice,sizeof s->notice,"DVD region: %s. Restart a DVD that already stopped.",ha_dvd_labels[s->dvd_choice]);
   else snprintf(s->notice,sizeof s->notice,"DVD region: %s, %s",ha_dvd_labels[s->dvd_choice],p);
@@ -137,7 +186,7 @@ static void ha_dvd_set(struct helper_state *s,unsigned int next){
  if(next>=HA_DVD_CHOICES||next==s->dvd_choice)return;
  if(!++s->dvd_counter)s->dvd_counter=1;
  n=snprintf(text,sizeof text,"set %s %u\n",ha_dvd_names[next],s->dvd_counter);
- if(ha_request(UB_DVD_REQUEST,text,(size_t)n)){ha_copy(s->notice,"Cannot contact the helper",sizeof s->notice);return;}
+ if(ha_action_send(s,UB_DVD_REQUEST,text,(size_t)n,s->dvd_counter,&s->dvd_deadline)){ha_copy(s->notice,"Cannot contact the helper",sizeof s->notice);return;}
  s->dvd_choice=next; /* the helper confirms */
  s->dvd_seq=s->dvd_counter;s->dvd_wait=1;ha_copy(s->notice,"Saving...",sizeof s->notice);
 }
@@ -149,15 +198,21 @@ static const char *const ha_netflix_labels[]={"Netflix","Does nothing","UB820 He
 /* "<seq> <choice> <message>" from the remote module; 1 if shown state
  * changed. */
 static int ha_netflix_poll(struct helper_state *s){
+ int answered=0,reply;
  char buf[160];const char *p=buf;unsigned int seq,choice,before=s->netflix_choice;int known=s->netflix_known;
- if(!ha_read_line(UB_REMOTE_STATUS,buf,sizeof buf)){s->netflix_known=0;return known;}
+ if(s->netflix_wait){
+  reply=ha_action_poll(s,UB_REMOTE_REQUEST,s->netflix_seq,s->netflix_deadline,buf,sizeof buf);
+  if(reply<0){s->netflix_wait=0;ha_copy(s->notice,"No confirmation from helper; result unknown",sizeof s->notice);return 1;}
+  answered=reply==1;
+ }
+ if(!answered&&!ha_read_line(UB_REMOTE_STATUS,buf,sizeof buf)){s->netflix_known=0;return known;}
  seq=ha_parse(&p);if(*p++!=' ')return 0;
  choice=!strncmp(p,"nothing",7)?1u:!strncmp(p,"helper",6)?2u:0u;
  while(*p&&*p!=' ')p++;
  if(*p==' ')p++;
  s->netflix_known=1;
- if(!s->netflix_wait||seq==s->netflix_seq)s->netflix_choice=choice;
- if(s->netflix_wait&&seq==s->netflix_seq){
+ if(!s->netflix_wait||(answered&&seq==s->netflix_seq))s->netflix_choice=choice;
+ if(s->netflix_wait&&(answered&&seq==s->netflix_seq)){
   s->netflix_wait=0;
   if(!strcmp(p,"saved"))snprintf(s->notice,sizeof s->notice,"Netflix button: %s",ha_netflix_labels[s->netflix_choice]);
   else snprintf(s->notice,sizeof s->notice,"Netflix button: %s, %s",ha_netflix_labels[s->netflix_choice],p);
@@ -174,7 +229,7 @@ static void ha_netflix_set(struct helper_state *s,unsigned int next){
  if(next>=HA_NETFLIX_CHOICES||next==s->netflix_choice)return;
  if(!++s->netflix_counter)s->netflix_counter=1;
  n=snprintf(text,sizeof text,"set %s %u\n",ha_netflix_names[next],s->netflix_counter);
- if(ha_request(UB_REMOTE_REQUEST,text,(size_t)n)){ha_copy(s->notice,"Cannot contact the helper",sizeof s->notice);return;}
+ if(ha_action_send(s,UB_REMOTE_REQUEST,text,(size_t)n,s->netflix_counter,&s->netflix_deadline)){ha_copy(s->notice,"Cannot contact the helper",sizeof s->notice);return;}
  s->netflix_choice=next; /* the helper confirms */
  s->netflix_seq=s->netflix_counter;s->netflix_wait=1;ha_copy(s->notice,"Saving...",sizeof s->notice);
 }
@@ -182,18 +237,19 @@ static void ha_netflix_set(struct helper_state *s,unsigned int next){
 /* ---- SSH ---- */
 static void ha_ssh_load(struct helper_state *s){char buf[200];if(ha_read_line(UB_SSH_STATUS,buf,sizeof buf))s->ssh_running=buf[0]=='1';}
 static void ha_ssh_toggle(struct helper_state *s){
- static const char t[]="toggle\n";
+ const char *request=s->ssh_running?"stop\n":"start\n";
  if(s->ssh_wait){ha_copy(s->notice,"SSH request already running",sizeof s->notice);return;}
- unlink(UB_SSH_STATUS);
- if(ha_request(UB_SSH_REQUEST,t,sizeof t-1)){ha_copy(s->notice,"Cannot contact the helper",sizeof s->notice);return;}
- s->ssh_wait=1;ha_copy(s->notice,s->ssh_running?"Stopping SSH...":"Starting SSH...",sizeof s->notice);
+ if(!++s->ssh_counter)s->ssh_counter=1;
+ if(ha_action_send_timeout(s,UB_SSH_REQUEST,request,strlen(request),s->ssh_counter,&s->ssh_deadline,45u)){ha_copy(s->notice,"Cannot contact the helper",sizeof s->notice);return;}
+ s->ssh_seq=s->ssh_counter;s->ssh_wait=1;ha_copy(s->notice,s->ssh_running?"Stopping SSH...":"Starting SSH...",sizeof s->notice);
 }
 /* "<running> <code> <text>"; 1 when answered. Call about four times a second. */
 static int ha_ssh_poll(struct helper_state *s){
- char buf[200];const char *p=buf;
+ char buf[200];const char *p=buf;int reply;
  if(!s->ssh_wait)return 0;
- if(++s->ssh_wait>150){s->ssh_wait=0;ha_copy(s->notice,"No answer; is [ssh] enabled in modules.cfg?",sizeof s->notice);return 1;}
- if(!ha_read_line(UB_SSH_STATUS,buf,sizeof buf))return 0;
+ reply=ha_action_poll(s,UB_SSH_REQUEST,s->ssh_seq,s->ssh_deadline,buf,sizeof buf);
+ if(!reply)return 0;
+ if(reply<0){s->ssh_wait=0;ha_copy(s->notice,"No SSH confirmation; check status before retrying",sizeof s->notice);return 1;}
  s->ssh_running=buf[0]=='1';
  ha_parse(&p);if(*p==' ')p++;
  if(*p=='-')p++;
@@ -208,16 +264,16 @@ static void ha_log_save(struct helper_state *s){
  if(s->save_seq){ha_copy(s->notice,"Saving the log is already running",sizeof s->notice);return;}
  if(!++s->save_counter)s->save_counter=1;
  n=snprintf(text,sizeof text,"save-log %u\n",s->save_counter);
- unlink(UB_STORAGE_STATUS);
- if(ha_request(UB_STORAGE_REQUEST,text,(size_t)n)){ha_copy(s->notice,"Cannot contact the helper",sizeof s->notice);return;}
+ if(ha_action_send_timeout(s,UB_STORAGE_REQUEST,text,(size_t)n,s->save_counter,&s->save_deadline,45u)){ha_copy(s->notice,"Cannot contact the helper",sizeof s->notice);return;}
  s->save_seq=s->save_counter;s->save_ticks=0;ha_copy(s->notice,"Saving the log to USB...",sizeof s->notice);
 }
 /* 1 when answered. Call about four times a second. */
 static int ha_log_poll(struct helper_state *s){
- char buf[160];const char *p=buf;int code,negative=0;unsigned int seq;
+ char buf[160];const char *p=buf;int code,negative=0,reply;unsigned int seq;
  if(!s->save_seq)return 0;
- if(++s->save_ticks>120){s->save_seq=0;ha_copy(s->notice,"No answer from the helper; is [log] enabled?",sizeof s->notice);return 1;}
- if(!ha_read_line(UB_STORAGE_STATUS,buf,sizeof buf))return 0;
+ reply=ha_action_poll(s,UB_STORAGE_REQUEST,s->save_seq,s->save_deadline,buf,sizeof buf);
+ if(!reply)return 0;
+ if(reply<0){s->save_seq=0;ha_copy(s->notice,"No log-save confirmation; result unknown",sizeof s->notice);return 1;}
  seq=ha_parse(&p);if(*p++!=' '||seq!=s->save_seq)return 0;
  if(*p=='-'){negative=1;p++;}
  code=(int)ha_parse(&p);if(negative)code=-code;
@@ -231,6 +287,11 @@ static int ha_log_poll(struct helper_state *s){
 /* Everything the page shows, read when it opens. */
 static void ha_load(struct helper_state *s){
  char mode[16];
+ if(s->ssh_wait)ha_action_cancel(s,UB_SSH_REQUEST,s->ssh_seq);
+ if(s->save_seq)ha_action_cancel(s,UB_STORAGE_REQUEST,s->save_seq);
+ if(s->region_wait)ha_action_cancel(s,UB_REGION_REQUEST,s->region_seq);
+ if(s->dvd_wait)ha_action_cancel(s,UB_DVD_REQUEST,s->dvd_seq);
+ if(s->netflix_wait)ha_action_cancel(s,UB_REMOTE_REQUEST,s->netflix_seq);
  s->notice[0]=0;s->ssh_wait=0;s->region_wait=0;s->netflix_wait=0;s->dvd_wait=0;s->save_seq=0;
  s->ssh_enabled=ha_exists(HA_SSH_ENABLED);
  s->log_always=ha_read_line(UB_LOG_MODE,mode,sizeof mode)&&!strcmp(mode,"always");

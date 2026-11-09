@@ -20,6 +20,7 @@
 #include "ub.h"
 #include "ssh.h"
 #include "storage.h"
+#include "action_ipc.h"
 #include "tools.h"
 #include "sha512crypt.h"
 #include <errno.h>
@@ -134,9 +135,11 @@ static pid_t running_pid(void){
 }
 
 /* status for the menu: "<running> <code> <text>" */
+static char action_reply[UB_ACTION_PATH];
 static void answer(int running,int code,const char *text){
  char line[200];int n=snprintf(line,sizeof line,"%d %d %s\n",running,code,text),fd;
  if(n<0||n>=(int)sizeof line)return;
+ if(ub_action_reply(action_reply,line,(size_t)n))ub_log(ID,UB_ALWAYS,"cannot acknowledge SSH request");
  fd=open(UB_SSH_STATUS ".tmp",O_WRONLY|O_CREAT|O_TRUNC,0600);if(fd<0)return;
  if(write(fd,line,(size_t)n)!=n){close(fd);unlink(UB_SSH_STATUS ".tmp");return;}
  if(close(fd)||rename(UB_SSH_STATUS ".tmp",UB_SSH_STATUS))unlink(UB_SSH_STATUS ".tmp");
@@ -225,14 +228,11 @@ static void stop_ssh(char *msg,size_t msgn){
 }
 
 static void step(struct ub_part *p,struct ub_target *t){
- char buf[32],msg[200];int fd;ssize_t n;int want_stop;
+ char buf[64],msg[200];int want_stop;
  (void)p;(void)t;
  if(guard_pid>0&&waitpid(guard_pid,0,WNOHANG)==guard_pid)guard_pid=0;
  if(guard&&!guard_pid&&running_pid())guard_start(running_pid()); /* the server outlived its guard */
- fd=open(UB_SSH_REQUEST,O_RDONLY);if(fd<0)return;
- n=read(fd,buf,sizeof buf-1);close(fd);unlink(UB_SSH_REQUEST);
- if(n<=0)return;
- buf[n]=0;
+ if(!ub_action_receive(UB_SSH_REQUEST,buf,sizeof buf,action_reply,sizeof action_reply))return;
  if(!strncmp(buf,"stop",4))want_stop=1;
  else if(!strncmp(buf,"start",5))want_stop=0;
  else if(!strncmp(buf,"toggle",6))want_stop=running_pid()?1:0;

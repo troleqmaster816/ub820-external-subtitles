@@ -205,7 +205,7 @@ cycle.
 | Firmware | Status |
 | --- | --- |
 | 1.82 | Everything; tested on a player. |
-| 1.85 | Everything except the English text of the native subtitle rows (the firmware's language file changed); not yet confirmed on a player. |
+| 1.85 | Theoretical support, including the native English subtitle-row fallback; not yet confirmed on a player. |
 | other | Nothing is changed. |
 
 For 1.85, programs that are byte for byte the same as in 1.82 take the 1.82

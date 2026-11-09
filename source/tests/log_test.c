@@ -5,11 +5,31 @@
  * maps, process exit events, /proc stat lines, the kernel log, and a busy
  * thread found by the scan. */
 #define DIAG_BUSY_SECONDS 2
+struct ub_dir;
+static const char *isolated_proc_next(struct ub_dir *d);
+#define ub_dir_next isolated_proc_next
 #include "../modules/log/module.c"
+#undef ub_dir_next
+extern const char *ub_dir_next(struct ub_dir *d);
 #include <signal.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+
+/* Keep the real /proc scanner and real child lifecycles, but enumerate only
+ * this test executable's processes. Unrelated host starts/ends otherwise
+ * consume the shared eight-line budget and make exact burst assertions flaky. */
+static const char *isolated_proc_next(struct ub_dir *d){
+ struct stat root,here,self,other;const char *entry;char path[80];
+ if(stat("/proc",&root)||fstat(d->fd,&here)||root.st_dev!=here.st_dev||root.st_ino!=here.st_ino)return ub_dir_next(d);
+ if(stat("/proc/self/exe",&self))return 0;
+ while((entry=ub_dir_next(d))){
+  int pid=atoi(entry);if(pid<=0)continue;
+  snprintf(path,sizeof path,"/proc/%d/exe",pid);
+  if(!stat(path,&other)&&self.st_dev==other.st_dev&&self.st_ino==other.st_ino)return entry;
+ }
+ return 0;
+}
 
 static int failures;
 #define CHECK(c) do{if(!(c)){printf("FAIL %s:%d: %s\n",__FILE__,__LINE__,#c);failures++;}}while(0)

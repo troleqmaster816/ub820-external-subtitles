@@ -9,5 +9,6 @@
 extern const struct ub_payload ub_payload_ui_menu;
 extern const struct ub_payload ub_payload_ui_settings;
 extern const struct ub_payload ub_payload_external_subtitles_engine;
+extern const struct ub_payload ub_payload_external_subtitles_native_text;
 extern const struct ub_payload ub_payload_remote_keys;
 #endif

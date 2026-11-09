@@ -122,6 +122,7 @@ struct menu_state {
  int preview;               /* shown for the focused tile, not entered yet */
  int keys_fd,keys_open;     /* UB_KEYS_FIFO, read end */
  unsigned int ticks,keys_retry;
+ uint32_t overlay_deadline;
 };
 static struct menu_state m;
 static struct helper_state hs;
@@ -143,7 +144,7 @@ static int create_list(void);
 static void close_child(int restore){
  Widget w=m.window;
  close_list();
- if(m.overlay){m.overlay=0;unlink(UB_OVERLAY_OPEN);restore=0;}
+ if(m.overlay){m.overlay=0;unlink(UB_OVERLAY_OPEN);unlink(UB_OVERLAY_ABORT);m.overlay_deadline=0;restore=0;}
  m.window=0;m.active=0;m.preview=0;m.log_view=0;m.drop_kind=DROP_NONE;
  if(w){unregister_window(w);gtk_widget_destroy(w);}
  m.fixed=m.title=m.info=m.footer=0;memset(m.rows,0,sizeof m.rows);
@@ -322,7 +323,7 @@ static void overlay_key(unsigned int key);
 static void ensure_timer(void);
 /* Key presses from apl_mgr (u32 key codes); the FIFO stays open for reading
  * so that apl_mgr knows the overlay can take keys. */
-static void read_keys(void){
+static void read_keys(int discard){
  uint32_t keys[16];ssize_t n;unsigned int i;
  if(!m.keys_open){
   if(m.keys_retry){m.keys_retry--;return;}
@@ -331,11 +332,21 @@ static void read_keys(void){
   m.keys_open=1;
  }
  while((n=read(m.keys_fd,keys,sizeof keys))>0)
-  for(i=0;i+1<=(unsigned int)n/sizeof *keys;i++)overlay_key(keys[i]);
+  for(i=0;!discard&&i+1<=(unsigned int)n/sizeof *keys;i++)overlay_key(keys[i]);
+}
+static int overlay_renew(void){
+ uint32_t now;
+ if(ha_action_now(&now))return -1;
+ m.overlay_deadline=now+3u;
+ return ub_action_write(UB_OVERLAY_OPEN,(const char *)&m.overlay_deadline,sizeof m.overlay_deadline);
 }
 static int timer_tick(void *unused){
+ uint32_t now;int discard=ha_exists(UB_OVERLAY_ABORT);
  (void)unused;
- read_keys();
+ if(m.overlay&&(discard||ha_action_now(&now)||(int32_t)(now-m.overlay_deadline)>=0)){close_child(0);discard=1;}
+ unlink(UB_OVERLAY_ABORT);
+ read_keys(discard);
+ if(m.overlay&&overlay_renew())close_child(0);
  if(++m.ticks<POLL_TICKS)return 1;
  m.ticks=0;
  if(m.active){
@@ -602,10 +613,9 @@ static void overlay_key(unsigned int key){
  if(key==KEY_NETFLIX){
   if(m.active&&m.overlay)close_child(0);
   else if(!m.active){
-   int fd;
    m.overlay=1;m.kind=PAGE_HELPER;m.notice[0]=0;m.pending=0;ha_load(&hs);
    if(create_child()!=0){m.overlay=0;return;}
-   fd=open(UB_OVERLAY_OPEN,O_WRONLY|O_CREAT|O_TRUNC,0600);if(fd>=0)close(fd);
+   if(overlay_renew())close_child(0);
   }
   return;
  }
@@ -617,7 +627,7 @@ static void overlay_key(unsigned int key){
 }
 static void ensure_timer(void){
  if(m.timer)return;
- unlink(UB_OVERLAY_OPEN);  /* none is open in a new apl_dispsrv */
+ unlink(UB_OVERLAY_OPEN);unlink(UB_OVERLAY_ABORT);  /* none is open in a new apl_dispsrv */
  m.timer=g_timeout_add(TIMER_MS,timer_tick,0);
 }
 /* apl_dispsrv's main message callback (gdk_input_add, UI thread): starts the

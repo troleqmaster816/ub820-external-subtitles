@@ -19,8 +19,12 @@
 #include <sys/ptrace.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if defined(__x86_64__)
+#include <sys/user.h>
+#endif
 #ifndef PTRACE_GETSIGMASK
 #define PTRACE_GETSIGMASK 0x420a
 #endif
@@ -130,18 +134,112 @@ static uint32_t resolve(struct modules *ms,const char *name){
 }
 
 struct regs {uint32_t r[18];};
-struct stopped {int tids[256];unsigned n;int mem,quarantine;};
-static void detach_all(struct stopped *s){while(s->n){int tid=s->tids[--s->n];if(ptrace(PTRACE_DETACH,tid,0,(void *)(uintptr_t)(s->quarantine?SIGSTOP:0))<0&&errno!=ESRCH)ub_log("injector",UB_ALWAYS,"detach %d: %s\n",tid,strerror(errno));}}
-/* Attach every thread, re-scanning /proc/<pid>/task until a full pass adds none
- * (attached threads cannot spawn more, so the running set only shrinks). A busy
- * apl_dispsrv churns short-lived threads at boot, so allow many passes before
- * giving up; each pass is cheap and the caller still retries on a real miss. */
-static int stop_threads(int pid,struct stopped *s){unsigned pass;memset(s,0,sizeof *s);s->mem=-1;for(pass=0;pass<64;pass++){char path[64];snprintf(path,sizeof path,"/proc/%d/task",pid);static struct ub_dir dir;struct ub_dir *d=&dir;const char *de;unsigned added=0;if(ub_dir_open(d,path))goto fail;while((de=ub_dir_next(d))){int tid=atoi(de);unsigned j;int st;if(tid<=0)continue;for(j=0;j<s->n;j++)if(s->tids[j]==tid)break;if(j<s->n)continue;if(s->n==256){ub_dir_close(d);goto fail;}if(ptrace(PTRACE_ATTACH,tid,0,0)){if(errno==ESRCH)continue;ub_dir_close(d);goto fail;}while(waitpid(tid,&st,__WALL)<0){if(errno!=EINTR){ptrace(PTRACE_DETACH,tid,0,0);ub_dir_close(d);goto fail;}}if(!WIFSTOPPED(st)){ub_dir_close(d);goto fail;}s->tids[s->n++]=tid;added++;}ub_dir_close(d);if(!added&&s->n){snprintf(path,sizeof path,"/proc/%d/mem",pid);s->mem=open(path,O_RDWR);if(s->mem<0)goto fail;return 0;}}fail:detach_all(s);return -1;}
+#ifndef PTRACE_SEIZE
+#define PTRACE_SEIZE 0x4206
+#define PTRACE_INTERRUPT 0x4207
+#endif
+#ifndef PTRACE_EVENT_STOP
+#define PTRACE_EVENT_STOP 128
+#endif
+#ifndef UB_PTRACE_PAUSE_MS
+#define UB_PTRACE_PAUSE_MS 500
+#endif
+struct stopped {
+ int tids[256],signal[256];unsigned char waiting[256],group_stop[256];
+ unsigned n;int pid,mem,quarantine;unsigned long long until;
+};
+/* A task in uninterruptible I/O need not acknowledge INTERRUPT by our deadline.
+ * No memory has been touched in that case. Keep ownership and detach as soon
+ * as its stop arrives; never pretend a running tracee was successfully detached.
+ * One batch at a time bounds storage and blocks further injections meanwhile. */
+static struct stopped deferred;
+static int trace_index(struct stopped *s,int tid){for(unsigned i=0;i<s->n;i++)if(s->tids[i]==tid)return (int)i;return -1;}
+static void record_stop(struct stopped *s,unsigned i,int status){
+ s->waiting[i]=0;
+ if((unsigned)status>>16==PTRACE_EVENT_STOP){
+  if(WSTOPSIG(status)!=SIGTRAP)s->group_stop[i]=1;
+ }else {
+  int sig=WSTOPSIG(status);
+  if(s->signal[i]&&s->signal[i]!=sig)syscall(SYS_tgkill,s->pid,s->tids[i],s->signal[i]);
+  s->signal[i]=sig;
+ }
+}
+/* 0 stopped, 1 exited, -1 deadline/error. Does not resume or suppress signals. */
+static int wait_stop(struct stopped *s,unsigned i,unsigned long long until,int *observed){
+ for(;;){
+  int status;pid_t r=waitpid(s->tids[i],&status,__WALL|WNOHANG);
+  if(r>0){if(WIFSTOPPED(status)){if(observed){*observed=status;s->waiting[i]=0;}else record_stop(s,i,status);return 0;}s->tids[i]=0;return 1;}
+  if(r<0&&errno!=EINTR){if(errno==ECHILD||errno==ESRCH){s->tids[i]=0;return 1;}return -1;}
+  if(ub_now_ms()>=until){errno=ETIMEDOUT;return -1;}
+  ub_sleep_ms(1);
+ }
+}
+static void detach_all(struct stopped *s){
+ struct stopped remaining;memset(&remaining,0,sizeof remaining);remaining.mem=-1;remaining.pid=s->pid;remaining.quarantine=s->quarantine;
+ if(s->quarantine&&s->pid>0){
+  /* Do not signal a stale process number after a tracee exit. INTERRUPT
+   * verifies tracer ownership; tgkill additionally verifies the TID/TGID pair. */
+  for(unsigned i=0;i<s->n;i++)if(s->tids[i]&&!ptrace(PTRACE_INTERRUPT,s->tids[i],0,0)){
+   if(!syscall(SYS_tgkill,s->pid,s->tids[i],SIGSTOP))break;
+  }
+ }
+ for(unsigned i=0;i<s->n;i++){
+  int tid=s->tids[i];if(!tid)continue;
+  if(s->waiting[i]){
+   int status;pid_t r=waitpid(tid,&status,__WALL|WNOHANG);
+   if(r>0){if(!WIFSTOPPED(status))continue;record_stop(s,i,status);}
+   else if(r<0&&(errno==ECHILD||errno==ESRCH))continue;
+  }
+  if(!s->waiting[i]){
+   int sig=s->quarantine||s->group_stop[i]?SIGSTOP:s->signal[i];
+   /* A genuine signal already removed from the pending queue must survive
+    * quarantine/group-stop too; detach can carry only one signal. */
+   if(sig==SIGSTOP&&s->signal[i]&&s->signal[i]!=SIGSTOP)syscall(SYS_tgkill,s->pid,tid,s->signal[i]);
+   if(!ptrace(PTRACE_DETACH,tid,0,(void *)(uintptr_t)sig)||errno==ESRCH)continue;
+   ub_log("injector",UB_ALWAYS,"detach %d deferred: %s\n",tid,strerror(errno));
+  }else ptrace(PTRACE_INTERRUPT,tid,0,0);
+  unsigned j=remaining.n++;remaining.tids[j]=tid;remaining.signal[j]=s->signal[i];remaining.waiting[j]=s->waiting[i];remaining.group_stop[j]=s->group_stop[i];
+ }
+ s->n=0;deferred=remaining;
+}
+void ub_injector_poll(void){if(deferred.n){struct stopped pending=deferred;deferred.n=0;detach_all(&pending);}}
+/* SEIZE never manufactures SIGSTOP. INTERRUPT gives an identifiable event-stop,
+ * while a real signal arriving first is retained and reinjected on detach. */
+static int stop_threads(int pid,struct stopped *s){
+ unsigned long long until=ub_now_ms()+UB_PTRACE_PAUSE_MS;
+ memset(s,0,sizeof *s);s->pid=pid;s->mem=-1;s->until=until+1500;ub_injector_poll();
+ if(deferred.n){errno=EBUSY;return -1;}
+ for(unsigned pass=0;pass<64;pass++){
+  char path[64];struct ub_dir dir;const char *de;unsigned added=0;
+  snprintf(path,sizeof path,"/proc/%d/task",pid);if(ub_dir_open(&dir,path))goto fail;
+  while((de=ub_dir_next(&dir))){
+   int tid=atoi(de);if(tid<=0||trace_index(s,tid)>=0)continue;
+   if(s->n==256||ub_now_ms()>=until){ub_dir_close(&dir);errno=ETIMEDOUT;goto fail;}
+   if(ptrace(PTRACE_SEIZE,tid,0,0)){if(errno==ESRCH)continue;ub_dir_close(&dir);goto fail;}
+   unsigned i=s->n++;s->tids[i]=tid;s->waiting[i]=1;
+   if(ptrace(PTRACE_INTERRUPT,tid,0,0)){ub_dir_close(&dir);goto fail;}
+   int rc=wait_stop(s,i,until,0);if(rc<0){ub_dir_close(&dir);goto fail;}if(!rc)added++;
+  }
+  ub_dir_close(&dir);
+  if(!added&&s->n){snprintf(path,sizeof path,"/proc/%d/mem",pid);s->mem=open(path,O_RDWR);if(s->mem<0)goto fail;return 0;}
+ }
+ errno=ETIMEDOUT;
+ fail:{int saved=errno;detach_all(s);errno=saved;}return -1;
+}
 static int memio(int fd,uint32_t a,void *buf,size_t n,int writing){size_t done=0;while(done<n){ssize_t k=writing?pwrite(fd,(char *)buf+done,n-done,(off_t)(a+done)):pread(fd,(char *)buf+done,n-done,(off_t)(a+done));if(k<=0)return -1;done+=(size_t)k;}return 0;}
 static int restore_memory(struct stopped *s,int tid,uint32_t a,const void *bytes,size_t n){
- unsigned char verify[32];if(n>sizeof verify||n%4||a%4)return -1;
+ unsigned char verify[32];if(!n||n>sizeof verify)return -1;
+ for(unsigned i=0;i<s->n;i++)if(s->tids[i]&&s->waiting[i])return -1;
  if(memio(s->mem,a,(void *)bytes,n,1)){
-  for(size_t i=0;i<n;i+=4){uint32_t word;memcpy(&word,(const char *)bytes+i,4);if(ptrace(PTRACE_POKETEXT,tid,(void *)(uintptr_t)(a+i),(void *)(uintptr_t)word))return -1;}
+  /* POKETEXT fallback also supports byte/string patch sites. Preserve the
+   * untouched bytes in the native ptrace word on both ARM and host tests. */
+  size_t wordsize=sizeof(unsigned long);uint32_t first=a&~(uint32_t)(wordsize-1);
+  for(uint32_t at=first;(uint64_t)at<(uint64_t)a+n;at+=(uint32_t)wordsize){
+   unsigned long word;unsigned char *b=(unsigned char *)&word;
+   if(memio(s->mem,at,&word,wordsize,0))return -1;
+   for(unsigned j=0;j<wordsize;j++)if((uint64_t)at+j>=a&&(uint64_t)at+j<(uint64_t)a+n)b[j]=((const unsigned char *)bytes)[at+j-a];
+   if(ptrace(PTRACE_POKETEXT,tid,(void *)(uintptr_t)at,(void *)(uintptr_t)word))return -1;
+  }
  }
  return memio(s->mem,a,verify,n,0)||memcmp(bytes,verify,n)?-1:0;
 }
@@ -150,63 +248,78 @@ static int setregs(int tid,struct regs *r){return ptrace(PTRACE_SETREGS,tid,0,r)
 /* Diagnostics for ub_probe: the injected thread's state and the trap outcome of
  * the most recent remote_syscall. Not used by normal operation. */
 static struct { uint32_t pc,trap_pc,old_pc,old_r7,old_orig,old_cpsr; unsigned stops; int lastsig; } rsdbg;
+#ifdef UB_HOST_TEST
+/* Tests model failing ARM VM syscalls without executing Thumb on an x86 child. */
+static int (*remote_syscall_test)(struct stopped *,int,uint32_t,const uint32_t [6],uint32_t *);
+#endif
 static int remote_syscall(struct stopped *s,int tid,uint32_t number,const uint32_t args[6],uint32_t *result){
- struct regs old,r;
- /* Thumb stub: bkpt, svc, bkpt, nop. On ARM Linux, when the target thread is
-  * resumed from a signal-delivery-stop (which is what PTRACE_ATTACH on a
-  * thread blocked in a syscall produces), the kernel's syscall-exit short path
-  * can skip the first user instruction, landing straight on whatever is at
-  * pc+2. Putting a sync bkpt at pc+0 catches BOTH cases: a clean resume at pc
-  * fires the sync bkpt (we then step to pc+2 to run the svc), while a skipped
-  * resume at pc+2 runs the svc directly and traps at the second bkpt (pc+4).
-  * Either way, pc+4 is the final trap with mmap's return in r0. */
+#ifdef UB_HOST_TEST
+ if(remote_syscall_test)return remote_syscall_test(s,tid,number,args,result);
+#endif
+ struct regs old,r;int index=trace_index(s,tid),status,changed=0,rc=-1,maskok=0;
  unsigned char saved[8],stub[8]={0xab,0xbe,0x00,0xdf,0xac,0xbe,0x00,0xbf};
- uint32_t pc;int status,changed=0,rc=-1,maskok=0;
- uint64_t savemask=0,allmask=~0ull;
+ uint32_t pc;uint64_t savemask=0,allmask=~0ull;
+ unsigned long long until=ub_now_ms()+UB_PTRACE_PAUSE_MS;
+ if(s->until&&until>s->until)until=s->until;
+ if(ub_now_ms()>=until)return -1;
+ if(index<0||s->waiting[index]||s->group_stop[index]||s->signal[index]==SIGSTOP||s->quarantine)return -1;
  if(getregs(tid,&old))return -1;
  r=old;pc=old.r[15]&~3u;
  rsdbg.old_pc=old.r[15];rsdbg.old_r7=old.r[7];rsdbg.old_orig=old.r[17];rsdbg.old_cpsr=old.r[16];rsdbg.pc=pc;rsdbg.trap_pc=0;rsdbg.stops=0;rsdbg.lastsig=0;
  if(memio(s->mem,pc,saved,8,0))return -1;
- changed=1;
+ /* Mask changes are mandatory: never run a library signal handler while its
+  * peers are stopped. A delivery-stop saved by SEIZE is reinjected on detach. */
+ if(ptrace(PTRACE_GETSIGMASK,tid,(void *)(uintptr_t)sizeof savemask,&savemask))return -1;
+ if(ptrace(PTRACE_SETSIGMASK,tid,(void *)(uintptr_t)sizeof allmask,&allmask))return -1;
+ maskok=1;changed=1;
  if(memio(s->mem,pc,stub,8,1))goto finish;
  for(unsigned i=0;i<6;i++)r.r[i]=args[i];
  r.r[7]=number;r.r[15]=pc;r.r[16]=(r.r[16]&~0x0600fc00u)|0x20u;r.r[17]=0xffffffffu;
- /* Block every signal in this thread for the length of the injected call. All
-  * threads are frozen, so letting the C library's own thread-management signals
-  * (SIGCANCEL/SIGSETXID) run a handler here would reach for a stopped peer and
-  * corrupt the call. Blocked signals stay pending and are delivered once the
-  * mask and registers below are restored and the process resumes. */
- maskok=!ptrace(PTRACE_GETSIGMASK,tid,(void *)(uintptr_t)sizeof savemask,&savemask);
- if(maskok)ptrace(PTRACE_SETSIGMASK,tid,(void *)(uintptr_t)sizeof allmask,&allmask);
  if(setregs(tid,&r)||ptrace(PTRACE_CONT,tid,0,0))goto finish;
- for(unsigned pass=0;;pass++){
-  do {status=0;}while(waitpid(tid,&status,__WALL)<0&&errno==EINTR);
-  if(!WIFSTOPPED(status))goto finish;
-  rsdbg.stops++;rsdbg.lastsig=WSTOPSIG(status);
-  if(WSTOPSIG(status)==SIGTRAP){
+ s->waiting[index]=1;
+ for(;;){
+  pid_t waited=waitpid(tid,&status,__WALL|WNOHANG);
+  if(waited<0&&errno!=EINTR)goto recover_stop;
+  if(waited==0||waited<0){if(ub_now_ms()>=until)goto recover_stop;ub_sleep_ms(1);continue;}
+  if(!WIFSTOPPED(status)){s->tids[index]=0;return -1;}
+  s->waiting[index]=0;rsdbg.stops++;rsdbg.lastsig=WSTOPSIG(status);
+  if(WSTOPSIG(status)==SIGTRAP&&!(status>>16)){
    if(getregs(tid,&r))goto finish;
    rsdbg.trap_pc=r.r[15];
+   /* Keep the sync breakpoint for both clean event-stop resumes and the ARM
+    * syscall-exit path which can skip the first Thumb instruction. */
    if(r.r[15]==pc){
-    /* Sync bkpt (pc) fired. Advance to the svc at pc+2 and resume; next stop
-     * is the post-svc bkpt at pc+4 with mmap's result in r0. */
-    r.r[15]=pc+2;
-    for(unsigned i=0;i<6;i++)r.r[i]=args[i];
-    r.r[7]=number;r.r[17]=0xffffffffu;
+    r.r[15]=pc+2;for(unsigned i=0;i<6;i++)r.r[i]=args[i];r.r[7]=number;r.r[17]=0xffffffffu;
     if(setregs(tid,&r)||ptrace(PTRACE_CONT,tid,0,0))goto finish;
-    continue;
+    s->waiting[index]=1;continue;
    }
-   if(r.r[15]==pc+4)break; /* post-svc bkpt */
-   goto finish; /* a trap somewhere unexpected */
+   if(r.r[15]==pc+4){*result=r.r[0];rc=0;goto finish;}
   }
-  /* With signals blocked only the unblockable ones (SIGKILL/SIGSTOP) can land;
-   * never run a handler mid-injection, so swallow and continue to our trap. */
-  if(pass>=8)goto finish;
-  if(ptrace(PTRACE_CONT,tid,0,0))goto finish;
+  /* Never swallow a foreign stop and run on through it. SIGSTOP cannot be
+   * masked; preserve a concurrent group stop. Unexpected synchronous faults
+   * during the bootstrap quarantine instead of exposing damaged execution. */
+  if(WSTOPSIG(status)==SIGSTOP)s->group_stop[index]=1;
+  else if((unsigned)status>>16!=PTRACE_EVENT_STOP)s->quarantine=1;
+  goto finish;
  }
- *result=r.r[0];rc=0;
+ recover_stop:
+ /* A deadline does not authorize restoring bytes beneath a running PC. First
+  * interrupt and acknowledge the stop. If I/O prevents that, keep the whole
+  * process stopped/quarantined, and let poll finish the outstanding detach. */
+ ptrace(PTRACE_INTERRUPT,tid,0,0);
+ if(wait_stop(s,(unsigned)index,ub_now_ms()+UB_PTRACE_PAUSE_MS,&status)!=0){s->quarantine=1;return -1;}
+ /* The interrupt races our own final breakpoint. Never reinject that private
+  * SIGTRAP into the restored application as though it were a foreign signal. */
+ if(WSTOPSIG(status)==SIGSTOP)s->group_stop[index]=1;
+ else if((unsigned)status>>16!=PTRACE_EVENT_STOP){
+  if(WSTOPSIG(status)!=SIGTRAP||getregs(tid,&r)||(r.r[15]!=pc&&r.r[15]!=pc+4))s->quarantine=1;
+ }
  finish:
- if(maskok)ptrace(PTRACE_SETSIGMASK,tid,(void *)(uintptr_t)sizeof savemask,&savemask);
- if(changed&&restore_memory(s,tid,pc,saved,8)){s->quarantine=1;rc=-1;}if(setregs(tid,&old)){s->quarantine=1;rc=-1;}return rc;
+ if(s->waiting[index]){s->quarantine=1;return -1;}
+ if(changed&&restore_memory(s,tid,pc,saved,8)){s->quarantine=1;rc=-1;}
+ if(setregs(tid,&old)){s->quarantine=1;rc=-1;}
+ if(maskok&&ptrace(PTRACE_SETSIGMASK,tid,(void *)(uintptr_t)sizeof savemask,&savemask)){s->quarantine=1;rc=-1;}
+ return rc;
 }
 static int cacheflush(struct stopped *s,int tid,uint32_t a,uint32_t n){uint32_t r,args[6]={a,a+n,0,0,0,0};return remote_syscall(s,tid,0x0f0002,args,&r)||((int32_t)r<0)?-1:0;}
 
@@ -224,42 +337,119 @@ static int branch_thumb(uint32_t from,uint32_t to,unsigned char out[4]){
  h2=(uint16_t)(0x9000u|((~(i1^s)&1)<<13)|((~(i2^s)&1)<<11)|(((uint32_t)d>>1)&2047));
  memcpy(out,&h1,2);memcpy(out+2,&h2,2);return 0;
 }
-/* Data-only page swap: a private anonymous copy is filled and sealed read-only,
- * then one mremap(MREMAP_MAYMOVE|MREMAP_FIXED) atomically takes the place of
- * the old pages. Until that call succeeds the target mapping is untouched.
- * Negative results name the step that failed (UB_OVERLAY_* in injector.h). */
+/* Mapping metadata must be captured while stopped. A data overlay accepts one
+ * readable, non-executable VMA; a prepared anonymous backup restores its bytes
+ * and protection if MREMAP_FIXED has already unmapped the destination on error. */
+static int mapping_protection(int pid,uint32_t a,uint32_t n){
+ static char maps[256*1024];char path[64],*line,*save,perm[8];unsigned long lo,hi;
+ snprintf(path,sizeof path,"/proc/%d/maps",pid);if(ub_read_file(path,maps,sizeof maps)<0)return -1;
+ for(line=strtok_r(maps,"\n",&save);line;line=strtok_r(0,"\n",&save))
+  if(sscanf(line,"%lx-%lx %7s",&lo,&hi,perm)==3&&(uint64_t)a>=lo&&(uint64_t)a+n<=hi)return (perm[0]=='r'?1:0)|(perm[1]=='w'?2:0)|(perm[2]=='x'?4:0);
+ return -1;
+}
+static int remote_map(struct stopped *s,int pid,uint32_t n,const unsigned char *bytes,int prot,uint32_t *out){
+ uint32_t args[6]={0,n,3,0x4022,0xffffffffu,0},result=0;*out=0;
+ if(remote_syscall(s,pid,192,args,&result)||result>=0xfffff001u||result<65536u)return UB_OVERLAY_MAP;
+ *out=result;if(memio(s->mem,result,(void *)bytes,n,1))return UB_OVERLAY_FILL;
+ memset(args,0,sizeof args);args[0]=result;args[1]=n;args[2]=(uint32_t)prot;
+ if(remote_syscall(s,pid,125,args,&result)||result)return UB_OVERLAY_SEAL;
+ return 0;
+}
+static int remote_move(struct stopped *s,int pid,uint32_t from,uint32_t to,uint32_t n){
+ uint32_t args[6]={from,n,n,3,to,0},result=0;
+ return remote_syscall(s,pid,163,args,&result)||result!=to?-1:0;
+}
+static void remote_unmap(struct stopped *s,int pid,uint32_t a,uint32_t n){uint32_t args[6]={a,n,0,0,0,0},result;if(a&&!s->quarantine)remote_syscall(s,pid,91,args,&result);}
 int ub_overlay_pages(int pid,uint32_t a,const unsigned char *expected,const unsigned char *replacement,uint32_t n){
- struct stopped stop;unsigned char *now;uint32_t args[6],tmp=0,result=0;int rc=UB_OVERLAY_ARGS;
- if(!n||(a&4095u)||(n&4095u)||n>65536)return UB_OVERLAY_ARGS;
- now=malloc(n);if(!now)return UB_OVERLAY_ARGS;
- if(stop_threads(pid,&stop)){free(now);return UB_OVERLAY_STOP;}
- rc=UB_OVERLAY_READ;if(memio(stop.mem,a,now,n,0))goto out;
- if(!memcmp(now,replacement,n)){rc=0;goto out;}
- if(memcmp(now,expected,n)){rc=1;goto out;}
- rc=UB_OVERLAY_MAP;
- /* MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE. NORESERVE skips the overcommit
-  * heuristic, which refuses a fresh mapping while the player is loading the
-  * disc and RAM is tight; the pages are tiny and filled immediately below. */
- memset(args,0,sizeof args);args[1]=n;args[2]=3;args[3]=0x4022;args[4]=0xffffffffu;
- if(remote_syscall(&stop,pid,192,args,&tmp)||tmp>=0xfffff001u||tmp<65536u){tmp=0;goto out;}
- rc=UB_OVERLAY_FILL;if(memio(stop.mem,tmp,(void *)replacement,n,1))goto out;
- rc=UB_OVERLAY_SEAL;
- memset(args,0,sizeof args);args[0]=tmp;args[1]=n;args[2]=1;
- if(remote_syscall(&stop,pid,125,args,&result)||result)goto out;
+ struct stopped stop;unsigned char *now,*check;uint32_t tmp=0,backup=0;int rc=UB_OVERLAY_ARGS,prot;
+ if(!expected||!replacement||!n||(a&4095u)||(n&4095u)||n>65536||(uint64_t)a+n>UINT32_MAX)return UB_OVERLAY_ARGS;
+ now=malloc(n);check=malloc(n);if(!now||!check){free(now);free(check);return UB_OVERLAY_ARGS;}
+ if(stop_threads(pid,&stop)){free(now);free(check);return UB_OVERLAY_STOP;}
+ rc=UB_OVERLAY_READ;prot=mapping_protection(pid,a,n);
+ if(prot<0||!(prot&1)||(prot&4)||memio(stop.mem,a,now,n,0))goto out;
+ if(!memcmp(now,replacement,n)){rc=0;goto out;}if(memcmp(now,expected,n)){rc=1;goto out;}
+ /* Prepare both mappings completely before risking the original destination.
+  * mmap/mprotect failures here leave the destination mapping untouched. */
+ rc=remote_map(&stop,pid,n,now,prot,&backup);if(rc)goto out;
+ rc=remote_map(&stop,pid,n,replacement,prot,&tmp);if(rc)goto out;
  rc=UB_OVERLAY_SWAP;
- memset(args,0,sizeof args);args[0]=tmp;args[1]=n;args[2]=n;args[3]=3;args[4]=a;
- if(remote_syscall(&stop,pid,163,args,&result))goto out;
- if(result>=0xfffff001u)goto out;
- if(result!=a){tmp=result;goto out;}
- tmp=0;rc=memio(stop.mem,a,now,n,0)||memcmp(now,replacement,n)?UB_OVERLAY_VERIFY:0;
- out:if(tmp){memset(args,0,sizeof args);args[0]=tmp;args[1]=n;remote_syscall(&stop,pid,91,args,&result);}
+ if(remote_move(&stop,pid,tmp,a,n))goto recover;
+ tmp=0;rc=UB_OVERLAY_VERIFY;
+ if(memio(stop.mem,a,check,n,0)||memcmp(check,replacement,n))goto recover;
+ rc=0;goto out;
+ recover:
+ stop.until=ub_now_ms()+UB_PTRACE_PAUSE_MS;
+ /* A failed MREMAP_FIXED may have destroyed the destination. Even an uncertain
+  * remote-syscall outcome must be recovered or quarantined, never resumed. */
+ if(stop.quarantine||remote_move(&stop,pid,backup,a,n))goto quarantine;
+ backup=0;
+ if(memio(stop.mem,a,check,n,0)||memcmp(check,now,n)||mapping_protection(pid,a,n)!=prot)goto quarantine;
+ goto out;
+ quarantine:
+ stop.quarantine=1;rc=UB_OVERLAY_RECOVER;
+ ub_log("injector",UB_ALWAYS,"FATAL: language mapping recovery unverified for PID%d; process quarantined. Power cycle required.\n",pid);
+ out:
+ if(stop.quarantine){rc=UB_OVERLAY_RECOVER;}else{remote_unmap(&stop,pid,tmp,n);remote_unmap(&stop,pid,backup,n);if(stop.quarantine)rc=UB_OVERLAY_RECOVER;}
  if(stop.mem>=0)close(stop.mem);
- detach_all(&stop);free(now);return rc;
+ detach_all(&stop);free(now);free(check);return rc;
+}
+/* Executable map membership is checked after every thread has stopped. */
+static int executable_range(int pid,uint32_t a,uint32_t n){
+ static char maps[256*1024];char path[64],*line,*save,perm[8];unsigned long lo,hi;
+ snprintf(path,sizeof path,"/proc/%d/maps",pid);if(ub_read_file(path,maps,sizeof maps)<0)return 0;
+ for(line=strtok_r(maps,"\n",&save);line;line=strtok_r(0,"\n",&save))
+  if(sscanf(line,"%lx-%lx %7s",&lo,&hi,perm)==3&&strchr(perm,'x')&&(uint64_t)a>=lo&&(uint64_t)a+n<=hi)return 1;
+ return 0;
+}
+static int thread_pc(int tid,uint64_t *pc){
+#if defined(__arm__)
+ struct regs r;if(getregs(tid,&r))return -1;*pc=r.r[15]&~1u;return 0;
+#elif defined(__x86_64__)
+ struct user_regs_struct r;if(ptrace(PTRACE_GETREGS,tid,0,&r))return -1;*pc=r.rip;return 0;
+#else
+ (void)tid;(void)pc;return -1;
+#endif
+}
+/* /proc/pid/mem and POKETEXT both use copy_to_user_page. The vendor ARM64
+ * 4.4.8 implementation flushes VM_EXEC instruction caches before returning,
+ * as does reference ARM Linux 4.4. No target thread needs to run just to flush
+ * these writes; all PCs stay frozen throughout the transaction and rollback. */
+int ub_patch_code(int pid,const struct ub_code_patch *patches,unsigned count){
+ struct stopped stop;unsigned char saved[64][32],now[32],different[64];unsigned written=0;int rc=-1;
+ if(!patches||!count||count>64)return -1;
+ for(unsigned i=0;i<count;i++){
+  const struct ub_code_patch *p=patches+i;
+  if(!p->expected||!p->replacement||!p->length||p->length>32||(uint64_t)p->address+p->length>UINT32_MAX)return -1;
+  for(unsigned j=0;j<i;j++)if((uint64_t)p->address<(uint64_t)patches[j].address+patches[j].length&&(uint64_t)patches[j].address<(uint64_t)p->address+p->length)return -1;
+ }
+ if(stop_threads(pid,&stop))return -1;
+ /* Unknown bytes at any site abort before the first write, even when some
+  * earlier sites already happen to match their requested replacement. */
+ for(unsigned i=0;i<count;i++){
+  const struct ub_code_patch *p=patches+i;
+  if(!executable_range(pid,p->address,p->length)||memio(stop.mem,p->address,saved[i],p->length,0))goto out;
+  different[i]=memcmp(saved[i],p->replacement,p->length)!=0;
+  if(different[i]&&memcmp(saved[i],p->expected,p->length)&&(!p->alternate||memcmp(saved[i],p->alternate,p->length))){rc=1;goto out;}
+ }
+ for(unsigned i=0;i<stop.n;i++){
+  uint64_t pc;if(!stop.tids[i])continue;if(thread_pc(stop.tids[i],&pc))goto out;
+  for(unsigned j=0;j<count;j++)if(different[j]&&pc>=patches[j].address&&(uint64_t)pc<(uint64_t)patches[j].address+patches[j].length)goto out;
+ }
+ for(unsigned i=0;i<count;i++){
+  const struct ub_code_patch *p=patches+i;written=i+1;if(!different[i])continue;
+  if(memio(stop.mem,p->address,(void *)p->replacement,p->length,1)||memio(stop.mem,p->address,now,p->length,0)||memcmp(now,p->replacement,p->length))goto rollback;
+ }
+ rc=0;goto out;
+ rollback:
+ for(unsigned i=written;i>0;i--){const struct ub_code_patch *p=patches+i-1;if(different[i-1]&&(restore_memory(&stop,pid,p->address,saved[i-1],p->length)))stop.quarantine=1;}
+ if(stop.quarantine){rc=-2;ub_log("injector",UB_ALWAYS,"FATAL: code patch rollback unverified for PID%d; process quarantined. Power cycle required.\n",pid);}
+ out:if(stop.quarantine)rc=-2;if(stop.mem>=0)close(stop.mem);detach_all(&stop);return rc;
 }
 int ub_while_stopped(int pid,int (*fn)(int,int,void *),void *arg){
  struct stopped stop;int rc;
  if(stop_threads(pid,&stop))return -1;
  rc=fn(pid,stop.mem,arg);
+ if(rc==-2)stop.quarantine=1;
  if(stop.mem>=0)close(stop.mem);
  detach_all(&stop);
  return rc;
@@ -274,6 +464,7 @@ const char *ub_overlay_error(int rc){
  case UB_OVERLAY_SEAL:return "copy could not be made read-only";
  case UB_OVERLAY_SWAP:return "pages could not be swapped";
  case UB_OVERLAY_VERIFY:return "swapped pages differ";
+ case UB_OVERLAY_RECOVER:return "mapping recovery failed; process quarantined";
  default:return "unexpected result";
  }
 }
@@ -322,13 +513,15 @@ int ub_install_payload(int pid,const struct ub_payload *p){
  install_stage="patch";for(i=0;i<v->hook_count;i++){unsigned char b[32];uint32_t to=(gateway+16*i)|1u;if(v->hooks[i].length<4||(v->hooks[i].target&3u))goto rollback;for(unsigned j=0;j<v->hooks[i].length;j+=2){b[j]=0x00;b[j+1]=0xbf;}if(branch_thumb(v->hooks[i].target,to,b))goto rollback;changed=(int)i+1;if(memio(stop.mem,v->hooks[i].target,b,v->hooks[i].length,1))goto rollback;if(cacheflush(&stop,pid,v->hooks[i].target,v->hooks[i].length))goto rollback;}
  rc=0;install_stage="ok";ub_log("injector",UB_ALWAYS,"Installed %s PID%d payload at %08x (%u hooks, %s addresses)\n",p->process,pid,base,v->hook_count,v->firmware);goto out;
  rollback:
- {int restored=1;for(int j=changed-1;j>=0;j--){if(restore_memory(&stop,pid,v->hooks[j].target,v->hooks[j].expected,v->hooks[j].length)||cacheflush(&stop,pid,v->hooks[j].target,v->hooks[j].length))restored=0;}
+ {int restored=1;for(int j=changed-1;j>=0;j--){if(restore_memory(&stop,pid,v->hooks[j].target,v->hooks[j].expected,v->hooks[j].length))restored=0;}
  if(!restored||stop.quarantine){stop.quarantine=1;rc=-2;ub_log("injector",UB_ALWAYS,"FATAL: rollback not verified for %s PID%d; keep payload mapped and stop process. Power cycle required.\n",p->process,pid);goto out;}}
  /* Never unmap a successfully hooked callback; failure rollback runs while all
-  * threads remain stopped and no payload instruction has executed. */
+  * threads remain stopped and no payload instruction has executed. A separate
+  * bounded cleanup budget still permits unmapping after the install deadline. */
+ stop.until=ub_now_ms()+UB_PTRACE_PAUSE_MS;
  if(base){memset(args,0,sizeof args);args[0]=base;args[1]=span+4096;remote_syscall(&stop,pid,91,args,&result);}
  if(gateway){memset(args,0,sizeof args);args[0]=gateway;args[1]=4096;remote_syscall(&stop,pid,91,args,&result);}
- out:if(attached){if(stop.mem>=0)close(stop.mem);detach_all(&stop);}close(mods.mem);free(image);return rc;
+ out:if(attached){if(stop.quarantine)rc=-2;if(stop.mem>=0)close(stop.mem);detach_all(&stop);}close(mods.mem);free(image);return rc;
 }
 
 /* Diagnostic: inject a throwaway 4 KiB mmap into pid and report the injected

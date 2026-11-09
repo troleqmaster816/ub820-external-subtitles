@@ -116,8 +116,8 @@ static int tile_index(const uint32_t *rec){
 }
 /* The window (FUN_000bf070) makes one button per right row the record had
  * when it was built, before this hook adds our row, so ours is made here the
- * same way. Without it the renderer finds no widget for the row: no tile, and
- * Down onto it dereferences NULL (FUN_00098xxx). */
+ * same way. Publish the record only after creation succeeds: the native
+ * renderer and focus code handle a missing widget, but leave an invisible row. */
 static const char *make_tile_button(const int *view,unsigned int at){
  Widget window=(Widget)(uintptr_t)view[V_WINDOW],fixed;const char *name;
  if(!window)return "no window";
@@ -146,12 +146,17 @@ void ub_hook_render(int *view,void *a,void *b,void *c){
    unsigned int n=rec[R_COUNT];
    at=tile_index(rec);
    if(at<0&&n<R_MAX){
-    rec[R_IDS+n]=TILE_ID;rec[R_FLAGS+n]=1;rec[R_TEXTS+n]=TILE_TEXT;rec[R_COUNT]=n+1;
-    if(ub_right_count)*ub_right_count=n+1;
-    at=(int)n;
-    if(!logged_room){char t[64];logged_room=1;snprintf(t,sizeof t,"UB820 Helper tile added to System (row %d)",at+1);plog(t);}
+    Widget button=0;
+    how=make_tile_button(view,n);
+    if(view[V_WINDOW]&&ub_right_names_all&&ub_right_names_all[n])button=gtk_object_get_data((Widget)(uintptr_t)view[V_WINDOW],ub_right_names_all[n]);
+    if(button){
+     rec[R_IDS+n]=TILE_ID;rec[R_FLAGS+n]=1;rec[R_TEXTS+n]=TILE_TEXT;rec[R_COUNT]=n+1;
+     if(ub_right_count)*ub_right_count=n+1;
+     at=(int)n;
+     if(!logged_room){char t[64];logged_room=1;snprintf(t,sizeof t,"UB820 Helper tile added to System (row %d)",at+1);plog(t);}
+    }else log_tile(view,(int)n,0,how); /* next natural render retries */
    }else if(at<0&&!logged_room){logged_room=1;plog("System has no room for the UB820 Helper tile");}
-   if(at>=0)how=make_tile_button(view,(unsigned int)at);
+   else if(at>=0)how=make_tile_button(view,(unsigned int)at);
   }
  }
  ub_original_render(view,a,b,c);

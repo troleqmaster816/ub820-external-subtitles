@@ -3,7 +3,10 @@
 /* Files shared between the "UB820 Helper" menu (modules/ui/menu.c, inside
  * apl_dispsrv) and the helper's modules. Requests are written atomically by
  * the menu (temp file + rename) and consumed by the helper; status files are
- * replaced atomically by the helper. All in /tmp (RAM). */
+ * replaced atomically by the helper. All in /tmp (RAM). New region/remote
+ * clients use action_ipc.h: REQUEST.q.<random-session>.<seq> and private
+ * REQUEST.r.<random-session>.<seq> replies carrying the status-line format.
+ * Global STATUS is observational; it never acknowledges a new client. */
 
 /* Present while the module is enabled; the menu shows its rows only then. */
 #define UB_EXTSUB_ENABLED "/tmp/ub820_extsub.enabled"
@@ -45,4 +48,8 @@
  * drops the keys for everything else, as long as somebody reads the FIFO. */
 #define UB_KEYS_FIFO "/tmp/ub820_keys.fifo"
 #define UB_OVERLAY_OPEN "/tmp/ub820_overlay.open"
+/* OPEN contains a u32 CLOCK_MONOTONIC expiry (seconds), refreshed by UI.
+ * ABORT requests closure after a failed FIFO delivery; never execute that
+ * same key against the application hidden underneath the overlay. */
+#define UB_OVERLAY_ABORT "/tmp/ub820_overlay.abort"
 #endif
