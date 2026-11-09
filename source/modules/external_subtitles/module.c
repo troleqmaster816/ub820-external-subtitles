@@ -53,7 +53,8 @@ static void engine_step(struct ub_part *p,struct ub_target *t){
   if(style_rc){
    if(style_rc==-2){t->failed=1;*attempts=15;ub_log(ID,UB_ALWAYS,"Style rollback failed; PID%d remains quarantined",t->pid);return;}
    if(++t->state[1]>=15){*attempts=15;ub_log(ID,UB_ALWAYS,"Style initialization unavailable; automatic subtitle startup skipped");}
-   else ub_log(ID,UB_INFO,"Style initialization deferred (%d); retrying before subtitle startup",style_rc);
+   else ub_log(ID,UB_INFO,"Style initialization deferred (%d: %s); retrying before subtitle startup",style_rc,
+    style_rc==-3?"library preflight":ub_patch_stage());
    return;
   }
   font_size_set();t->state[2]=1;

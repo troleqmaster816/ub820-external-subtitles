@@ -34,7 +34,7 @@ static const unsigned char disc_rows_aligned[16]={
 static int style_patch(int pid) {
  struct ub_code_patch patches[6];
  const unsigned char *want=disc_style.bottom_align?disc_rows_aligned:disc_rows_stock;
- if(style_patch_specs(pid,patches))return -1;
+ if(style_patch_specs(pid,patches))return -3; /* No transaction: library preflight. */
  patches[5]=(struct ub_code_patch){UB_DISC_ROWS_ADDR,sizeof disc_rows_stock,
   disc_rows_stock,disc_rows_aligned,want};
  return ub_patch_code(pid,patches,6);

@@ -226,7 +226,15 @@ static int stop_threads(int pid,struct stopped *s){
  errno=ETIMEDOUT;
  fail:{int saved=errno;detach_all(s);errno=saved;}return -1;
 }
-static int memio(int fd,uint32_t a,void *buf,size_t n,int writing){size_t done=0;while(done<n){ssize_t k=writing?pwrite(fd,(char *)buf+done,n-done,(off_t)(a+done)):pread(fd,(char *)buf+done,n-done,(off_t)(a+done));if(k<=0)return -1;done+=(size_t)k;}return 0;}
+static int memio(int fd,uint32_t a,void *buf,size_t n,int writing){
+ size_t done=0;
+ while(done<n){
+  ssize_t k=writing?pwrite(fd,(char *)buf+done,n-done,(off_t)(a+done)):pread(fd,(char *)buf+done,n-done,(off_t)(a+done));
+  if(k<0&&errno==EINTR)continue;
+  if(k<=0){if(!k)errno=EIO;return -1;}done+=(size_t)k;
+ }
+ return 0;
+}
 static int restore_memory(struct stopped *s,int tid,uint32_t a,const void *bytes,size_t n){
  unsigned char verify[32];if(!n||n>sizeof verify)return -1;
  for(unsigned i=0;i<s->n;i++)if(s->tids[i]&&s->waiting[i])return -1;
@@ -414,35 +422,45 @@ static int thread_pc(int tid,uint64_t *pc){
  * 4.4.8 implementation flushes VM_EXEC instruction caches before returning,
  * as does reference ARM Linux 4.4. No target thread needs to run just to flush
  * these writes; all PCs stay frozen throughout the transaction and rollback. */
+static char patch_stage[192]="not attempted";
+const char *ub_patch_stage(void){return patch_stage;}
 int ub_patch_code(int pid,const struct ub_code_patch *patches,unsigned count){
  struct stopped stop;unsigned char saved[64][32],now[32],different[64];unsigned written=0;int rc=-1;
+ snprintf(patch_stage,sizeof patch_stage,"arguments");
  if(!patches||!count||count>64)return -1;
  for(unsigned i=0;i<count;i++){
   const struct ub_code_patch *p=patches+i;
-  if(!p->expected||!p->replacement||!p->length||p->length>32||(uint64_t)p->address+p->length>UINT32_MAX)return -1;
-  for(unsigned j=0;j<i;j++)if((uint64_t)p->address<(uint64_t)patches[j].address+patches[j].length&&(uint64_t)patches[j].address<(uint64_t)p->address+p->length)return -1;
+  if(!p->expected||!p->replacement||!p->length||p->length>32||(uint64_t)p->address+p->length>UINT32_MAX){snprintf(patch_stage,sizeof patch_stage,"invalid patch %u at %08x length %u",i,p->address,p->length);return -1;}
+  for(unsigned j=0;j<i;j++)if((uint64_t)p->address<(uint64_t)patches[j].address+patches[j].length&&(uint64_t)patches[j].address<(uint64_t)p->address+p->length){snprintf(patch_stage,sizeof patch_stage,"overlapping patches %u/%u",j,i);return -1;}
  }
- if(stop_threads(pid,&stop))return -1;
+ if(stop_threads(pid,&stop)){snprintf(patch_stage,sizeof patch_stage,"stop: %s",strerror(errno));return -1;}
  /* Unknown bytes at any site abort before the first write, even when some
   * earlier sites already happen to match their requested replacement. */
  for(unsigned i=0;i<count;i++){
   const struct ub_code_patch *p=patches+i;
-  if(!executable_range(pid,p->address,p->length)||memio(stop.mem,p->address,saved[i],p->length,0))goto out;
+  if(!executable_range(pid,p->address,p->length)){snprintf(patch_stage,sizeof patch_stage,"executable mapping missing at %08x length %u",p->address,p->length);goto out;}
+  if(memio(stop.mem,p->address,saved[i],p->length,0)){snprintf(patch_stage,sizeof patch_stage,"read %08x: %s",p->address,strerror(errno));goto out;}
   different[i]=memcmp(saved[i],p->replacement,p->length)!=0;
-  if(different[i]&&memcmp(saved[i],p->expected,p->length)&&(!p->alternate||memcmp(saved[i],p->alternate,p->length))){rc=1;goto out;}
+  if(different[i]&&memcmp(saved[i],p->expected,p->length)&&(!p->alternate||memcmp(saved[i],p->alternate,p->length))){snprintf(patch_stage,sizeof patch_stage,"unknown bytes at %08x length %u",p->address,p->length);rc=1;goto out;}
  }
  for(unsigned i=0;i<stop.n;i++){
-  uint64_t pc;if(!stop.tids[i])continue;if(thread_pc(stop.tids[i],&pc))goto out;
-  for(unsigned j=0;j<count;j++)if(different[j]&&pc>=patches[j].address&&(uint64_t)pc<(uint64_t)patches[j].address+patches[j].length)goto out;
+  uint64_t pc;if(!stop.tids[i])continue;
+  if(thread_pc(stop.tids[i],&pc)){snprintf(patch_stage,sizeof patch_stage,"registers TID%d: %s",stop.tids[i],strerror(errno));goto out;}
+  for(unsigned j=0;j<count;j++)if(different[j]&&pc>=patches[j].address&&pc<(uint64_t)patches[j].address+patches[j].length){snprintf(patch_stage,sizeof patch_stage,"busy TID%d PC=%08llx in %08x+%u",stop.tids[i],(unsigned long long)pc,patches[j].address,patches[j].length);goto out;}
  }
  for(unsigned i=0;i<count;i++){
   const struct ub_code_patch *p=patches+i;written=i+1;if(!different[i])continue;
-  if(memio(stop.mem,p->address,(void *)p->replacement,p->length,1)||memio(stop.mem,p->address,now,p->length,0)||memcmp(now,p->replacement,p->length))goto rollback;
+  if(memio(stop.mem,p->address,(void *)p->replacement,p->length,1)){snprintf(patch_stage,sizeof patch_stage,"write %08x: %s",p->address,strerror(errno));goto rollback;}
+  if(memio(stop.mem,p->address,now,p->length,0)){snprintf(patch_stage,sizeof patch_stage,"verify read %08x: %s",p->address,strerror(errno));goto rollback;}
+  if(memcmp(now,p->replacement,p->length)){snprintf(patch_stage,sizeof patch_stage,"verify differs at %08x",p->address);goto rollback;}
  }
- rc=0;goto out;
+ rc=0;snprintf(patch_stage,sizeof patch_stage,"ok");goto out;
  rollback:
- for(unsigned i=written;i>0;i--){const struct ub_code_patch *p=patches+i-1;if(different[i-1]&&(restore_memory(&stop,pid,p->address,saved[i-1],p->length)))stop.quarantine=1;}
- if(stop.quarantine){rc=-2;ub_log("injector",UB_ALWAYS,"FATAL: code patch rollback unverified for PID%d; process quarantined. Power cycle required.\n",pid);}
+ for(unsigned i=written;i>0;i--){const struct ub_code_patch *p=patches+i-1;if(different[i-1]&&restore_memory(&stop,pid,p->address,saved[i-1],p->length))stop.quarantine=1;}
+ if(stop.quarantine){
+  rc=-2;strncat(patch_stage,"; rollback unverified",sizeof patch_stage-strlen(patch_stage)-1);
+  ub_log("injector",UB_ALWAYS,"FATAL: code patch rollback unverified for PID%d; process quarantined. Power cycle required.\n",pid);
+ }else strncat(patch_stage,"; rollback verified",sizeof patch_stage-strlen(patch_stage)-1);
  out:if(stop.quarantine)rc=-2;if(stop.mem>=0)close(stop.mem);detach_all(&stop);return rc;
 }
 int ub_while_stopped(int pid,int (*fn)(int,int,void *),void *arg){

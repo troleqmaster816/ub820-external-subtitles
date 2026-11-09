@@ -57,6 +57,7 @@ def sys_check():
 def main():
  ok=True
  tests=[
+  ('subtitle_ui_wait_test',['tests/subtitle_ui_wait_test.c'],{}),
   ('ssh_runtime_test',['tests/ssh_runtime_test.c','core/sys.c'],{}),
   ('subtitle_startup_test',['tests/subtitle_startup_test.c'],{}),
   ('native_text_test',['tests/native_text_test.c'],{}),

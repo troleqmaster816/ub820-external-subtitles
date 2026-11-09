@@ -113,7 +113,8 @@ struct menu_state {
  void *ctx; Widget owner,window,fixed,title,info,footer,rows[VIEW_ROWS],list,list_fixed,drop[DROP_ROWS];
  int tiled[MAX_CUSTOM];
  unsigned int base,count,kinds[MAX_CUSTOM],kind;  /* our root categories: base..base+count-1 */
- unsigned int selected,first,timer,seq,pending,pending_ticks,epoch,needs_list,refresh_guard;
+ unsigned int selected,first,timer,seq,pending,epoch,needs_list,refresh_guard;
+ uint32_t pending_deadline;
  uint32_t media_kind,media_number,deck_mode;
  int active; struct ub_status status; char notice[128];
  int log_view; unsigned int log_first,log_count; char *log_lines[LOG_LINES];
@@ -280,9 +281,22 @@ static void render(void){
 }
 
 /* ---- External Subtitles requests ---------------------------------------- */
+/* Check elapsed time, not timer callback counts: a busy UI may dispatch its
+ * timer late. Also called on a click so an expired request cannot keep the
+ * page stuck behind a generic busy message until the next timer arrives. */
+static int subtitle_pending_expire(void){
+ uint32_t now;
+ if(!m.pending)return 0;
+ if(!ha_action_now(&now)&&(int32_t)(now-m.pending_deadline)<0)return 0;
+ m.pending=0;m.needs_list=1;
+ ha_copy(m.notice,m.epoch?"Subtitle helper did not answer; refresh files to retry":"Subtitle helper is not ready; check Helper log, then refresh files",sizeof m.notice);
+ return 1;
+}
 static int send_request(unsigned int op,const char *path){
- struct ub_request r;char temp[512];int fd;size_t at=0;ssize_t n;
- if(m.pending){ha_copy(m.notice,"A request is already running",sizeof m.notice);render();return -1;}
+ struct ub_request r;char temp[512];int fd;size_t at=0;ssize_t n;uint32_t now;
+ subtitle_pending_expire();
+ if(m.pending){ha_copy(m.notice,"Waiting for subtitle helper to answer",sizeof m.notice);render();return -1;}
+ if(ha_action_now(&now))goto bad;
  if(op!=UB_OP_LIST&&(m.needs_list||!m.epoch)){ha_copy(m.notice,"Refresh files before selecting",sizeof m.notice);render();return -1;}
  if(path&&path[0]&&!bounded_path(path)){ha_copy(m.notice,"Path is too long or invalid",sizeof m.notice);render();return -1;}
  memset(&r,0,sizeof r);r.magic=UB_MAGIC;r.version=UB_VERSION;r.seq=++m.seq;
@@ -293,7 +307,7 @@ static int send_request(unsigned int op,const char *path){
  while(at<sizeof r){n=write(fd,(char *)&r+at,sizeof r-at);if(n<=0){close(fd);unlink(temp);goto bad;}at+=(size_t)n;}
  if(close(fd)!=0){unlink(temp);goto bad;}
  if(rename(temp,UB_REQUEST_FILE)!=0){unlink(temp);goto bad;}
- m.pending=r.seq;m.pending_ticks=0;m.notice[0]=0;render();return 0;
+ m.pending=r.seq;m.pending_deadline=now+(m.epoch?12u:3u);m.notice[0]=0;render();return 0;
 bad:ha_copy(m.notice,"Cannot contact subtitle helper",sizeof m.notice);render();return -1;
 }
 static int status_valid(struct ub_status *s){
@@ -353,7 +367,7 @@ static int timer_tick(void *unused){
   if(!m.overlay&&!owner_alive())close_child(0);
   else if(m.kind==PAGE_SUBS){
    read_status();
-   if(m.pending&&++m.pending_ticks>=40){m.pending=0;m.needs_list=1;ha_copy(m.notice,"Helper timed out; refresh files to retry",sizeof m.notice);render();}
+   if(subtitle_pending_expire())render();
   }else{
    int changed=ha_region_poll(&hs);changed|=ha_dvd_poll(&hs);changed|=ha_netflix_poll(&hs);changed|=ha_ssh_poll(&hs);changed|=ha_log_poll(&hs);
    if(changed&&!m.log_view)render();

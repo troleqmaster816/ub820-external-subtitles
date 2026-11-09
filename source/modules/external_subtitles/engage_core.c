@@ -41,6 +41,7 @@
 #include <sys/wait.h>
 #include <sys/syscall.h>
 #include "injector.h"
+#include "log.h"
 
 #ifndef EVT_PATH
 #define EVT_PATH "/usr/dtvrec/bin/evtSend"
@@ -149,23 +150,32 @@ static const unsigned char style_outline[2] = {0x04,0x20};
  * guessed base: a missing/unknown libtiwin disables the entire transaction. */
 static unsigned long libtiwin_base(int pid) {
  static char buf[0x10000];char path[64],name[512],perms[8],digest[65];
- unsigned long start,end,offset;int fd;ssize_t n;char *line,*next;
+ unsigned long start,end,offset;int fd;ssize_t n;size_t used=0;char *line,*next;
  snprintf(path,sizeof path,UB_STYLE_PROC_ROOT "/%d/maps",pid);
  fd=open(path,O_RDONLY);if(fd<0)return 0;
- n=read(fd,buf,sizeof buf-1);close(fd);if(n<=0 || n==(ssize_t)sizeof(buf)-1)return 0;
- buf[n]=0;
+ /* proc seq_file may return one page even when the buffer is much larger.
+  * libtiwin commonly appears beyond that first page: consume through EOF. */
+ while(used<sizeof(buf)-1){
+  n=read(fd,buf+used,sizeof(buf)-1-used);
+  if(n<0){if(errno==EINTR)continue;close(fd);return 0;}
+  if(!n)break;
+  used+=(size_t)n;
+ }
+ close(fd);
+ if(!used || used==sizeof(buf)-1){ub_log("external_subtitles",UB_ALWAYS,"Cannot read complete maps for style PID%d; skipped",pid);return 0;}
+ buf[used]=0;
  for(line=buf;line && *line;line=next) {
   next=strchr(line,'\n');if(next)*next++=0;
   name[0]=0;
   if(sscanf(line,"%lx-%lx %7s %lx %*s %*s %511[^\n]",&start,&end,perms,&offset,name)!=5)continue;
   const char *base=strrchr(name,'/');
   if(!base || strcmp(base+1,"libtiwin.so.0.0.0") || strcmp(perms,"r-xp") || offset)continue;
-  if(ub_hash_file(name,digest))return 0;
+  if(ub_hash_file(name,digest)){ub_log("external_subtitles",UB_ALWAYS,"Cannot hash style library %s; skipped",name);return 0;}
   if(strcmp(digest,"6d2216fcd15814defdfc2357ddb5b517bf85398d26d1f530d61bed22087994bf") &&
-     strcmp(digest,"2ab151241aa18d6f9817aa3510bc6610c84c49af2e943e8ed920175583d0d6c0"))return 0;
+     strcmp(digest,"2ab151241aa18d6f9817aa3510bc6610c84c49af2e943e8ed920175583d0d6c0")){ub_log("external_subtitles",UB_ALWAYS,"Style library %s has an unknown hash; skipped",name);return 0;}
   return start;
  }
- return 0;
+ ub_log("external_subtitles",UB_ALWAYS,"No verified libtiwin executable mapping for style PID%d",pid);return 0;
 }
 
 static void font_size_set(void) {
@@ -187,7 +197,7 @@ static int style_patch_specs(int pid,struct ub_code_patch patches[5]) {
 }
 static int style_patch(int pid) {
  struct ub_code_patch patches[5];
- if(style_patch_specs(pid,patches))return -1;
+ if(style_patch_specs(pid,patches))return -3;
  return ub_patch_code(pid,patches,5);
 }
 

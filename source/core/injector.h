@@ -57,6 +57,8 @@ struct ub_code_patch {
  * replacement is also an accepted input, alternate may be NULL. 0 success,
  * 1 unknown bytes, -1 safely aborted/retry, -2 rollback failed/quarantined. */
 int ub_patch_code(int pid,const struct ub_code_patch *patches,unsigned count);
+/* Last transaction phase, with the failing address/TID and OS error. */
+const char *ub_patch_stage(void);
 
 const char *ub_overlay_error(int rc);
 int ub_hash_file(const char *path,char result[65]);

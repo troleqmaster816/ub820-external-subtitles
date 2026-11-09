@@ -12,12 +12,12 @@
 #include <assert.h>
 #include "ub.h"
 #include "../modules/external_subtitles/protocol.h"
-static int loaded_value,status_present=1,status_active,style_result,style_calls,on_writes,gate_writes,load_events;
+static int loaded_value,status_present=1,status_active,style_result,style_calls,on_writes,gate_writes,load_events,maps_done;
 static int test_open(const char *path,int flags,...){
  (void)flags;
  if(!strcmp(path,UB_STATUS_FILE))return status_present?100:-1;
  if(!strcmp(path,"/proc/42/mem"))return 101;
- if(!strcmp(path,"/proc/42/maps"))return 102;
+ if(!strcmp(path,"/proc/42/maps")){maps_done=0;return 102;}
  if(!strcmp(path,"/tmp/ti_font_size"))return 103;
  if(!strcmp(path,"/tmp/apl_play3dlib_3ddynamic_lock"))return 104;
  if(!strcmp(path,"/tmp/apl_play3dlib_play_dat.dat"))return 105;
@@ -25,7 +25,7 @@ static int test_open(const char *path,int flags,...){
 }
 static ssize_t test_read(int fd,void *buf,size_t size){
  if(fd==100){struct ub_status status={0};status.magic=UB_MAGIC;status.version=UB_VERSION;status.active=status_active;assert(size==sizeof status);memcpy(buf,&status,size);return size;}
- if(fd==102){const char *maps="293a0000-293d8000 r-xp 00000000 00:01 1 /known/libtiwin.so.0.0.0\n";assert(size>strlen(maps));memcpy(buf,maps,strlen(maps));return strlen(maps);}
+ if(fd==102){const char *maps="293a0000-293d8000 r-xp 00000000 00:01 1 /known/libtiwin.so.0.0.0\n";if(maps_done)return 0;maps_done=1;assert(size>strlen(maps));memcpy(buf,maps,strlen(maps));return strlen(maps);}
  if(fd==105){memset(buf,0,size);return size;}
  return -1;
 }
@@ -57,6 +57,7 @@ static pid_t test_waitpid(pid_t pid,int *status,int flags){(void)flags;*status=0
 #undef waitpid
 int ub_hash_file(const char *path,char result[65]){assert(!strcmp(path,"/known/libtiwin.so.0.0.0"));strcpy(result,"6d2216fcd15814defdfc2357ddb5b517bf85398d26d1f530d61bed22087994bf");return 0;}
 int ub_patch_code(int pid,const struct ub_code_patch *patches,unsigned count){(void)patches;assert(pid==42 && count==6);style_calls++;return style_result;}
+const char *ub_patch_stage(void){return "test";}
 void ub_log(const char *module,int level,const char *format,...){(void)module;(void)level;(void)format;}
 static struct ub_target target(void){struct ub_target value={0};value.pid=42;return value;}
 int main(void){

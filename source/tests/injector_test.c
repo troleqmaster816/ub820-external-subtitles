@@ -84,10 +84,10 @@ int main(void){
  unsigned char *code=mmap((void *)0x10000000,4096,PROT_READ|PROT_WRITE|PROT_EXEC,MAP_SHARED|MAP_ANONYMOUS,-1,0);CHECK(code!=MAP_FAILED);CHECK((uintptr_t)code<=UINT32_MAX);
  memset(code,0x11,4096);unsigned char old[6],next[6],bad[6];memset(old,0x11,6);memset(next,0x22,6);memset(bad,0x33,6);
  pid=child();struct ub_code_patch patches[2]={{(uint32_t)(uintptr_t)code+1,6,old,0,next},{(uint32_t)(uintptr_t)code+21,6,bad,0,next}};
- CHECK(ub_patch_code(pid,patches,2)==1);CHECK(!memcmp(code+1,old,6));
+ CHECK(ub_patch_code(pid,patches,2)==1);CHECK(strstr(ub_patch_stage(),"unknown bytes"));CHECK(!memcmp(code+1,old,6));
  patches[1].expected=old;CHECK(ub_patch_code(pid,patches,2)==0);CHECK(!memcmp(code+1,next,6));CHECK(!memcmp(code+21,next,6));CHECK(ub_patch_code(pid,patches,2)==0);
  patches[0].replacement=old;patches[1].replacement=old;patches[0].expected=next;patches[1].expected=next;
- fail_write=2;CHECK(ub_patch_code(pid,patches,2)==-1);CHECK(!memcmp(code+1,next,6));CHECK(!memcmp(code+21,next,6));CHECK(child_state(pid)!='T');
+ fail_write=2;CHECK(ub_patch_code(pid,patches,2)==-1);CHECK(strstr(ub_patch_stage(),"rollback verified"));CHECK(!memcmp(code+1,next,6));CHECK(!memcmp(code+21,next,6));CHECK(child_state(pid)!='T');
  CHECK(ub_patch_code(pid,patches,2)==0);CHECK(!memcmp(code+1,old,6));
  patches[0].expected=old;patches[0].replacement=next;fail_write=-1;
  CHECK(ub_patch_code(pid,patches,1)==-1);CHECK(!memcmp(code+1,old,6));CHECK(code[0]==0x11&&code[7]==0x11);CHECK(child_state(pid)!='T');
@@ -96,7 +96,7 @@ int main(void){
   * The real architecture-aware PC read must reject without changing bytes. */
  code[0]=0xeb;code[1]=0xfe;unsigned char spinning[2]={0xeb,0xfe},nop[2]={0x90,0x90};
  pid=fork();if(!pid){((void (*)(void))code)();_exit(0);}usleep(10000);
- struct ub_code_patch busy={(uint32_t)(uintptr_t)code,2,spinning,0,nop};CHECK(ub_patch_code(pid,&busy,1)==-1);CHECK(!memcmp(code,spinning,2));end_child(pid);munmap(code,4096);
+ struct ub_code_patch busy={(uint32_t)(uintptr_t)code,2,spinning,0,nop};CHECK(ub_patch_code(pid,&busy,1)==-1);CHECK(strstr(ub_patch_stage(),"busy TID"));CHECK(!memcmp(code,spinning,2));end_child(pid);munmap(code,4096);
  /* Emulate only the ARM CPU/ptrace register transport, keeping actual child
   * memory and injector state machine. Cover sync BKPT, masks, and a final BKPT
   * racing the timeout interrupt; the private SIGTRAP must never be reinjected. */
