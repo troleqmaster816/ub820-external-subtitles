@@ -1,5 +1,9 @@
 # Writing a module
 
+Keep local device captures, diagnostic notes and review reports under the
+ignored `analysis/` directory. Publish only maintained project documentation;
+`docs/` also contains the public project website and its images.
+
 Every feature of the patch is a module in `source/modules/<id>/`. The core
 (`source/core/`) does the risky plumbing once for everyone: finding player
 processes, checking their exact firmware hash, installing payloads, noticing
