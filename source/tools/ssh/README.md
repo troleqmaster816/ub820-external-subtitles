@@ -5,6 +5,14 @@ static ARM tools: Dropbear server/key generator/client, BusyBox ash and utilitie
 legacy SCP, and a standalone OpenSSH SFTP server. The helper remains the single
 file installed on the stick: these components are embedded by `source/build.py`.
 
+For diagnostic startup access, set `enabled=1` and `autostart=1` in `[ssh]` in
+`sub/modules.cfg`, with the usual key or password configured. SSH starts once
+after the helper reads its configuration, before other module initialization
+and process patching. Both switches default to 0. A failed automatic start is
+logged and can be retried from the menu; a manual Stop is not undone.
+This is not a firmware boot service: it cannot cover a failure before `engage`
+starts, and configuration/credential reads still need the vendor file service.
+
 The environment belongs to SSH sessions. No firmware passwd entry, system shell,
 system profile or firmware filesystem is changed. There is no forced command,
 command whitelist or production chroot. The optional diagnostic session guard

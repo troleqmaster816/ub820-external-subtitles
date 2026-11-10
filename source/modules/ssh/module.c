@@ -1,4 +1,5 @@
-/* On-demand diagnostic SSH server (Dropbear), started from the OPTIONS menu.
+/* Diagnostic SSH server (Dropbear), started from the OPTIONS menu or once
+ * at helper startup with autostart=1.
  *
  * Off by default. When the user picks "Start SSH", this module:
  *   - prepares a private RAM home, POSIX shell and diagnostic/file-transfer tools,
@@ -65,12 +66,13 @@
 #define STICK_PASSWORD UB_STICK_DIR "/ssh_password"
 
 enum { AUTH_KEY=0, AUTH_PASSWORD=1 };
-static int auth=AUTH_KEY, port=2222, guard=0;
+static int auth=AUTH_KEY, port=2222, guard=0, autostart=0;
 static const char *const auth_names[]={"key","password",0};
 static const struct ub_option options[]={
  {"auth",0,1,&auth,auth_names},
  {"port",1024,65535,&port,0},
  {"guard",0,1,&guard,0},
+ {"autostart",0,1,&autostart,0},
  {0,0,0,0,0}
 };
 
@@ -253,6 +255,15 @@ static int start_ssh(char *msg,size_t msgn){
  snprintf(msg,msgn,"ssh root@%s -p %d (%s auth)",ip,port,auth==AUTH_KEY?"key":"password");
  return 0;
 }
+#ifdef UB_HOST_TEST
+static int (*ssh_start_test)(char *,size_t);
+#endif
+static int request_start(char *msg,size_t msgn){
+#ifdef UB_HOST_TEST
+ if(ssh_start_test)return ssh_start_test(msg,msgn);
+#endif
+ return start_ssh(msg,msgn);
+}
 static void stop_ssh(char *msg,size_t msgn){
  pid_t p=running_pid();unsigned sessions;
  guard_stop();
@@ -278,7 +289,7 @@ static void step(struct ub_part *p,struct ub_target *t){
  else{ub_log(ID,UB_INFO,"ignored ssh request");return;}
  if(want_stop){stop_ssh(msg,sizeof msg);ub_log(ID,UB_ALWAYS,"ssh server: %s",msg);answer(running_pid()?1:0,0,msg);}
  else{
-  int rc=start_ssh(msg,sizeof msg);
+  int rc=request_start(msg,sizeof msg);
   if(rc)ub_log(ID,UB_ALWAYS,"ssh start failed: %s",msg);
   else ub_log(ID,UB_ALWAYS,"ssh server: %s",msg);
   answer(running_pid()?1:0,rc,msg);
@@ -288,12 +299,22 @@ static void step(struct ub_part *p,struct ub_target *t){
 /* Marker so the menu shows the "Start / Stop SSH" row only when this module is
  * enabled (the core calls start() for enabled modules only). */
 #define UB_SSH_ENABLED "/tmp/ub820_ssh.enabled"
-static void start(struct ub_module *m){int fd;(void)m;fd=open(UB_SSH_ENABLED,O_WRONLY|O_CREAT|O_TRUNC,0600);if(fd>=0)close(fd);}
+static void start(struct ub_module *m){
+ int fd;(void)m;
+ fd=open(UB_SSH_ENABLED,O_WRONLY|O_CREAT|O_TRUNC,0600);if(fd>=0)close(fd);
+ /* Once per helper start, before core_tick installs any native payload.
+  * Never restart from step(): an explicit Stop must remain stopped. */
+ if(autostart){
+  char msg[200];int rc=request_start(msg,sizeof msg);
+  ub_log(ID,UB_ALWAYS,"ssh autostart%s: %s",rc?" failed":"",msg);
+  answer(running_pid()?1:0,rc,msg);
+ }
+}
 
 static struct ub_part parts[]={
  {"server",0,0,0,0,0,step,{0},0,0},
 };
 struct ub_module ub_module_ssh={
- ID,"On-demand diagnostic SSH server (Dropbear); key or password auth",
+ ID,"Diagnostic SSH server (Dropbear); manual or automatic start, key or password auth",
  0,options,start,parts,sizeof parts/sizeof *parts,0
 };

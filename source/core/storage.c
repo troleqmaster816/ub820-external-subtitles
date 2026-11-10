@@ -51,7 +51,7 @@ const char *ub_stick_error(int code){
  case -1:return "storage tool could not run";
  case -2:return "storage tool timed out";
  case 3:return "player file layer did not start";
- case 4:return "source not found";
+ case 4:return "source could not be opened";
  case 5:return "destination cannot be created";
  case 6:return "read failed";
  case 7:return "write failed";

@@ -279,7 +279,11 @@ static int ha_log_poll(struct helper_state *s){
  code=(int)ha_parse(&p);if(negative)code=-code;
  if(*p==' ')p++;
  s->save_seq=0;
- if(!code)ha_copy(s->notice,"Log saved to USB: sub/ub820_submenu.log",sizeof s->notice);
+ if(!code){
+  if(!strncmp(p,"saved as ",9)||!strncmp(p,"saved to ",9))
+   snprintf(s->notice,sizeof s->notice,"Log saved to USB: %s",p+9);
+  else ha_copy(s->notice,*p?p:"Log saved to USB",sizeof s->notice);
+ }
  else snprintf(s->notice,sizeof s->notice,"Saving failed: %s (code %d)",p,code);
  return 1;
 }

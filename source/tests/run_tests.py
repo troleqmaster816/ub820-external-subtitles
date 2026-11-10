@@ -83,6 +83,7 @@ def main():
   ('log_test',['tests/log_test.c','core/log.c','core/sys.c','core/procmem.c'],
    {'UB_LOG_FILE':TMP+'/log.log'}),
   ('ssh_test',['tests/ssh_test.c','core/log.c','core/sys.c',*sorted(str(p.relative_to(ROOT)) for p in (ROOT/'generated').glob('tools.c'))],{'UB_LOG_FILE':TMP+'/ssh.log'}),
+  ('ufs_test',['tests/ufs_test.c','tools/ufs/ufs.c'],{}),
   ('config_test',['tests/config_test.c','core/core.c','core/config.c','core/log.c','core/sys.c','core/procmem.c','core/injector.c','core/storage.c',
                   *sorted(str(p.relative_to(ROOT)) for p in (ROOT/'modules').glob('*/module.c')),
                   *sorted(str(p.relative_to(ROOT)) for p in (ROOT/'generated').glob('*.c'))],

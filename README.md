@@ -50,7 +50,7 @@ settings file, and new modules can be added without touching the others.
 | `region` | **Blu-ray region** the disc sees (fixed A/B/C or all three; an experimental `auto` is off by default). **DVD region**, best effort (no region error, or a fixed region 1-8). Region diagnostics in the log. | on |
 | `remote` | What the remote's **Netflix** button does: open Netflix as usual, nothing, or open the UB820 Helper menu as an overlay anywhere (home screen, menus, playback). | on |
 | `log` | The helper log: level, saving it to the stick (on request or continuously), and optional detailed diagnostics of the player (crashes, hangs, kernel messages). | on |
-| `ssh` | An **on-demand** diagnostic SSH server (Dropbear), started from the menu. Key or password login. | **off** |
+| `ssh` | Diagnostic SSH server (Dropbear), started from the menu or optionally at helper startup. Key or password login. | **off** |
 
 ## Screenshots
 
@@ -181,14 +181,24 @@ The player's own subtitle position and size settings keep working.
 | Key | Default | Values | Meaning |
 | --- | --- | --- | --- |
 | `level` | `info` | `errors`, `info`, `debug` | Detail of the helper log. Errors are always kept. |
-| `save` | `menu` | `off`, `menu`, `always` | When the log goes to `sub/ub820_submenu.log`: `menu` when you choose **Save log to USB**; `always` a few seconds after each change and at once after a crash report, keeping the previous run's log as `sub/ub820_submenu.prev.log`; `off` never. |
+| `save` | `menu` | `off`, `menu`, `always` | `menu`: save on request. `always`: save during initialization, again before the first payload installation, then periodically and after crash reports. `off`: never save. |
 | `diagnostics` | `0` | 0 or 1 | Detailed diagnostics of the player itself: crash reports, stuck or spinning threads, programs starting and ending, kernel messages, low memory, and a load line every minute. Best with `save=always`. |
+
+Logs normally go to `sub/ub820_submenu.log`, after the previous run has been
+copied to `sub/ub820_submenu.prev.log`. If the earlier log cannot be read or
+archived, the helper preserves it and saves this run to a separate
+`sub/ub820_submenu.<boot-id>.<pid>.<start-ms>.log`. Opening a file unsuccessfully
+is not treated as proof that it does not exist. The menu reports the actual
+destination. Separate run files remain on the stick for you to keep or remove.
+USB transfers use a frozen RAM snapshot. A file-service failure or power loss
+can still prevent saving; this starts with `engage`, not at firmware power-on.
 
 ### `[ssh]`
 
 | Key | Default | Values | Meaning |
 | --- | --- | --- | --- |
-| `enabled` | `0` | 0 or 1 | `1` adds **Start SSH** to the UB820 Helper menu. Nothing listens until you start it there. |
+| `enabled` | `0` | 0 or 1 | `1` enables SSH and adds **Start SSH** to the UB820 Helper menu. |
+| `autostart` | `0` | 0 or 1 | Start once after the helper reads its configuration, before other module initialization and process patching. Requires `enabled=1`. Manual Stop remains stopped. |
 | `auth` | `key` | `key`, `password` | `key`: log in with a key whose public half is in `sub/authorized_keys` on the stick. `password`: the password is the one line in `sub/ssh_password` on the stick. |
 | `port` | `2222` | 1024 to 65535 | TCP port. |
 | `guard` | `0` | 0 or 1 | Logs every program a session starts, and ends a session whose shells keep starting each other. Diagnostic. |
@@ -197,8 +207,9 @@ Connect with `ssh root@<player-ip> -p 2222`; the menu shows the exact line
 after you start the server. **Key login is recommended.** With a password,
 it sits in clear text on the stick (the helper hands Dropbear only a `$6$`
 hash), and the player has no firewall, so anyone on your network can reach
-the port. The server runs only after you start it and is gone after a power
-cycle.
+the port. The server starts from the menu or with `autostart=1` and is gone
+after a power cycle. Autostart is part of `engage`, not a firmware boot service;
+it still depends on successful helper startup and configuration/credential reads.
 
 The source build provides a RAM home, BusyBox ash and tools, SFTP and SCP.
 See the [SSH runtime documentation](source/tools/ssh/README.md) for paths,

@@ -151,6 +151,55 @@ static void test_lost_child_ownership(void){
  guard_pid=getpid();guard_stop();CHECK(!guard_pid);CHECK(!kill(getpid(),0));
 }
 
+static int startup_calls,startup_failure;
+static int startup_server(char *msg,size_t cap){
+ startup_calls++;CHECK(auth==AUTH_KEY);CHECK(port==23456);
+ if(startup_failure){snprintf(msg,cap,"fixture startup failed");return -1;}
+ dropbear_pid=fork();
+ if(!dropbear_pid){char *argv[]={DROPBEAR_BIN,"30",0};clean_exec(argv,1);}
+ CHECK(dropbear_pid>0);ub_sleep_ms(100);
+ snprintf(msg,cap,"fixture server started");return 0;
+}
+static void startup_action(const char *action){
+ int fd=open(UB_SSH_REQUEST,O_WRONLY|O_CREAT|O_TRUNC,0600);CHECK(fd>=0);
+ if(fd>=0){CHECK(write(fd,action,strlen(action))==(ssize_t)strlen(action));close(fd);}
+ step(0,0);
+}
+static void test_autostart(void){
+ char text[256];int fd;ssize_t n;
+ CHECK(!autostart);guard=0;auth=AUTH_KEY;port=23456;
+ unlink(UB_SSH_REQUEST);unlink(UB_SSH_STATUS);
+ ssh_start_test=startup_server;
+ start(&ub_module_ssh);CHECK(startup_calls==0);CHECK(access(UB_SSH_STATUS,F_OK));
+ autostart=1;startup_failure=1;
+ start(&ub_module_ssh);CHECK(startup_calls==1);CHECK(!running_pid());
+ fd=open(UB_SSH_STATUS,O_RDONLY);n=fd>=0?read(fd,text,sizeof text-1):0;if(fd>=0)close(fd);text[n>0?n:0]=0;
+ CHECK(strstr(text,"0 -1 fixture startup failed"));
+ CHECK(strstr(log_now(),"ssh autostart failed: fixture startup failed"));
+ /* Retrying manually after an automatic failure uses the same settings and
+  * normal Stop must remain stopped even though autostart is still enabled. */
+ {int in=open("/bin/sleep",O_RDONLY),out=open(DROPBEAR_BIN,O_WRONLY|O_CREAT|O_TRUNC,0700);char b[65536];
+  CHECK(in>=0&&out>=0);
+  while(in>=0&&out>=0&&(n=read(in,b,sizeof b))>0)CHECK(write(out,b,(size_t)n)==n);
+  if(in>=0)close(in);
+  if(out>=0)close(out);}
+ startup_failure=0;startup_action("start");CHECK(startup_calls==2);CHECK(running_pid()>0);
+ fd=open(UB_SSH_STATUS,O_RDONLY);n=fd>=0?read(fd,text,sizeof text-1):0;if(fd>=0)close(fd);text[n>0?n:0]=0;
+ CHECK(strstr(text,"1 0 fixture server started"));
+ startup_action("stop");CHECK(!running_pid());
+ for(int i=0;i<4;i++)step(0,0);
+ CHECK(startup_calls==2);CHECK(!running_pid());
+ /* A successful automatic start publishes the same running state. */
+ start(&ub_module_ssh);CHECK(startup_calls==3);CHECK(running_pid()>0);
+ fd=open(UB_SSH_STATUS,O_RDONLY);n=fd>=0?read(fd,text,sizeof text-1):0;if(fd>=0)close(fd);text[n>0?n:0]=0;
+ CHECK(strstr(text,"1 0 fixture server started"));
+ startup_action("stop");
+ for(int i=0;i<4;i++)step(0,0);
+ CHECK(startup_calls==3);CHECK(!running_pid());
+ ssh_start_test=0;autostart=0;port=2222;
+ unlink(DROPBEAR_BIN);unlink(UB_SSH_ENABLED);unlink(UB_SSH_STATUS);unlink(UB_SSH_REQUEST);
+}
+
 int main(void){
  int f=0;
  f+=check("testpass123","ub820salt",
@@ -162,6 +211,7 @@ int main(void){
  test_clean_exec();
  test_dropbear_pid();
  test_lost_child_ownership();
+ test_autostart();
  printf("%s (%d failures)\n",failures?"ssh_test FAILED":"ssh_test passed",failures);
  return failures!=0;
 }

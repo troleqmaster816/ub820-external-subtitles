@@ -84,6 +84,11 @@ int main(void){
  assert(ub_action_receive(UB_STORAGE_REQUEST,buf,sizeof buf,reply,sizeof reply));
  reply_to(&dead,UB_STORAGE_REQUEST,dead.save_seq,"1 -2 tool timed out\n");assert(ha_log_poll(&dead)&&!dead.save_seq&&strstr(dead.notice,"timed out"));
  ha_log_save(&dead);ha_ssh_toggle(&dead);seconds+=45;assert(ha_log_poll(&dead)&&ha_ssh_poll(&dead));assert(!dead.save_seq&&!dead.ssh_wait);
+ /* Successful saves can use a per-run file when the previous log is kept. */
+ ha_log_save(&dead);assert(ub_action_receive(UB_STORAGE_REQUEST,buf,sizeof buf,reply,sizeof reply));
+ snprintf(buf,sizeof buf,"%u 0 saved to sub/ub820_submenu.fixture.log\n",dead.save_seq);
+ reply_to(&dead,UB_STORAGE_REQUEST,dead.save_seq,buf);
+ assert(ha_log_poll(&dead)&&!dead.save_seq&&strstr(dead.notice,"sub/ub820_submenu.fixture.log"));
  /* An absent client cannot leave executable stale requests or replies. */
  assert(!ub_action_path(path,sizeof path,UB_REGION_REQUEST,'q',a.action_session,99));assert(!ub_action_envelope(path,"set C 99\n",9,seconds+1));
  assert(!ub_action_path(reply,sizeof reply,UB_REGION_REQUEST,'r',a.action_session,98));assert(!ub_action_envelope(reply,"old",3,seconds+1));

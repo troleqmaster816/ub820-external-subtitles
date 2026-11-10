@@ -32,6 +32,11 @@ source/modules/<id>/
 module that has to wait for another one's payload uses `ub_settled()` rather
 than relying on order alone.
 
+The same order applies to one-time `start()` callbacks, after configuration
+has loaded and before the first tick installs any payload. SSH uses order 5
+for optional automatic startup; logging uses 10 for its initial persistence.
+Both full and `--helper` builds regenerate the registry from module metadata.
+
 ## The interface (`source/core/ub.h`)
 
 A module (`struct ub_module`) has an id, a one-line summary, a default
