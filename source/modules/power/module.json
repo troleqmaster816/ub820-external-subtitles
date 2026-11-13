@@ -1,0 +1,1 @@
+{"id":"power","order":25,"payloads":[{"name":"policy","source":"policy.c","manifest":"policy_hooks.json"}]}

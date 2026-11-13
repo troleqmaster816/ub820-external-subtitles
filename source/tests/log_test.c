@@ -5,24 +5,59 @@
  * maps, process exit events, /proc stat lines, the kernel log, and a busy
  * thread found by the scan. */
 #define DIAG_BUSY_SECONDS 2
+#define UB_LOG_BOOT_ID "/tmp/ub820-log-test-boot-id"
+struct ub_dir;
+static const char *isolated_proc_next(struct ub_dir *d);
+#define ub_dir_next isolated_proc_next
 #include "../modules/log/module.c"
+#undef ub_dir_next
+extern const char *ub_dir_next(struct ub_dir *d);
 #include <signal.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+
+/* Keep the real /proc scanner and real child lifecycles, but enumerate only
+ * this test executable's processes. Unrelated host starts/ends otherwise
+ * consume the shared eight-line budget and make exact burst assertions flaky. */
+static const char *isolated_proc_next(struct ub_dir *d){
+ struct stat root,here,self,other;const char *entry;char path[80];
+ if(stat("/proc",&root)||fstat(d->fd,&here)||root.st_dev!=here.st_dev||root.st_ino!=here.st_ino)return ub_dir_next(d);
+ if(stat("/proc/self/exe",&self))return 0;
+ while((entry=ub_dir_next(d))){
+  int pid=atoi(entry);if(pid<=0)continue;
+  snprintf(path,sizeof path,"/proc/%d/exe",pid);
+  if(!stat(path,&other)&&self.st_dev==other.st_dev&&self.st_ino==other.st_ino)return entry;
+ }
+ return 0;
+}
 
 static int failures;
 #define CHECK(c) do{if(!(c)){printf("FAIL %s:%d: %s\n",__FILE__,__LINE__,#c);failures++;}}while(0)
 struct ub_module *const ub_modules[]={&ub_module_log,0};
 
 /* Storage stub: records the last copy in each direction. */
-static int stub_result,stub_read_result=4,writes;
+static int stub_result,stub_read_result=4,writes,stub_archive_result,reads,current_writes,canonical_writes,archive_writes,snapshot_mutate;
 static char saved_from[256],saved_to[256],read_from[256];
+static char copied_log[1<<20],snapshot_after[1<<20];
+static size_t slurp(const char *path,char *buf,size_t cap);
 int ub_stick_write(const char *tmp_path,const char *stick_path){
- writes++;snprintf(saved_from,sizeof saved_from,"%s",tmp_path);snprintf(saved_to,sizeof saved_to,"%s",stick_path);return stub_result;
+ writes++;snprintf(saved_from,sizeof saved_from,"%s",tmp_path);snprintf(saved_to,sizeof saved_to,"%s",stick_path);
+ if(!strcmp(stick_path,UB_STICK_PREV)){archive_writes++;return stub_archive_result?stub_archive_result:stub_result;}
+ if(!strcmp(stick_path,UB_STICK_LOG)||!strcmp(stick_path,fallback_path)){
+  current_writes++;if(!strcmp(stick_path,UB_STICK_LOG))canonical_writes++;
+  CHECK(strcmp(tmp_path,UB_LOG_FILE));slurp(tmp_path,copied_log,sizeof copied_log);
+  if(snapshot_mutate){
+   int mode=snapshot_mutate;snapshot_mutate=0;
+   if(mode==2)CHECK(!ftruncate(2,0));
+   ub_log("t",UB_ALWAYS,"written while the USB tool was copying");
+   slurp(tmp_path,snapshot_after,sizeof snapshot_after);CHECK(!strcmp(copied_log,snapshot_after));
+  }
+ }
+ return stub_result;
 }
 int ub_stick_read(const char *stick_path,const char *tmp_path){
- snprintf(read_from,sizeof read_from,"%s",stick_path);
+ reads++;snprintf(read_from,sizeof read_from,"%s",stick_path);
  if(!stub_read_result){FILE *f=fopen(tmp_path,"w");fputs("old run\n",f);fclose(f);}
  return stub_read_result;
 }
@@ -65,7 +100,7 @@ static void test_saving(void){
  step(0,0);CHECK(!saved_to[0]);
  /* A request is consumed once and answered with its sequence number. */
  request("save-log 7\n");step(0,0);
- CHECK(!strcmp(saved_from,UB_LOG_FILE));CHECK(!strcmp(saved_to,UB_STICK_LOG));
+ CHECK(!strcmp(saved_from,UB_SNAPSHOT_TMP));CHECK(!strcmp(saved_to,UB_STICK_LOG));
  CHECK(access(UB_STORAGE_REQUEST,F_OK)!=0);
  slurp(UB_STORAGE_STATUS,status,sizeof status);CHECK(!strcmp(status,"7 0 saved as sub/ub820_submenu.log\n"));
  saved_to[0]=0;step(0,0);CHECK(!saved_to[0]);
@@ -81,34 +116,73 @@ static void test_saving(void){
 }
 
 static void test_continuous(void){
- int before;
+ int before,old_reads;
  /* The previous run's log is copied aside when the helper starts. */
- save=SAVE_ALWAYS;stub_read_result=0;writes=0;
+ save=SAVE_ALWAYS;stub_read_result=0;writes=reads=current_writes=archive_writes=0;
  start(&ub_module_log);
- CHECK(!strcmp(read_from,UB_STICK_LOG));CHECK(!strcmp(saved_from,UB_PREV_TMP));CHECK(!strcmp(saved_to,UB_STICK_PREV));
+ CHECK(!strcmp(read_from,UB_STICK_LOG));CHECK(writes==2&&archive_writes==1&&current_writes==1);
+ CHECK(!strcmp(saved_from,UB_SNAPSHOT_TMP));CHECK(!strcmp(saved_to,UB_STICK_LOG));
+ CHECK(strstr(copied_log,"the log is saved to"));CHECK(strstr(copied_log,"previous run's log kept as"));
  CHECK(access(UB_PREV_TMP,F_OK)!=0);CHECK(strstr(log_text(),"previous run's log kept as"));
  /* No earlier log: nothing is copied. */
  stub_read_result=4;writes=0;keep_previous();CHECK(!writes);
- /* First step saves; a change waits for the pause... */
+ /* Start saves synchronously; the first tick checkpoints logs from later
+  * module initializers before native payload installation begins. */
+ ub_log("other",UB_ALWAYS,"later module initialized");
  step(0,0);CHECK(writes==1);CHECK(!strcmp(saved_to,UB_STICK_LOG));
+ CHECK(strstr(copied_log,"later module initialized"));writes=0;
  ub_log("t",UB_ALWAYS,"something happened");
  for(int i=0;i<SAVE_PAUSE-1;i++)step(0,0);
- CHECK(writes==1);
- step(0,0);CHECK(writes==2);
+ CHECK(!writes);
+ step(0,0);CHECK(writes==1);
  /* an unchanged log is not saved again */
- step(0,0);CHECK(writes==2);
+ step(0,0);CHECK(writes==1);
  /* ...unless something urgent was logged (here: by the crash reporter). */
  ub_log("t",UB_ALWAYS,"crash");close(open(UB_LOG_URGENT,O_WRONLY|O_CREAT,0600));
- step(0,0);CHECK(writes==3);CHECK(access(UB_LOG_URGENT,F_OK)!=0);
+ step(0,0);CHECK(writes==2);CHECK(access(UB_LOG_URGENT,F_OK)!=0);
  /* A failing stick is reported once and retried after a minute. */
  stub_result=7;ub_log("t",UB_ALWAYS,"more");
  for(int i=0;i<SAVE_PAUSE;i++)step(0,0);
- CHECK(writes==4);before=(int)count(log_text(),"trying again every minute");CHECK(before==1);
+ CHECK(writes==3);before=(int)count(log_text(),"trying again every minute");CHECK(before==1);
  for(int i=0;i<SAVE_RETRY-1;i++)step(0,0);
- CHECK(writes==4);
- step(0,0);CHECK(writes==5);CHECK(count(log_text(),"trying again every minute")==1);
+ CHECK(writes==3);
+ step(0,0);CHECK(writes==4);CHECK(count(log_text(),"trying again every minute")==1);
  stub_result=0;for(int i=0;i<SAVE_RETRY;i++)step(0,0);
- CHECK(writes==6);CHECK(strstr(log_text(),"saved to the stick again (after 2 failed attempts)"));
+ CHECK(writes==5);CHECK(strstr(log_text(),"saved to the stick again (after 2 failed attempts)"));
+ /* Rotation failure sends both automatic and manual saves to this run's
+  * unique file, leaving the canonical evidence untouched. */
+ stub_read_result=6;writes=current_writes=canonical_writes=0;start(&ub_module_log);
+ CHECK(rotation_pending&&!rotation_loaded&&current_writes==1&&!canonical_writes);
+ CHECK(fallback_path[0]&&!strcmp(saved_to,fallback_path));
+ {char path[256];snprintf(path,sizeof path,"%s",fallback_path);request("save-log 31\n");step(0,0);CHECK(!canonical_writes&&rotation_pending&&!strcmp(path,saved_to));}
+ stub_read_result=0;stub_archive_result=7;kept.pause=rotation_pause=0;step(0,0);
+ CHECK(rotation_pending&&rotation_loaded&&!canonical_writes&&access(UB_PREV_TMP,F_OK)==0);
+ old_reads=reads;request("save-log 32\n");step(0,0);CHECK(reads==old_reads&&!canonical_writes&&rotation_loaded);
+ stub_archive_result=0;request("save-log 33\n");step(0,0);
+ CHECK(!rotation_pending&&!rotation_loaded&&canonical_writes==1&&reads==old_reads&&access(UB_PREV_TMP,F_OK)!=0);
+ request("save-log 34\n");step(0,0);CHECK(reads==old_reads); /* Never archive this run as its predecessor. */
+ /* Initial-copy failure is retried after backoff, without repeating rotation. */
+ stub_read_result=4;stub_result=7;start(&ub_module_log);CHECK(rotation_pending&&kept.failures==1);
+ before=writes;step(0,0);CHECK(writes==before); /* Startup checkpoint does not defeat failure backoff. */
+ old_reads=reads;stub_result=0;kept.pause=0;step(0,0);CHECK(!kept.failures&&reads==old_reads);
+ /* USB reads a frozen snapshot even if the live RAM file grows or is trimmed. */
+ ub_log("t",UB_ALWAYS,"snapshot before append");snapshot_mutate=1;request("save-log 35\n");step(0,0);
+ CHECK(strstr(copied_log,"snapshot before append")&&!strstr(copied_log,"written while the USB tool was copying"));
+ CHECK(strstr(log_text(),"written while the USB tool was copying"));
+ snapshot_mutate=2;request("save-log 36\n");step(0,0);
+ CHECK(strstr(copied_log,"snapshot before append")&&!strstr(log_text(),"snapshot before append"));
+ CHECK(access(UB_SNAPSHOT_TMP,F_OK)!=0);
+ /* Ambiguous source-open code 4 never means permission to destroy the
+  * canonical file, including a first-ever boot with no previous log. */
+ stub_read_result=4;canonical_writes=0;start(&ub_module_log);
+ CHECK(rotation_pending&&!canonical_writes&&!strcmp(saved_to,fallback_path));
+ request("save-log 37\n");step(0,0);
+ {char ack[512];slurp(UB_STORAGE_STATUS,ack,sizeof ack);CHECK(strstr(ack,fallback_path));}
+ /* An invalid boot ID cannot create a guessed or unsafe USB path. */
+ {FILE *f=fopen(UB_LOG_BOOT_ID,"w");CHECK(f!=0);if(f){fputs("invalid/boot/id\n",f);fclose(f);}}
+ fallback_path[0]=0;current_writes=0;start(&ub_module_log);CHECK(!current_writes&&kept.failures==1);
+ {FILE *f=fopen(UB_LOG_BOOT_ID,"w");CHECK(f!=0);if(f){fputs("12345678-1234-1234-1234-123456789abc\n",f);fclose(f);}}
+ kept.pause=0;step(0,0);CHECK(current_writes==1&&fallback_path[0]);
  save=SAVE_MENU;
 }
 
@@ -241,6 +315,7 @@ static void test_chain(void){
 }
 
 int main(void){
+ {FILE *f=fopen(UB_LOG_BOOT_ID,"w");if(!f)return 1;fputs("12345678-1234-1234-1234-123456789abc\n",f);fclose(f);}
  ub_log_open();
  ub_log_level=UB_ALWAYS;ub_log("t",UB_INFO,"hidden info");ub_log("t",UB_ALWAYS,"kept error");
  start(&ub_module_log); /* level=info, save=menu, diagnostics=0 by default */

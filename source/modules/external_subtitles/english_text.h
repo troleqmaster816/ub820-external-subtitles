@@ -1,13 +1,8 @@
-/* English text for the native subtitle rows in European menu languages
- * (option english_text). Included by module.c after ub.h.
- *
- * The rows' text IDs 0x12b5..0x12c0 (E559_o..E570_o) have strings only in
- * libmulang's regional columns 16..22; columns 0..15 (all European menu
- * languages) are empty. Each entry is 24 u16 offsets, slot-relative, followed
- * by its strings; column 16 is English. libmulang maps the file read-only and
- * shared, so the two pages holding these entries are swapped for a private
- * copy in which each empty column points at the entry's own English string.
- * No code, GOT or file is changed; every other text ID keeps its bytes. */
+/* English text for native subtitle rows and popups. Runtime hooks their shared
+ * native lookup, with exact executable/library/language pins and mapped base.
+ * No callback replacement or language switch. The old pure page
+ * builder below remains an offline language-data fixture for lang_test only;
+ * production code never calls it or ub_overlay_pages(). */
 #ifndef UB_ENGLISH_TEXT_H
 #define UB_ENGLISH_TEXT_H
 #define LANG_ID "external_subtitles"
@@ -19,6 +14,7 @@
 #define LANG_LAST 0x12c0u
 #define LANG_ENGLISH 16u
 
+#ifdef UB_LANG_BUILD_ONLY
 static unsigned char lang_old[LANG_PAGES],lang_new[LANG_PAGES];
 static int lang_state; /* 0 not built, 1 ready, -1 unusable */
 static int lang_inside(uint32_t at,uint32_t n){return at>=LANG_PAGE&&at-LANG_PAGE<=LANG_PAGES-n;}
@@ -45,27 +41,57 @@ static int lang_build(const char *path){
  close(fd);
  lang_state=memcmp(lang_old,lang_new,LANG_PAGES)?1:-1;return lang_state;
 }
+#endif
 
-/* While the player UI is still starting, its threads may not all pause at
- * once; try again every 5 s, like the payload install, for about a minute.
- * state: [0] 1 done / -1 given up, [1] seconds waiting for the mapping,
- * [2] failed attempts, [3] seconds until the next attempt */
+#ifndef UB_LANG_BUILD_ONLY
+extern const struct ub_payload ub_payload_external_subtitles_native_text;
+/* Installation stays separate from ui/menu so english_text also works with
+ * [ui] disabled. Core's normal payload installer cannot preflight these data
+ * dependencies, so this guarded part installs its payload after validating
+ * the selected executable's matching library and language-data cohort.
+ * 0 mapping not yet present; 1 verified; -1 incompatible, make no changes. */
+static int lang_dependency(int pid,const char *suffix,uint32_t expected_base,const char *expected_sha){
+ char path[600],digest[65];uint32_t base=ub_map_base(pid,suffix,path,sizeof path);
+ if(!base)return 0;
+ if((expected_base && base!=expected_base) || ub_hash_file(path,digest) ||
+    strcmp(digest,expected_sha)){
+  ub_log(LANG_ID,UB_ALWAYS,"%s mapping/file does not match the selected firmware cohort; native English text skipped",path);
+  return -1;
+ }
+ return 1;
+}
 #define LANG_ATTEMPTS 12
 #define LANG_RETRY_SECONDS 2
 static void english_text_step(struct ub_part *p,struct ub_target *t){
- char path[600];uint32_t base;int rc;
+ int rc;
  if(t->state[0])return;
  if(t->state[3]){t->state[3]--;return;}
- if(!ub_settled("apl_dispsrv"))return; /* one ptrace session at a time */
- if(++t->state[1]>120){t->state[0]=-1;ub_log(LANG_ID,UB_ALWAYS,"language data not mapped in PID%d; skipped",t->pid);return;}
- base=ub_map_base(t->pid,LANG_SUFFIX,path,sizeof path);
- if(!base)return;
- if(lang_build(path)!=1){t->state[0]=-1;return;}
- rc=ub_overlay_pages(t->pid,base+LANG_PAGE,lang_old,lang_new,LANG_PAGES);
- if(rc==0){t->state[0]=1;ub_changed(p);ub_log(LANG_ID,UB_INFO,"English text for native subtitle rows active in PID%d",t->pid);}
- else if(rc==1){t->state[0]=-1;ub_log(LANG_ID,UB_ALWAYS,"language pages in PID%d differ from 1.82; skipped",t->pid);}
- else if(++t->state[2]>=LANG_ATTEMPTS){t->state[0]=-1;ub_log(LANG_ID,UB_ALWAYS,"English text could not be applied in PID%d: %s (%d attempts)",t->pid,ub_overlay_error(rc),t->state[2]);}
- else{t->state[3]=LANG_RETRY_SECONDS;ub_log(LANG_ID,UB_INFO,"English text attempt %d in PID%d: %s; retrying",t->state[2],t->pid,ub_overlay_error(rc));}
+ if(!ub_settled("apl_dispsrv"))return;
+ if(++t->state[1]>120){t->state[0]=-1;ub_log(LANG_ID,UB_ALWAYS,"native text dependencies not mapped in PID%d; skipped",t->pid);return;}
+ if(!t->state[4]){
+  char path[64],digest[65];const struct ub_payload_variant *variant;
+  snprintf(path,sizeof path,"/proc/%d/exe",t->pid);
+  if(ub_hash_file(path,digest))return;
+  variant=ub_payload_variant(&ub_payload_external_subtitles_native_text,digest);
+  if(!variant||!variant->sha256||strcmp(variant->sha256,digest)||!variant->firmware||
+     (strcmp(variant->firmware,"1.82")&&strcmp(variant->firmware,"1.85"))){
+   t->state[0]=-1;ub_log(LANG_ID,UB_ALWAYS,"native text has no exact firmware cohort for PID%d; skipped",t->pid);return;
+  }
+  t->state[4]=!strcmp(variant->firmware,"1.85")?185:182;
+ }
+ rc=lang_dependency(t->pid,"/libmulang.so",0x29450000u,
+  t->state[4]==185?"9856df99ec704146ecdd6019c8166b15c8a6b9550cf67624f429a56a363b1bb4":
+  "dddd5af0fda3f8accde5a4006fe0160f9aa2292a2ae8fd973849af8071a8d8b5");
+ if(rc<1){if(rc<0)t->state[0]=-1;return;}
+ rc=lang_dependency(t->pid,LANG_SUFFIX,0,
+  t->state[4]==185?"f83f9367d53cfea7dda8cd1d0536c9fb1699466138c20499d0e3be06c102e44e":LANG_SHA256);
+ if(rc<1){if(rc<0)t->state[0]=-1;return;}
+ rc=ub_install_payload(t->pid,&ub_payload_external_subtitles_native_text);
+ if(!rc){t->installed=1;t->state[0]=1;ub_changed(p);ub_log(LANG_ID,UB_INFO,"Native English lookup fallback installed in PID%d (firmware %s); rows and popups use it on lookup",t->pid,t->state[4]==185?"1.85":"1.82");}
+ else if(rc==-2){t->failed=1;t->state[0]=-1;ub_log(LANG_ID,UB_ALWAYS,"Native English text installation quarantined PID%d",t->pid);}
+ else if(++t->state[2]>=LANG_ATTEMPTS){t->failed=1;t->state[0]=-1;ub_log(LANG_ID,UB_ALWAYS,"Native English text installation stopped at %s after %d attempts",ub_install_stage(),t->state[2]);}
+ else{t->state[3]=LANG_RETRY_SECONDS;ub_log(LANG_ID,UB_INFO,"Native English text attempt %d stalled at %s; retrying",t->state[2],ub_install_stage());}
 }
 
+#endif
 #endif

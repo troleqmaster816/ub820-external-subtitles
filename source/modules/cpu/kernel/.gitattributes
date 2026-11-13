@@ -1,0 +1,10 @@
+# These frozen inputs are byte-pinned to the tested prebuilt module, including
+# their original mixed line endings. Do not normalize them during checkout.
+*.c -text
+*.h -text
+*.S -text
+*.ko binary
+*.py text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+licenses/*.txt text eol=lf

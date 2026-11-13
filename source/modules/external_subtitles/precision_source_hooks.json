@@ -1,0 +1,40 @@
+{
+  "format": "ub820-ui-hooks-v1",
+  "program": "apl_bdv",
+  "firmware": "1.82",
+  "sha256": "0eed5038db1c678b14cf666752c1c02db6c884ec1229329b9867f4342544714d",
+  "payload_source": "precision_source.c",
+  "initialize_by_loader_only": true,
+  "hooks": [
+    {
+      "target": "0x62b48",
+      "replacement": "ub_hook_clock_callback",
+      "original_pointer": "ub_original_clock_callback",
+      "prototype": "void fn(const uint32_t *playback_info)",
+      "note": "Natural EXT playback-time callback, registered as 0x62b49 in both BD start flows. Input is a borrowed 24-byte six-word playback-info record, beginning with uint64 media time in 45000 ticks/second. The stock callback quantizes and updates second-level status; it is chained before starting a separate thread. No pointer into the borrowed record is retained. Prologue push.w {r3,r4,r5,r6,r7,r8,r9,r10,r11,lr} is identical in both firmware. No native timer interval or callback slot is replaced."
+    },
+    {
+      "target": "0x626ac",
+      "replacement": "ub_hook_notify_callback",
+      "original_pointer": "ub_original_notify_callback",
+      "prototype": "void fn(const uint32_t *notify_info)",
+      "note": "APL_MEDA_BDV_cb_NotifyInfo, registered through native API_SetNotifyCallback in both BD preopen flows. The caller 0x6eda8 passes one borrowed pointer; input word0 is a changed-fields mask (0x2 carries playback state in word4). Chain stock first. Nonzero notifications publish only a local epoch and nonblocking eventfd wake, never a synchronous MM request or borrowed pointer. Prologue push.w {r3,r4,r5,r6,r7,r8,r9,lr} matches both firmware."
+    }
+  ],
+  "bindings": [
+    {"symbol":"ub_native_get_media_time", "value":"0x655a5", "note":"Thumb API_GetMediaTime(mm_id, uint64 output). It validates id, posts synchronous native command 0x18, and returns fresh mapped PCE title-media time. Called only on the payload's own server thread."},
+    {"symbol":"ub_precision_mm_id", "value":"0x89e104", "note":"The exact MM id validated by API_GetMediaTime; read before and after a request."},
+    {"symbol":"ub_precision_mm_state", "value":"0x8abbf8", "note":"Native MM state: callback dispatcher 0x72b98 admits 2..11; the queued media-time handler 0x6cb66 additionally rejects 9 and 11. The adapter checks both conditions before and after each request."},
+    {"symbol":"ub_precision_pce_state", "value":"0x89e594", "note":"Authoritative uint32 PCE state. Native getters 0xb50f8,0xb5270,0xb5258 distinguish state6=activeplay,7=pause,8=discSTILL. Only state7 authorizes paused waiting; other states retain active queries. Never substitute the MM readiness enum or unchanged time."}
+  ],
+  "variants": [
+    {
+      "firmware":"1.85",
+      "sha256":"07f150cf640cf63a91a25994197ae26fb91f755e38b8a8313ee9c00a9280899f",
+      "hooks":{"ub_hook_clock_callback":"0x62b48", "ub_hook_notify_callback":"0x626ac"},
+      "bindings":{"ub_native_get_media_time":"0x655a5", "ub_precision_mm_id":"0x89e1f4", "ub_precision_mm_state":"0x8abce8", "ub_precision_pce_state":"0x89e684"},
+      "note":"Compared fresh stock ELFs: callback/getter/queue-wrapper control flow and ABI retain their addresses, with only absolute data immediates shifted +0xf0. The first four hook bytes are identical (2d e9 f8 4f). The getter's exact MM-id literal and native dispatcher state literal were independently disassembled for both firmware. Not tested on physical 1.85 hardware."
+    }
+  ],
+  "lifecycle":"One resident server thread per apl_bdv process, started on a natural stock callback after injection. Native API calls are serialized by its existing MM worker; errors/teardown discard samples. The payload must remain resident while a native request can still be pending."
+}

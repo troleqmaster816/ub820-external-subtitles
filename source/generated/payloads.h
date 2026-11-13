@@ -2,12 +2,18 @@
 #ifndef UB_PAYLOADS_H
 #define UB_PAYLOADS_H
 #include "injector.h"
+#define UB_SHA256_APL_BDV "0eed5038db1c678b14cf666752c1c02db6c884ec1229329b9867f4342544714d"
 #define UB_SHA256_APL_DISPSRV "3ca762ac044acba426c45be240075f2644fc9f645a0fbbb1aabc4c8656dcec1d"
 #define UB_SHA256_APL_MEDA_BDPLAY "a07b82bc4a3a50594ee97ce9ad6937f8f63b129da0779c15576691e06da9789b"
+#define UB_SHA256_APL_MEDM "c092d29f3a16df117ae36d9ac915dd2dad87d1ea1fb9ca29bfcc7bb48d9971a4"
 #define UB_SHA256_APL_MGR "5ba307fa43e18ee0aa72576ff4e5a49b316f7f239794fb84579f638ec00ba6a9"
 #define UB_SHA256_APL_SETTING "6529f72a9c01770980be7335142ba481e75799c4b5f1a31a5ead8b60a064a006"
 extern const struct ub_payload ub_payload_ui_menu;
 extern const struct ub_payload ub_payload_ui_settings;
+extern const struct ub_payload ub_payload_external_subtitles_precision_source;
 extern const struct ub_payload ub_payload_external_subtitles_engine;
+extern const struct ub_payload ub_payload_external_subtitles_native_text;
+extern const struct ub_payload ub_payload_power_policy;
+extern const struct ub_payload ub_payload_region_launch;
 extern const struct ub_payload ub_payload_remote_keys;
 #endif

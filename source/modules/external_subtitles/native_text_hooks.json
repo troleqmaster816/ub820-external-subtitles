@@ -1,0 +1,29 @@
+{
+  "program": "apl_dispsrv",
+  "firmware": "1.82",
+  "sha256": "3ca762ac044acba426c45be240075f2644fc9f645a0fbbb1aabc4c8656dcec1d",
+  "initialize_by_loader_only": true,
+  "gateway_hint": "0x29464000",
+  "initialization": "Narrow process-local native language lookup. Supervisor verifies exact mulang/language hashes and mapped base before installation; no CTK callback replacement or language switch.",
+  "hooks": [
+    {
+      "target": "0x29450894",
+      "source_image": "libmulang.so",
+      "source_sha256": {
+        "1.82": "dddd5af0fda3f8accde5a4006fe0160f9aa2292a2ae8fd973849af8071a8d8b5",
+        "1.85": "9856df99ec704146ecdd6019c8166b15c8a6b9550cf67624f429a56a363b1bb4"
+      },
+      "replacement": "ub_hook_native_lookup",
+      "original_pointer": "ub_original_native_lookup",
+      "prototype": "const char *fn(unsigned int language_column, unsigned int text_id)",
+      "note": "Shared lookup called by gettext_ppro2 at294509e8 and dgettext_ppro2 at29450adc in both versions. First4B push.w {r4-r8,sb,lr} safe. Original always runs; only empty12b5..12c0 may use Englishcolumn16. Covers direct native popup providers and CTK alike."
+    }
+  ],
+  "variants": [
+    {
+      "firmware": "1.85",
+      "sha256": "d5b3a79dcaf3fbc9248131a5758db4edd8cc93139eef5c25c562f37ee823122b",
+      "hooks": {"ub_hook_native_lookup": "0x29450894"}
+    }
+  ]
+}

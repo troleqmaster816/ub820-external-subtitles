@@ -21,11 +21,13 @@
  * (Netflix choice) and by the overlay (open). */
 #include <stddef.h>
 #include <stdint.h>
+#include <errno.h>
+#include "payload_time.h"
+#include <unistd.h>
+#include <fcntl.h>
+#include <stdio.h>
 #include "helper_menu.h"
 
-extern int open(const char *,int,...);
-extern int close(int);
-extern int write(int,const void *,unsigned int);
 
 /* Loader fills this before the branch is installed. */
 int (*ub_original_key_filter)(int *);
@@ -34,26 +36,45 @@ int (*ub_original_key_filter)(int *);
 #define CTX_EVENT (0xe0/4)  /* 1 for a key press (message type 2), 2 otherwise */
 #define CTX_KEY (0xe4/4)
 #define KEY_NETFLIX 0x168
-#define O_WRONLY_NONBLOCK 04001  /* O_WRONLY|O_NONBLOCK on ARM Linux */
+#define O_WRONLY_NONBLOCK (O_WRONLY|O_NONBLOCK|O_CLOEXEC)
 
 static int exists(const char *path){int fd=open(path,0);if(fd<0)return 0;close(fd);return 1;}
-/* Sends a press to the overlay; 0 when its reader is there (opening a FIFO
- * for writing without blocking fails while nobody reads it). */
+/* Reader-open alone does not prove a functioning UI: it refreshes a lease
+ * from its normal timer. Once expired, unrelated keys return to stock. */
+static int overlay_live(void){
+ uint32_t expires,now;int fd=open(UB_OVERLAY_OPEN,0),n;
+ if(fd<0)return 0;
+ n=read(fd,&expires,sizeof expires);close(fd);
+ return n==(int)sizeof expires&&!ub_payload_now(&now)&&(int32_t)(expires-now)>0;
+}
+static void abort_overlay(void){int fd=open(UB_OVERLAY_ABORT,0101,0600);if(fd>=0)close(fd);}
+/* A temporary read descriptor pins a reader through write(), so a UI exit
+ * between the first open and the write cannot deliver SIGPIPE to apl_mgr.
+ * It never reads/steals data; no reader at the first open still fails. */
 static int to_overlay(int key,int press){
- uint32_t record=(uint32_t)key;int fd=open(UB_KEYS_FIFO,O_WRONLY_NONBLOCK);
+ char descriptor[40];uint32_t record=(uint32_t)key;int fd=open(UB_KEYS_FIFO,O_WRONLY_NONBLOCK),reader,n=0;
  if(fd<0)return -1;
- if(press&&write(fd,&record,sizeof record)){}
- close(fd);return 0;
+ if(press){
+  snprintf(descriptor,sizeof descriptor,"/proc/self/fd/%d",fd);
+  reader=open(descriptor,O_RDONLY|O_NONBLOCK|O_CLOEXEC); /* pin this exact FIFO inode */
+  if(reader<0){close(fd);return -1;}
+  do{n=write(fd,&record,sizeof record);}while(n<0&&errno==EINTR);
+  close(reader);
+ }
+ close(fd);return !press||n==(int)sizeof record?0:-1;
 }
 
 int ub_hook_key_filter(int *ctx){
  if(ctx&&ctx[CTX_PASS_ALL]!=2){
   int key=ctx[CTX_KEY],press=ctx[CTX_EVENT]==1;
   if(key==KEY_NETFLIX){
-   if(exists(UB_NETFLIX_HELPER)){to_overlay(key,press);return 1;}
+   if(exists(UB_NETFLIX_HELPER)){if(to_overlay(key,press)&&overlay_live())abort_overlay();return 1;}
    if(exists(UB_NETFLIX_OFF))return 1;
   }
-  if(exists(UB_OVERLAY_OPEN)&&to_overlay(key,press)==0)return 1;
+  if(overlay_live()){
+   if(to_overlay(key,press))abort_overlay();
+   return 1; /* failed press closes overlay; never pass it to hidden stock */
+  }
  }
  return ub_original_key_filter(ctx);
 }

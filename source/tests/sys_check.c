@@ -23,6 +23,7 @@ int main(void){
  fd=open(UB_CONFIG_DIR "/modules.cfg",O_RDONLY);size=lseek(fd,0,SEEK_END);
  CHECK(size==(long long)sizeof cfg-1);
  CHECK(!ub_fstat(fd,&st));CHECK(st.size==size);CHECK((st.mode&0170000)==0100000);CHECK(st.ino&&st.mtime>1000000000);
+ CHECK(st.uid==(unsigned)geteuid());CHECK(st.gid==(unsigned)getegid());
  close(fd);
  CHECK(!ub_stat(UB_CONFIG_DIR "/modules.cfg",&st));CHECK(st.size==size);
  CHECK(!ub_stat(UB_CONFIG_DIR,&st));CHECK((st.mode&0170000)==0040000);

@@ -3,7 +3,10 @@
 /* Files shared between the "UB820 Helper" menu (modules/ui/menu.c, inside
  * apl_dispsrv) and the helper's modules. Requests are written atomically by
  * the menu (temp file + rename) and consumed by the helper; status files are
- * replaced atomically by the helper. All in /tmp (RAM). */
+ * replaced atomically by the helper. All in /tmp (RAM). New region/remote
+ * clients use action_ipc.h: REQUEST.q.<random-session>.<seq> and private
+ * REQUEST.r.<random-session>.<seq> replies carrying the status-line format.
+ * Global STATUS is observational; it never acknowledges a new client. */
 
 /* Present while the module is enabled; the menu shows its rows only then. */
 #define UB_EXTSUB_ENABLED "/tmp/ub820_extsub.enabled"
@@ -38,6 +41,23 @@
 #define UB_NETFLIX_OFF "/tmp/ub820_netflix.off"
 #define UB_NETFLIX_HELPER "/tmp/ub820_netflix.helper"
 
+/* power module: idle auto-power-off only. The enabled marker is published
+ * only while the supported native policy control is ready. Requests use
+ * private action envelopes: "set on|off <seq>\n". Status and replies contain
+ * "<seq> <on|off> <message>\n"; the value is the confirmed effective state,
+ * including the previous state when applying a request failed. */
+#define UB_POWER_ENABLED "/tmp/ub820_power.enabled"
+#define UB_POWER_REQUEST "/tmp/ub820_power.request"
+#define UB_POWER_STATUS "/tmp/ub820_power.status"
+
+/* cpu module: the enabled marker controls visibility; it does not imply that
+ * optimization is On. Requests use "set on|off <seq>\n" or the page-open
+ * query "get <seq>\n" in private action envelopes. Replies contain
+ * "<seq> <on|off|unknown> <message>\n". Only the backend confirms state. */
+#define UB_CPU_ENABLED "/tmp/ub820_cpu.enabled"
+#define UB_CPU_REQUEST "/tmp/ub820_cpu.request"
+#define UB_CPU_STATUS "/tmp/ub820_cpu.status"
+
 /* UB820 Helper overlay (ui module, apl_dispsrv), opened by the Netflix key.
  * UB_KEYS_FIFO (made by the remote module) carries key presses from apl_mgr
  * as u32 key codes; the overlay keeps it open for reading. UB_OVERLAY_OPEN
@@ -45,4 +65,8 @@
  * drops the keys for everything else, as long as somebody reads the FIFO. */
 #define UB_KEYS_FIFO "/tmp/ub820_keys.fifo"
 #define UB_OVERLAY_OPEN "/tmp/ub820_overlay.open"
+/* OPEN contains a u32 CLOCK_MONOTONIC expiry (seconds), refreshed by UI.
+ * ABORT requests closure after a failed FIFO delivery; never execute that
+ * same key against the application hidden underneath the overlay. */
+#define UB_OVERLAY_ABORT "/tmp/ub820_overlay.abort"
 #endif

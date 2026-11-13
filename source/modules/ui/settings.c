@@ -4,8 +4,10 @@
  * settings_hooks.json (1.82 addresses below).
  *
  * System gets one more tile, "UB820 Helper", appended to its right column by
- * the hook on the main-view renderer. OK on it opens our submenu (a CTK
- * window over the right area): Blu-ray and DVD region, Netflix button, SSH,
+ * the record builder, before the native window builder runs. A stock GTK
+ * timer repairs a view which was already built when we were installed.
+ * OK on it opens our submenu (a CTK
+ * window over the right area): Blu-ray and DVD region, Netflix button, idle auto power-off, SSH,
  * Helper log, Save log to USB, the same actions as OPTIONS > UB820 Helper
  * (helper_actions.h).
  *
@@ -50,17 +52,21 @@ extern void gtk_container_add(Widget,Widget),gtk_fixed_put(Widget,Widget,int,int
 extern void gtk_label_set_text(Widget,const char *),gtk_label_set_justify(Widget,int);
 extern void CTK_window_set_layer(Widget,int),CTK_fixed_set_shape(Widget,int),CTK_fixed_set_alpha(Widget,int);
 extern void CTK_button_set_text(Widget,const char *),CTK_button_set_shape(Widget,int);
+extern void CTK_button_set_state_disable(Widget,int);
 extern unsigned int g_timeout_add(unsigned int,int (*)(void *),void *);
 extern void *gtk_object_get_data(Widget,const char *);
 
 /* Loader fills these before any branch is installed. */
 void (*ub_original_render)(int *,void *,void *,void *);
 void (*ub_original_entry_table)(int);
+void (*ub_original_build_record)(uint32_t *,uint32_t *,int);
+int (*ub_original_ui_tick)(void *);
 void (*ub_build_column)(uint32_t *,int);
 int *ub_view;
 void **ub_key_table;
 uint32_t *ub_right_count;
 uint32_t *ub_system_keys;
+uint32_t *ub_main_keys;
 void (*ub_make_right_button)(Widget,Widget,int);
 const char **ub_right_names_all;
 const char **ub_right_names;
@@ -114,10 +120,25 @@ static int tile_index(const uint32_t *rec){
  for(i=0;i<n&&i<R_MAX;i++)if(rec[R_IDS+i]==TILE_ID)return (int)i;
  return -1;
 }
-/* The window (FUN_000bf070) makes one button per right row the record had
- * when it was built, before this hook adds our row, so ours is made here the
- * same way. Without it the renderer finds no widget for the row: no tile, and
- * Down onto it dereferences NULL (FUN_00098xxx). */
+/* This is data preparation on the natural UI thread, not a widget operation.
+ * The stock window builder consumes these rows and creates our button using
+ * exactly the same path as the other System items. */
+static int append_tile(uint32_t *rec){
+ unsigned int n;int at;
+ if(!rec||!system_column(rec))return -1;
+ at=tile_index(rec);if(at>=0)return at;
+ n=rec[R_COUNT];if(n>=R_MAX)return -1;
+ rec[R_IDS+n]=TILE_ID;rec[R_FLAGS+n]=1;rec[R_TEXTS+n]=TILE_TEXT;
+ rec[R_COUNT]=n+1;
+ return (int)n;
+}
+void ub_hook_build_record(uint32_t *rec,uint32_t *panel,int id){
+ selected_id=id;
+ ub_original_build_record(rec,panel,id==(int)TILE_ID?SYSTEM_CATEGORY:id);
+ if(rec&&panel&&append_tile(rec)>=0)panel[0x1f]=rec[R_COUNT];
+}
+/* Late-install recovery only: an existing window may predate our builder
+ * hook. Use the native row factory, and publish a new row only after success. */
 static const char *make_tile_button(const int *view,unsigned int at){
  Widget window=(Widget)(uintptr_t)view[V_WINDOW],fixed;const char *name;
  if(!window)return "no window";
@@ -146,12 +167,33 @@ void ub_hook_render(int *view,void *a,void *b,void *c){
    unsigned int n=rec[R_COUNT];
    at=tile_index(rec);
    if(at<0&&n<R_MAX){
-    rec[R_IDS+n]=TILE_ID;rec[R_FLAGS+n]=1;rec[R_TEXTS+n]=TILE_TEXT;rec[R_COUNT]=n+1;
-    if(ub_right_count)*ub_right_count=n+1;
-    at=(int)n;
-    if(!logged_room){char t[64];logged_room=1;snprintf(t,sizeof t,"UB820 Helper tile added to System (row %d)",at+1);plog(t);}
+    Widget button=0;
+    how=make_tile_button(view,n);
+    if(view[V_WINDOW]&&ub_right_names_all&&ub_right_names_all[n])button=gtk_object_get_data((Widget)(uintptr_t)view[V_WINDOW],ub_right_names_all[n]);
+    if(button){
+     rec[R_IDS+n]=TILE_ID;rec[R_FLAGS+n]=1;rec[R_TEXTS+n]=TILE_TEXT;rec[R_COUNT]=n+1;
+     if(ub_right_count)*ub_right_count=n+1;
+     at=(int)n;
+     if(!logged_room){char t[64];logged_room=1;snprintf(t,sizeof t,"UB820 Helper tile added to System (row %d)",at+1);plog(t);}
+    }else log_tile(view,(int)n,0,how); /* next natural render retries */
    }else if(at<0&&!logged_room){logged_room=1;plog("System has no room for the UB820 Helper tile");}
-   if(at>=0)how=make_tile_button(view,(unsigned int)at);
+   else if(at>=0){
+    how=make_tile_button(view,(unsigned int)at);
+    /* A native allocation failure must not leave a focusable invisible row.
+     * Our builder always appends last, so removal does not shift stock rows. */
+    if(view[V_WINDOW]&&ub_right_names_all&&ub_right_names_all[at]&&
+       !gtk_object_get_data((Widget)(uintptr_t)view[V_WINDOW],ub_right_names_all[at])&&
+       (unsigned int)at+1==rec[R_COUNT]){
+     rec[R_IDS+at]=rec[R_FLAGS+at]=rec[R_TEXTS+at]=0;rec[R_COUNT]=(unsigned int)at;
+     if(ub_right_count)*ub_right_count=rec[R_COUNT];
+     view[V_RIGHT+at]=0;
+     /* Preserve valid stock focus; only repair a selection whose row was
+      * just removed, so the next native key never indexes a stale widget. */
+     if((unsigned int)view[V_RIGHT_SELECTED]>=rec[R_COUNT])
+      view[V_RIGHT_SELECTED]=at>0?at-1:0;
+     log_tile(view,at,0,how);at=-1;
+    }
+   }
   }
  }
  ub_original_render(view,a,b,c);
@@ -198,6 +240,9 @@ static void build_tile_keys(void){
  }
  tile_keys[n].key=0xffffffffu;
 }
+static void install_tile_keys(void){
+ if(ub_key_table&&ub_system_keys&&*ub_key_table==(void *)ub_system_keys){build_tile_keys();*ub_key_table=tile_keys;}
+}
 void ub_hook_entry_table(int id){
  selected_id=id;
  ub_original_entry_table(id);
@@ -208,8 +253,8 @@ void ub_hook_entry_table(int id){
 #define ROWS 9u
 #define LOG_BYTES 8192u
 #define LOG_LINES 120u
-enum { S_REGION, S_DVD, S_NETFLIX, S_SSH, S_LOG, S_SAVE };
-enum { LIST_NONE, LIST_REGION, LIST_NETFLIX, LIST_DVD };
+enum { S_REGION, S_DVD, S_NETFLIX, S_SSH, S_LOG, S_SAVE, S_POWER, S_CPU };
+enum { LIST_NONE, LIST_REGION, LIST_NETFLIX, LIST_DVD, LIST_POWER, LIST_CPU };
 static struct helper_state hs;
 #define DROP_ROWS 11u
 /* The submenu window (std_main geometry) and the value list beside it. */
@@ -223,11 +268,35 @@ static struct helper_state hs;
 /* listing: which value list (LIST_*) is open in its own framed window beside
  * its row (OK takes the highlighted value, RETURN keeps the old one) */
 static struct { Widget window,fixed,title,footer,rows[ROWS],values[ROWS],list,list_fixed,drop[DROP_ROWS]; int open,log_view,timer,listing; unsigned int selected,log_first,log_count,drop_sel; char *log_lines[LOG_LINES]; } s;
+/* Registered by stock gtk_timeout_add(1000, callback, app) before gtk_main.
+ * This callback is already on the UI thread, even when no keys or renders
+ * follow payload installation. Run stock first: it may close or rebuild UI.
+ * Never refresh a native child dialog, change selection, or show the parent. */
+int ub_hook_ui_tick(void *app){
+ int keep=ub_original_ui_tick(app),at;uint32_t *rec;Widget button=0;void *keys;
+ if(!keep||(app&&((int *)app)[3]==1)||s.open||!ub_view||!ub_view[V_WINDOW]||!ub_view[V_RECORD]||!ub_key_table)return keep;
+ keys=*ub_key_table;
+ if(keys!=(void *)tile_keys&&(!ub_system_keys||keys!=(void *)ub_system_keys)&&
+    (!ub_main_keys||keys!=(void *)ub_main_keys))return keep;
+ rec=(uint32_t *)(uintptr_t)ub_view[V_RECORD];
+ if(!system_column(rec))return keep;
+ at=tile_index(rec);
+ if(at>=0&&ub_right_names_all&&ub_right_names_all[at])
+  button=gtk_object_get_data((Widget)(uintptr_t)ub_view[V_WINDOW],ub_right_names_all[at]);
+ if(at<0||!button){
+  ub_hook_render(ub_view,0,0,0);
+  at=tile_index(rec);
+  if(at>=0&&(button=(Widget)(uintptr_t)ub_view[V_RIGHT+at])!=0)
+   CTK_button_set_state_disable(cast(button,CTK_button_get_type()),ub_view[3]==0);
+ }
+ install_tile_keys();
+ return keep;
+}
 static char log_text[LOG_BYTES+1];
-static unsigned int sub_rows(unsigned int *ids){unsigned int n=0;ids[n++]=S_REGION;if(hs.dvd_known)ids[n++]=S_DVD;if(hs.netflix_known)ids[n++]=S_NETFLIX;if(hs.ssh_enabled)ids[n++]=S_SSH;ids[n++]=S_LOG;ids[n++]=S_SAVE;return n;}
-#define SUB_ROWS_MAX 6u
-static unsigned int list_count(void){return s.listing==LIST_NETFLIX?HA_NETFLIX_CHOICES:s.listing==LIST_DVD?HA_DVD_CHOICES:ha_region_count(&hs);}
-static const char *list_label(unsigned int k){return s.listing==LIST_NETFLIX?ha_netflix_labels[k]:s.listing==LIST_DVD?ha_dvd_labels[k]:ha_region_labels[k];}
+static unsigned int sub_rows(unsigned int *ids){unsigned int n=0;ids[n++]=S_REGION;if(hs.dvd_known)ids[n++]=S_DVD;if(hs.netflix_known)ids[n++]=S_NETFLIX;if(hs.power_enabled)ids[n++]=S_POWER;if(hs.cpu_enabled)ids[n++]=S_CPU;if(hs.ssh_enabled)ids[n++]=S_SSH;ids[n++]=S_LOG;ids[n++]=S_SAVE;return n;}
+#define SUB_ROWS_MAX 8u
+static unsigned int list_count(void){return s.listing==LIST_POWER||s.listing==LIST_CPU?2u:s.listing==LIST_NETFLIX?HA_NETFLIX_CHOICES:s.listing==LIST_DVD?HA_DVD_CHOICES:ha_region_count(&hs);}
+static const char *list_label(unsigned int k){return s.listing==LIST_POWER||s.listing==LIST_CPU?(k?"Off":"On"):s.listing==LIST_NETFLIX?ha_netflix_labels[k]:s.listing==LIST_DVD?ha_dvd_labels[k]:ha_region_labels[k];}
 static Widget label(const char *name,int x,int y,int w,int h){
  Widget l=CTK_label_new("");if(!l)return 0;
  gtk_widget_set_name(l,name);gtk_fixed_put(cast(s.fixed,gtk_fixed_get_type()),l,x,y);gtk_widget_set_uposition(l,x,y);gtk_widget_set_usize(l,w,h);gtk_label_set_justify(cast(l,gtk_label_get_type()),0);gtk_widget_show(l);
@@ -258,6 +327,12 @@ static int create_list(void);
 static void render_sub(void){
  unsigned int ids[SUB_ROWS_MAX],n,i;char text[200];
  if(!s.open)return;
+ if(s.listing==LIST_POWER&&(!hs.power_enabled||!hs.power_known)){
+  close_list();s.listing=LIST_NONE;
+ }
+ if(s.listing==LIST_CPU&&(!hs.cpu_enabled||!hs.cpu_known)){
+  close_list();s.listing=LIST_NONE;
+ }
  if(s.log_view){
   gtk_label_set_text(cast(s.title,gtk_label_get_type()),"Helper log");
   for(i=0;i<ROWS;i++){
@@ -286,6 +361,8 @@ static void render_sub(void){
    case S_NETFLIX:name="Netflix button";
     value=s.listing==LIST_NETFLIX?"":ha_netflix_labels[hs.netflix_choice<HA_NETFLIX_CHOICES?hs.netflix_choice:0];
     break;
+   case S_POWER:name="Auto power-off";value=s.listing==LIST_POWER?"":ha_power_value(&hs);break;
+   case S_CPU:name="CPU optimization";value=s.listing==LIST_CPU?"":ha_cpu_value(&hs);break;
    case S_SSH:name="SSH";value=hs.ssh_running?"On":"Off";break;
    case S_LOG:name="Helper log";value="";break;
    default:name="Save log to USB";value=hs.log_always?"Automatic":"";break;
@@ -314,7 +391,7 @@ static void render_sub(void){
 static int sub_tick(void *unused){
  int changed;(void)unused;
  if(!s.open){s.timer=0;return 0;}
- changed=ha_region_poll(&hs);changed|=ha_dvd_poll(&hs);changed|=ha_netflix_poll(&hs);changed|=ha_ssh_poll(&hs);changed|=ha_log_poll(&hs);
+ changed=ha_region_poll(&hs);changed|=ha_dvd_poll(&hs);changed|=ha_netflix_poll(&hs);changed|=ha_power_poll(&hs);changed|=ha_cpu_poll(&hs);changed|=ha_ssh_poll(&hs);changed|=ha_log_poll(&hs);
  if(changed&&!s.log_view)render_sub();
  return 1;
 }
@@ -333,6 +410,8 @@ static int sub_ok(void){
  if(s.listing){ /* only a different value is saved */
   if(s.listing==LIST_NETFLIX)ha_netflix_set(&hs,s.drop_sel);
   else if(s.listing==LIST_DVD)ha_dvd_set(&hs,s.drop_sel);
+  else if(s.listing==LIST_POWER)ha_power_set(&hs,s.drop_sel?0u:1u);
+  else if(s.listing==LIST_CPU)ha_cpu_set(&hs,s.drop_sel?0u:1u);
   else ha_region_set(&hs,s.drop_sel);
   s.listing=LIST_NONE;render_sub();return 1;
  }
@@ -346,6 +425,12 @@ static int sub_ok(void){
   s.listing=LIST_DVD;s.drop_sel=hs.dvd_choice<HA_DVD_CHOICES?hs.dvd_choice:0;break;
  case S_NETFLIX:
   s.listing=LIST_NETFLIX;s.drop_sel=hs.netflix_choice<HA_NETFLIX_CHOICES?hs.netflix_choice:0;break;
+ case S_POWER:
+  if(!hs.power_enabled||!hs.power_known){ha_copy(hs.notice,"Power control is not ready; reopen Helper to refresh",sizeof hs.notice);break;}
+  s.listing=LIST_POWER;s.drop_sel=hs.power_choice?0u:1u;break;
+ case S_CPU:
+  if(!hs.cpu_enabled||!hs.cpu_known){ha_cpu_unavailable(&hs);break;}
+  s.listing=LIST_CPU;s.drop_sel=hs.cpu_choice?0u:1u;break;
  case S_SSH:ha_ssh_toggle(&hs);break;
  case S_LOG:load_log();s.log_view=1;break;
  default:ha_log_save(&hs);break;

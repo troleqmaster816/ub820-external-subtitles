@@ -16,6 +16,7 @@
 #include "ub.h"
 #include "payloads.h"
 #include "helper_menu.h"
+#include "action_ipc.h"
 #include "storage.h"
 #include <fcntl.h>
 #include <stdio.h>
@@ -70,17 +71,16 @@ static void menu_status(void){
 }
 /* "set <choice> <seq>" from the menu: apply, save to the stick, answer. */
 static void menu_request(void){
- char buf[64],choice[16];unsigned seq;int fd,rc;ssize_t n;
- fd=open(UB_REMOTE_REQUEST,O_RDONLY);if(fd<0)return;
- n=read(fd,buf,sizeof buf-1);close(fd);unlink(UB_REMOTE_REQUEST);
- if(n<=0)return;
- buf[n]=0;
+ char buf[64],choice[16],reply[UB_ACTION_PATH],line[160];unsigned seq;int rc,n;
+ if(!ub_action_receive(UB_REMOTE_REQUEST,buf,sizeof buf,reply,sizeof reply))return;
  if(sscanf(buf,"set %15s %u",choice,&seq)!=2){ub_log(ID,UB_INFO,"ignored menu request");return;}
  rc=ub_setting_set(ID,"netflix_key",choice);
  menu_seq=seq;
  if(rc<0)snprintf(menu_message,sizeof menu_message,"unknown choice %s",choice);
  else if(rc>0)snprintf(menu_message,sizeof menu_message,"not saved to USB (%s)",ub_stick_error(rc));
  else snprintf(menu_message,sizeof menu_message,"saved");
+ n=snprintf(line,sizeof line,"%u %s %s\n",menu_seq,netflix_names[netflix_key],menu_message);
+ if(n>0&&(size_t)n<sizeof line&&ub_action_reply(reply,line,(size_t)n))ub_log(ID,UB_ALWAYS,"cannot acknowledge Netflix button request");
  ub_log(ID,UB_ALWAYS,"Netflix button chosen in the menu: %s (%s)",netflix_names[netflix_key],menu_message);
 }
 static void menu_step(struct ub_part *p,struct ub_target *t){
@@ -116,5 +116,5 @@ static void start(struct ub_module *m){
 }
 struct ub_module ub_module_remote={
  ID,"Remote: what the Netflix button does (netflix_key: Netflix, nothing, or the UB820 Helper overlay)",
- 1,options,start,parts,sizeof parts/sizeof *parts,0
+ 1,options,start,parts,sizeof parts/sizeof *parts,0,0
 };

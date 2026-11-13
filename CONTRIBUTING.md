@@ -1,5 +1,9 @@
 # Writing a module
 
+Keep local device captures, diagnostic notes and review reports under the
+ignored `analysis/` directory. Publish only maintained project documentation;
+`docs/` also contains the public project website and its images.
+
 Every feature of the patch is a module in `source/modules/<id>/`. The core
 (`source/core/`) does the risky plumbing once for everyone: finding player
 processes, checking their exact firmware hash, installing payloads, noticing
@@ -31,6 +35,11 @@ source/modules/<id>/
 `order` decides the order in which modules run each second (lower first). A
 module that has to wait for another one's payload uses `ub_settled()` rather
 than relying on order alone.
+
+The same order applies to one-time `start()` callbacks, after configuration
+has loaded and before the first tick installs any payload. SSH uses order 5
+for optional automatic startup; logging uses 10 for its initial persistence.
+Both full and `--helper` builds regenerate the registry from module metadata.
 
 ## The interface (`source/core/ub.h`)
 
@@ -99,6 +108,28 @@ struct ub_module ub_module_my_feature={
 
 The exported name must be `ub_module_<id>`.
 
+Before installation, `prepare(part, target)` may set `target->retry` to defer
+without consuming an injection attempt, or `target->failed` to refuse this
+process instance. The core checks both before installing any branch. This
+allows an earlier writer to finish and detach before ownership changes.
+
+## Native-loader assets
+
+An optional `assets` list in `module.json` builds DSOs for the native ELF
+loader, separately from the injected payloads:
+
+```json
+"assets": [{"name": "bd_preload", "source": "bd_preload.c"}]
+```
+
+The build embeds `ub_asset_<module>_<name>`, its `_size` and `_sha256` in
+`generated/assets.c` and declares them in `assets.h`. It links these DSOs
+against the firmware's libc with undefined symbols rejected and checks
+required symbol versions against that libc. Constructors are appropriate
+only for this normal loader path; injected payloads still have no constructors.
+The region module publishes its asset atomically in RAM and selects it only
+for the verified BD launch, preserving the environment of other processes.
+
 ## Payloads (code inside a player process)
 
 A payload is a small position-independent shared object with no
@@ -148,7 +179,9 @@ Several payloads may live in the same process, one per module part.
    already calls the hooked function.
 5. **Fail closed and say why.** If something is unexpected, leave the player
    as it is and write one `UB_ALWAYS` line explaining it.
-6. **Mark risky parts `guarded`** and call `ub_changed()`.
+6. **Call `ub_changed()` after changes.** Mark long-lived process parts
+   `guarded` when appropriate. The current breaker treats any process exit
+   as a failure, so do not use it for a process that normally ends per disc.
 7. **Document the firmware facts** in the module's header comment: which
    function or address, what it does, how you found it.
 
@@ -162,5 +195,38 @@ Several payloads may live in the same process, one per module part.
 - `python source/build.py` (full) or `--helper` must build with
   `-Wall -Wextra -Werror`.
 - On the player: test with `[log] level=debug`, read the log in OPTIONS >
-  External Subtitles > Helper log, and say in your pull request which disc
+  UB820 Helper > Helper log, and say in your pull request which disc
   types and menu languages you tried.
+
+## Building the helper
+
+The build scripts run on Windows with WSL Ubuntu. Install
+`arm-linux-gnueabihf-gcc`, `gcc` and `qemu-arm` in WSL, and Python with
+`pyelftools`, `capstone` and `keystone-engine` on Windows.
+
+To use the committed generated payloads without firmware files:
+
+```sh
+python source/build.py --helper
+```
+
+The result is `source/build/engage`. The script also runs its self-test and
+checks file hashing under QEMU. To rebuild payloads and their hook tables,
+provide the decoded stock firmware paths in PowerShell:
+
+```powershell
+$env:UB820_FIRMWARE_DIR = 'C:/firmware/v182/appfs/dtvrec/bin'
+$env:UB820_FIRMWARE_DIR_185 = 'C:/firmware/v185/appfs/dtvrec/bin'
+python source/build.py
+python source/tests/run_tests.py
+```
+
+`UB820_ROOTFS_LIB` can override the directory containing the stock
+`libc-2.20-2014.11.so`; the default is the 1.82 firmware's `rootfs/lib`.
+Firmware files are not included in this repository. Build reports are written
+to `source/build/`.
+
+The optional CPU component is embedded from its checked-in binary. Ordinary
+helper builds do not rebuild the kernel component. Its source, licenses,
+verification and separate rebuild instructions are in
+[`source/modules/cpu/kernel/`](source/modules/cpu/kernel/README.md).

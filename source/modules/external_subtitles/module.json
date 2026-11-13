@@ -3,9 +3,19 @@
   "order": 20,
   "payloads": [
     {
+      "name": "precision_source",
+      "source": "precision_source.c",
+      "manifest": "precision_source_hooks.json"
+    },
+    {
       "name": "engine",
       "source": "backend.c",
       "manifest": "backend_hooks.json"
+    },
+    {
+      "name": "native_text",
+      "source": "native_text.c",
+      "manifest": "native_text_hooks.json"
     }
   ]
 }

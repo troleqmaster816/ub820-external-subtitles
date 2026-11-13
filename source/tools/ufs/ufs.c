@@ -69,7 +69,7 @@ static int read_stick(const char *from,const char *to){
   if(got>CHUNK||(total+=(unsigned)got)>LIMIT){close(fd);unlink(temp);UFS_Close(h);say("file too large: ",from,0);return 9;}
   if(write(fd,buf,(unsigned)got)!=(int)got){close(fd);unlink(temp);UFS_Close(h);say("cannot write ",temp,0);return 7;}
  }
- UFS_Close(h);
+ if((rc=UFS_Close(h))){close(fd);unlink(temp);say("close failed on ",from,rc);return 8;}
  if(close(fd)||rename(temp,to)){unlink(temp);say("cannot finish ",to,0);return 8;}
  return 0;
 }
@@ -99,6 +99,7 @@ int ufs_main(int argc,char **argv){
 
 /* Entry without libc start files: the dynamic linker has already run the
  * libraries' initialisers; argc/argv are on the initial stack. */
+#ifndef UB_HOST_TEST
 __asm__(
  ".text\n.arm\n.align 2\n.global _start\n.type _start,%function\n"
  "_start:\n"
@@ -111,3 +112,4 @@ __asm__(
  " mov r7,#248\n"   /* exit_group(r0) */
  " svc #0\n"
 );
+#endif

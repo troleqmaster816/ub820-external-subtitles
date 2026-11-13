@@ -1,1 +1,3 @@
 USB-CONTENTS/** -text
+# This package verifies its source files byte for byte against manifest.json.
+source/modules/cpu/kernel/** -text

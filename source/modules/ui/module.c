@@ -18,5 +18,5 @@ static struct ub_part parts[]={
 };
 struct ub_module ub_module_ui={
  ID,"Menus: OPTIONS (External Subtitles, UB820 Helper) and Player Settings > System > UB820 Helper",
- 1,0,0,parts,sizeof parts/sizeof *parts,0
+ 1,0,0,parts,sizeof parts/sizeof *parts,0,0
 };

@@ -32,14 +32,12 @@ static const unsigned char disc_rows_aligned[16]={
  0x02,0x2b,0x05,0xd8,0xc3,0xf1,0x02,0x03,
  0x07,0xf5,0xa3,0x52,0x0f,0x32,0x13,0x70};
 static int style_patch(int pid) {
- unsigned char cur[16];
+ struct ub_code_patch patches[6];
  const unsigned char *want=disc_style.bottom_align?disc_rows_aligned:disc_rows_stock;
- if(legacy_style_patch(pid))return -1;
- if(mem_read_buf(pid,UB_DISC_ROWS_ADDR,cur,sizeof cur))return -1;
- if(memcmp(cur,disc_rows_stock,sizeof cur) && memcmp(cur,disc_rows_aligned,sizeof cur)) {
-  ub_log("external_subtitles",UB_ALWAYS,"Disc layout bytes differ from exact 1.82; layout patch skipped");return -1;
- }
- return style_site(pid,UB_DISC_ROWS_ADDR,want,sizeof cur);
+ if(style_patch_specs(pid,patches))return -3; /* No transaction: library preflight. */
+ patches[5]=(struct ub_code_patch){UB_DISC_ROWS_ADDR,sizeof disc_rows_stock,
+  disc_rows_stock,disc_rows_aligned,want};
+ return ub_patch_code(pid,patches,6);
 }
 static int playdat_set_on(void) {
  int lf,fd,rc=-1;unsigned char value=(unsigned char)disc_style.position;

@@ -1,0 +1,1929 @@
+{
+  "schema": 1,
+  "compiler": "aarch64-linux-gnu-gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "binutils": "GNU Binutils for Ubuntu 2.42",
+  "flags": [
+    "-std=gnu11",
+    "-S",
+    "-O2",
+    "-ffreestanding",
+    "-fno-pic",
+    "-mgeneral-regs-only",
+    "-Werror=implicit-function-declaration",
+    "-Werror=int-conversion",
+    "-Werror=incompatible-pointer-types",
+    "-mcmodel=large",
+    "-mpc-relative-literal-loads",
+    "-fno-strict-aliasing",
+    "-fno-common",
+    "-fno-delete-null-pointer-checks",
+    "-nostdinc",
+    "-D__KERNEL__",
+    "-DMODULE",
+    "-DCC_HAVE_ASM_GOTO",
+    "-include",
+    "linux/kconfig.h",
+    "-fno-omit-frame-pointer",
+    "-fno-stack-protector",
+    "-fno-asynchronous-unwind-tables",
+    "-fno-unwind-tables",
+    "-fstack-usage",
+    "-DKBUILD_MODNAME=\"ub820_cpu_wait_v15\""
+  ],
+  "include_order": [
+    [
+      "generated",
+      "include"
+    ],
+    [
+      "kernel",
+      "arch/arm64/include"
+    ],
+    [
+      "generated",
+      "arch/arm64/include/generated"
+    ],
+    [
+      "kernel",
+      "include"
+    ],
+    [
+      "kernel",
+      "arch/arm64/include/uapi"
+    ],
+    [
+      "generated",
+      "arch/arm64/include/generated/uapi"
+    ],
+    [
+      "kernel",
+      "include/uapi"
+    ],
+    [
+      "generated",
+      "include/generated/uapi"
+    ]
+  ],
+  "external_headers": [
+    {
+      "root": "gcc_builtin",
+      "path": "stdarg.h",
+      "sha256": "5a443943e67d7bab17203591b4ccb508757587d9b955ee883a053d755ed09321"
+    },
+    {
+      "root": "generated",
+      "path": "arch/arm64/include/generated/asm/cputime.h",
+      "sha256": "5a61b9d22f9eda4371b3087afc9f0e370ab7b22252d5f4b858b7547ffd0a2ba1"
+    },
+    {
+      "root": "generated",
+      "path": "arch/arm64/include/generated/asm/current.h",
+      "sha256": "e5e68375a9362e5c275217cc5a4d60ab6ab8ef3c7ab43f8191fe5f481cd4e0c5"
+    },
+    {
+      "root": "generated",
+      "path": "arch/arm64/include/generated/asm/div64.h",
+      "sha256": "5d304f9083dae36f95c0f5f52acb11e709859512a8bb67f87b3afcf7224f82c7"
+    },
+    {
+      "root": "generated",
+      "path": "arch/arm64/include/generated/asm/errno.h",
+      "sha256": "1b9b38add94c63ba42d05a98c9148d2f1dbf3554e853b9eb4906501159e4df7f"
+    },
+    {
+      "root": "generated",
+      "path": "arch/arm64/include/generated/asm/ioctl.h",
+      "sha256": "cf354b1e27c26f232776f4efcb36dc8501d897fe0da67acd3fc7ac7313d5334d"
+    },
+    {
+      "root": "generated",
+      "path": "arch/arm64/include/generated/asm/ipcbuf.h",
+      "sha256": "9b4e3d389378c387bdd0b5b9f221b284e0b64c9d0e1dccbf52ba8135319a58ea"
+    },
+    {
+      "root": "generated",
+      "path": "arch/arm64/include/generated/asm/preempt.h",
+      "sha256": "db25ea78d066b23011e0d4181dd3277b07b217ec7a8b99472639e4d1893135df"
+    },
+    {
+      "root": "generated",
+      "path": "arch/arm64/include/generated/asm/resource.h",
+      "sha256": "0e577fe78e926ca42e1e4765c87bb6d7005c97ac849e56d5de104d6ca43ee895"
+    },
+    {
+      "root": "generated",
+      "path": "arch/arm64/include/generated/asm/rwsem.h",
+      "sha256": "8553572963980787cb852a19e2a0b4f1b5f5327076b3555bdd67755444323de5"
+    },
+    {
+      "root": "generated",
+      "path": "arch/arm64/include/generated/asm/sembuf.h",
+      "sha256": "b49293fb5725f046a55cd107522d4de458658a0ffae584b720cfa6dddcbb9e01"
+    },
+    {
+      "root": "generated",
+      "path": "arch/arm64/include/generated/asm/shmbuf.h",
+      "sha256": "cdf0207762ea7b560c31d00e545d43d0399da9c436a399b9cdc673f96fe82695"
+    },
+    {
+      "root": "generated",
+      "path": "arch/arm64/include/generated/asm/sizes.h",
+      "sha256": "22179b51590abb69d08671a20d0f3b1ecfab533047d7ffbbfc04f9d07a9c381d"
+    },
+    {
+      "root": "generated",
+      "path": "arch/arm64/include/generated/asm/swab.h",
+      "sha256": "ee4ea6e77acba63411cfe9ddf9b85c68e11838ab438f3947bfce93e039490532"
+    },
+    {
+      "root": "generated",
+      "path": "arch/arm64/include/generated/asm/types.h",
+      "sha256": "5afb706a138e4230cc65d6b594da3b7c4b583428227a572637cce10018376939"
+    },
+    {
+      "root": "generated",
+      "path": "arch/arm64/include/generated/asm/user.h",
+      "sha256": "8211ecd10bac08009aedfc0523e71352091fafdf60bcc30b094641e9fa919cd9"
+    },
+    {
+      "root": "generated",
+      "path": "include/generated/autoconf.h",
+      "sha256": "7d2d4760463d555ac1a4ea63b3f7d6caeee3e06492ea1df448205d5946d7cddd"
+    },
+    {
+      "root": "generated",
+      "path": "include/generated/bounds.h",
+      "sha256": "6f516a32bfa878665d3d405d46a628f48988d1cc29ca656d305111367f5c97e3"
+    },
+    {
+      "root": "generated",
+      "path": "include/generated/timeconst.h",
+      "sha256": "e42224c4887937c731fd3e369d419275d7f5b02fc3e7ae2465717addf8f14462"
+    },
+    {
+      "root": "generated",
+      "path": "include/generated/utsrelease.h",
+      "sha256": "063307ef2b330bde778f7d4a6062fb0dc8e199dc14449b92f981ab2a1119f59f"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/alternative.h",
+      "sha256": "aa4d36facce5feb8edbea160214be614d7aa80834551605dd118b65f12cd3380"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/arch_timer.h",
+      "sha256": "ca436dd5c549c0cdbc28c8147835654706f4818bdbd383eccaa7297373c51c6d"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/atomic.h",
+      "sha256": "352ab3fb25145803dcdbe0402b423e4e4bbee221df38f4e8c5be333b5e553bcd"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/atomic_ll_sc.h",
+      "sha256": "fc18e6e6d1a8dad072b5a4fe7fb428001e0c6dedc3f97bc843e49482e4e8a9ff"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/barrier.h",
+      "sha256": "c65b066014fd42564741544fc898d617c1a28cf3589796d55e26fbec9e018cd9"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/bitops.h",
+      "sha256": "b27e15f3e67644fa3250cd851a8bb4a9c41718e19b60fce2893fb14dd37b5163"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/bug.h",
+      "sha256": "bd04345eb90784625c256d4989ad2cc3bda57e5ea8342cf3c7beb3e38c1f3df6"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/cache.h",
+      "sha256": "3abb2f88ca7bf018750b58de9a5dde142584371e0e5397c6a22279b921e1f618"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/cacheflush.h",
+      "sha256": "a9ab549080d6b87dc2729259f9f269d6a3f1223ac4f26f6660317602e7c8a1ec"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/cachetype.h",
+      "sha256": "e5bf4535460bfd9d93e090cb437bbad3a798a05b368fc555d288c8688cf62352"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/cmpxchg.h",
+      "sha256": "443eaab20acaa7bc152119cad51ef24ea09b127297a15f3539a7ee935f2c443f"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/compat.h",
+      "sha256": "7154a8c9dea8111eba072f9e7a4fcebd43919691bdcbeca5e4ad00a7f47d36e9"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/compiler.h",
+      "sha256": "16cc191e14f074553e9127239e4cb1cc18fe2a53038e190c14911122b9b1c3b3"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/cpufeature.h",
+      "sha256": "bf015e301547d614efc5bfcd52ac656cb689806b9ea9011e1bceef79f232ddfa"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/cputype.h",
+      "sha256": "fafbcfc3487a4bfb646143651c392ded603e277af8a746d63a483dfe6460d038"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/debug-monitors.h",
+      "sha256": "45e13c32b29dfa4628b08edeb58fb6d8d905d048fb889b5bd0a19ab453ac0e72"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/device.h",
+      "sha256": "0539d4616ace9a6bd28a4337a91da3d461db3e45cb4bb4e78282d2a596d977c1"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/elf.h",
+      "sha256": "f20dec7d7d70ba84d6a9bbf7ab4178c41f68ed9aea86ec4ac71931deaf596171"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/esr.h",
+      "sha256": "48b2b281925764ca45f8f2ed4884be33dc72f0d80fcde93eccffbab4f6bf7160"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/fpsimd.h",
+      "sha256": "76705b2c2a93f16aebc92a988a0c0dbc1b3f1177c6e97aaa1f82eb8685587684"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/hw_breakpoint.h",
+      "sha256": "e905f7370c79705b371edf6117045c27ebb797c11235848a7c42913549ad9e18"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/hwcap.h",
+      "sha256": "37421420ab31c78899684bf9c849c71f964914c35a0b78f36cbef7e66858afcf"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/insn.h",
+      "sha256": "8d6c042a3eca841f55d9dd243d6e509ed7e64fbcd7480e525de86439d5af63f3"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/irqflags.h",
+      "sha256": "8b793b7aada20f113f10a6f12111ad87cf41c147ec45f2bf70585a1241f42cb4"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/jump_label.h",
+      "sha256": "4fe9094a23b40197098d54f267f1e0ee7f0887b5b6ee0e6d9a7dcaf8dab9a1db"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/linkage.h",
+      "sha256": "a90556fb04a2b37967b5b3eff19c359b78808d8ef5956e278f69166451d0cfe0"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/lse.h",
+      "sha256": "c60c4d784d58a77e42113cb265736656072efb124a473dad1bc77f70ad0d6c74"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/memory.h",
+      "sha256": "95359253b9542367556bacf6329e9b129e2698c8133661f67c1e70687607561b"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/mmu.h",
+      "sha256": "d83e6a25389d758e640523ff56bbc8825167935d0b0f5fdde65eeac0c43cc8b4"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/module.h",
+      "sha256": "ac1bce10661da534e3eae3c6d3b7f2db47c4b584236356f3ad442c4f01e660d7"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/opcodes.h",
+      "sha256": "86e710137ef2de35a40f58fec3c4b26801c70e6f4452d46dc995b933d6d81fce"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/page.h",
+      "sha256": "2a63b4d0ba36f49b35d6f72ab2ed34bb25f1dc1629f6172335a7dd723dd62a07"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/percpu.h",
+      "sha256": "a34b5057821881629ee938484ea0bc0c23e360ee24148d985c526ad3dade860b"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/pgtable-hwdef.h",
+      "sha256": "d074d1fa2606500af4a2cc86341b0ea022bf2d0b53759069dbd57500b5084576"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/pgtable-types.h",
+      "sha256": "f2714f431029877517558451f7121c754db8eeabdc4ee8dc56aaf4a9ff946fe1"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/pgtable.h",
+      "sha256": "ee1c2c118ea20e2ef7df606af31c0cfe4b04a1654ea06a028a46748a64d48ffe"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/proc-fns.h",
+      "sha256": "41680b30a0155b3529b73e71e558f75a0bee5e6fc8d45781662c3a01326a16dc"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/processor.h",
+      "sha256": "fe9e20c961d551596d8ad2c2c18c5dce25ac0889dff6254f0623d71dd12e708b"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/ptrace.h",
+      "sha256": "31fbda08ae68b9bd5d6ed36407188c6c52446397cc16db99dc607b5178dd5f84"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/shmparam.h",
+      "sha256": "3539d433a01918432f9d6ece551a4221d7e66d8cce49e640afc39534a1ce6bc9"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/smp.h",
+      "sha256": "4ed8862ac994bc73f5ae1dc69cdd53a20a30c613c4151d332fcbfc9e3f654655"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/sparsemem.h",
+      "sha256": "be99d300de664f3e60143f72a5b3d7a4445d695a8cb1dcc978929d6083ca59a7"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/spinlock.h",
+      "sha256": "9371867e6b2926cd8119ffc2d5b89021d6814720bc702027e88d872514a0c700"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/spinlock_types.h",
+      "sha256": "ed02ffd5e4c748bda54d4f662491878b092707d944e1372a790b9cdaf73116b5"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/stat.h",
+      "sha256": "530803e7bcab65555964d34c986122c033309f7312838d8dd1b56a7500a372f0"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/string.h",
+      "sha256": "556922dde7545ae4e874c661b4cf9c81a0ccdb07c62f7a9754d20ecc37ddeb57"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/sysreg.h",
+      "sha256": "4fb9ae19c8a99fd4181b0aa242bf72ba351ed34077ef531b004b64383f793394"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/thread_info.h",
+      "sha256": "26ddbeb288ae6ec77e1fd36256b374d12950df9e7b12bdac5244d3246faffc75"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/timex.h",
+      "sha256": "e8f986efe1ede34400bfc5e994043cfa069e71000b0be7b8483dcbf82a7092ac"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/topology.h",
+      "sha256": "8252746d02c36193d626ec6c5910e91bd82799aedcc7cc0eb674ee7c8fff383a"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/asm/uaccess.h",
+      "sha256": "29cb5ccaf5e92950de5c49e4ad24f8608c9a1f0e5e83db4ec96e2d6485bd0da2"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/uapi/asm/auxvec.h",
+      "sha256": "57912965bfadc82659b06d606811b74a0c0b5d42ccad94de7925676b0aea7fe8"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/uapi/asm/bitsperlong.h",
+      "sha256": "ff7a7c71788deb529708650fc5c1c290bada684d608088a429fed58800bcc0ff"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/uapi/asm/byteorder.h",
+      "sha256": "81e9c6e458cd4ef44b8258569ad9247795d1b8d2e54701dce597271c5232ae1e"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/uapi/asm/fcntl.h",
+      "sha256": "636d586895aeb3fd9addf56d5412b113a043ddf1e474f38019701928ee7fd0ec"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/uapi/asm/hwcap.h",
+      "sha256": "13bb6f1ddef0d542ccd35050e965a9a1ccafdd9b05cf09e8d18910994e9c6e52"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/uapi/asm/param.h",
+      "sha256": "3b417095253425065b59359775b43db985570a608ecde75c333da3a2e11b5df4"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/uapi/asm/posix_types.h",
+      "sha256": "07871c425cc210c08799cfe1d201f6504d18002709c3a81315e2b0eab3744901"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/uapi/asm/ptrace.h",
+      "sha256": "fea2b46d6d4a5d0dd2c5251a5c22289bd4a851a90063865c0a46643921212dfb"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/uapi/asm/sigcontext.h",
+      "sha256": "7ac454876ee6b4e5bb37aff1e2130d07b7f35ad1458185493e6bbb93e4ae1222"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/uapi/asm/siginfo.h",
+      "sha256": "117de4ec106d955f97d759a7531b3083bde04886baf7c6ac0a5f1aa72f24078f"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/uapi/asm/signal.h",
+      "sha256": "76099df84d20c2fe4f6980ce385aca422d6e340d30613d2330e5c9546d36fe65"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm64/include/uapi/asm/stat.h",
+      "sha256": "3152f6bbd4e565acdb59af19268df01741980c7418469aaae826ddb8e91d5b93"
+    },
+    {
+      "root": "kernel",
+      "path": "arch/arm/include/asm/opcodes.h",
+      "sha256": "9422897395149437f4c139951c84ff606c95cb258a810cd68d460472a1f3b573"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/atomic-long.h",
+      "sha256": "4e2b59a144bde6a8d4230f7771bc591888155364c4cf2a64a9d8c9af35358096"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/bitops/arch_hweight.h",
+      "sha256": "f761588db1c91d28d07421da4c3546d3ad969ef3f8475f5f2238c8579debfff1"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/bitops/builtin-__ffs.h",
+      "sha256": "f74ad3ac2773354da0ff8e550a13bf4f12f709831d0559a4e93599756c274eef"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/bitops/builtin-__fls.h",
+      "sha256": "492de904b311c8865e46997ee90b58a4a582cca7ca5daaded0ed2b3c49c22777"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/bitops/builtin-ffs.h",
+      "sha256": "d52249f9da933a00d624d4bd20477da41fccf50e14f96ad0adcb9d6d8de70875"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/bitops/builtin-fls.h",
+      "sha256": "7d25c1c8f2bf5441e3100be24c51f11cba934e2d98976cde3df19c91b93ce09e"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/bitops/const_hweight.h",
+      "sha256": "cc9ac6903f2cd34e955f7ccd9567fc0191e97ca5493df726885b270281bc5079"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/bitops/ffz.h",
+      "sha256": "137275d8f549be25bf6864a65f4b09fddc7951dbb078d5e37319edefcb50f73c"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/bitops/find.h",
+      "sha256": "62a2bd3afe87e66c9b8e26b15e5bf35afc8df493c1805e152cef68f90f46cc4c"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/bitops/fls64.h",
+      "sha256": "5549921696d86ebfafb0eb35c74c75c337b971d86f40ba825911311c6c822b9b"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/bitops/hweight.h",
+      "sha256": "b808d8176d56ba462f1fd78874580adcf5db445ba52c719acd377a0a7ef0b59a"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/bitops/le.h",
+      "sha256": "f0d952345f64caf20843d0a230c5e211bd5500fe419d6fc73c605bde4f5b5dd9"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/bitops/lock.h",
+      "sha256": "189e2290e16edaf2f8a3f986cb5e3ddf7a2f32874eb863cc0e80a97d62e7424d"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/bitops/non-atomic.h",
+      "sha256": "40c4f4cf03ac9a0dfda85e8a2e3bd7faf661690d62943613947466cf1839d394"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/bitops/sched.h",
+      "sha256": "9338478f420bda1f90be73fcd438a89e0c7ba41e2a97f3e33c88dac9d1c8241d"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/bitsperlong.h",
+      "sha256": "5d255461a6445ed24a5641342f748959116e80427f2a7bc1504fa37159d94068"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/bug.h",
+      "sha256": "01c3e62ec81118fca44f2468affb5e73eca7b27f12b83970ec4a401b25e1e703"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/cputime.h",
+      "sha256": "74a784f8de12a3f48d3838ebbf3a8d3be10f3dd763173445c9404ef0b0147c1e"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/cputime_jiffies.h",
+      "sha256": "39f1bbe68b2e2c9e68dbb238294f3768f90828e9b1546ee76d6b11ec71cfcb25"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/current.h",
+      "sha256": "fa244378dbd54ea8b88c872c7e6c72abdc7e386178b24851912b49b304ece57e"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/div64.h",
+      "sha256": "7ee398e02ad2a786f80eadb869b18e7da8536f5265c80c62b51304a80a8c2ad3"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/getorder.h",
+      "sha256": "e89947d9d8f49baf1998181eebabf67636789b6a78352ddb033812fa1d06e03e"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/int-ll64.h",
+      "sha256": "d70c35b38447f6fb64a3d2cdc7ca5e32b0c3a3112fc5f89e1c5d72d76fd67905"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/ioctl.h",
+      "sha256": "773d2f43084d2d7dc362168800cc7d63dd7f968d4a7ac790afb8c6d342ad984a"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/memory_model.h",
+      "sha256": "98463d8e71e2ec2d7f9c566a5dd43ae5452c89500a551fae5712db31ddf6f47f"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/module.h",
+      "sha256": "4eae381c47b3ae96a5610044d13de3d3019cb865c3f237f1052b6e6d6fe2d56c"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/param.h",
+      "sha256": "d287f07a4a1ea10830afbb2e13a9014891018bb33cad7e67da97eb21955c7fa8"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/percpu.h",
+      "sha256": "52b709cfed195fc3bc6d3a1ab97c2cbf0c75ed10004a4f97109de262ea578d3f"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/pgtable-nopud.h",
+      "sha256": "9029ad1e4aca522d7eb3d701c3ed9bea71b7a62c9d28edd756b953047db2dac9"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/pgtable.h",
+      "sha256": "68ed9b8d82d2f74ff982cdbab2aac03b8c74134cdd4bcdf2b4249e46dd474aa0"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/preempt.h",
+      "sha256": "03512d90e6f5f15dbf0f839b65a469907e811b689fcc78596b57377138ab7546"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/resource.h",
+      "sha256": "4a8f6d818346fdce066d5e59ae20121e299f40134633ee34f7c95398c933c119"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/rwsem.h",
+      "sha256": "73d1a2519e9f91aa5d30ca2d7c75f3c20e6062554a9257fcc3e5f30c0181abf1"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/siginfo.h",
+      "sha256": "2b4d34708f5127dd5454f53296857ddb429d81e59d86f85c02ec873e688eeff9"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/signal.h",
+      "sha256": "f1b3c9852f44fa2721b88830804d9fabd25d6e0f245dc642242f6ea3ceabe3ea"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/sizes.h",
+      "sha256": "ff5c875fedd4e10ca91062bca623c50f8bb314f569f5987a4c11ac123d602791"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/timex.h",
+      "sha256": "6a3979725131836ef172a9196fdf6b70acbddd6572aabaf4cf0eb644b989e3b8"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/topology.h",
+      "sha256": "55c7ee27c96104c7c30d1df4758d412540db4c33293a1ac7148eab7f9cb87265"
+    },
+    {
+      "root": "kernel",
+      "path": "include/asm-generic/user.h",
+      "sha256": "cdfd3415280231c1e889c42260120ed7058d964e8c9fc1640e2788afdd525490"
+    },
+    {
+      "root": "kernel",
+      "path": "include/clocksource/arm_arch_timer.h",
+      "sha256": "b8c1b78880892427c7f367a28fc3148752da2109ab262131ed4fd7bb86ad6ec6"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/assoc_array.h",
+      "sha256": "1f61c9a7ee4af789180a938cc885d72a31c806892f3f20b374be4d2d82db14fd"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/atomic.h",
+      "sha256": "b0749b973aa4fa567247e3bf35516a3548a355bb49195cbd18c7e0effe0ffef2"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/auxvec.h",
+      "sha256": "4737175d3695df8fd5b5aabc3a2bb835ff4cbaab480919301dc6103bd6dd45f2"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/bit_spinlock.h",
+      "sha256": "5f0308e13cc534d4fb0b0390dd98bb61b235f1a5f0cdfff52ea4bbe446104d52"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/bitmap.h",
+      "sha256": "a76bdad91524cfc6bc6e4860fb24f06dfcf2bc78b95d29297a44e40da7e97dc7"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/bitops.h",
+      "sha256": "b29493d1400ac679b1100404fc264e3ffbebdef26bd2f1d4782e6ee95ce1a6df"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/blk_types.h",
+      "sha256": "62a83f1a717a940a28d0b3faa63d855649446cc6fcd25e0bdd15a0a438a352f7"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/bottom_half.h",
+      "sha256": "d6819c92ff7b2bcbb05e98b208cb8047b3d4da9820d8f46b3d792df5dda2dcba"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/bug.h",
+      "sha256": "686ff3d28c441ed83cbd7d74bdba9850aa8ebba66d1b5240b1909fb283575c35"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/byteorder/generic.h",
+      "sha256": "af2834dcdbf32eda7b296df91971e75c4c2a13d752581030e0d86821c911ecb7"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/byteorder/little_endian.h",
+      "sha256": "8caacc9c071746dc3cb6ba5cf82b9c2a335175ce2d4110f2f61e741bfe7e728d"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/cache.h",
+      "sha256": "c73e36e2f8249eff1deb6154b1a6851be34818081544cfac764765083747a536"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/capability.h",
+      "sha256": "f71c05cc05fc9aab0eb3580b318daa6f312cf5706c18c7ecf976a637245396cf"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/cgroup-defs.h",
+      "sha256": "bdd79ed3fadf29c33886492dd7cc164f3a7e04e2398ae38bfa0e25d0ca93c982"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/cgroup_subsys.h",
+      "sha256": "5e8dbb54fc54e99ef5430918ff3916f170ef0384aef93f56bb3ebcf563277faf"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/compiler-gcc.h",
+      "sha256": "8973e21d3d55c637c428230b8af2589fe84068d7c5f1cb66628354bf7e4dd006"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/compiler.h",
+      "sha256": "b8c247c46225382476d7953a2761ada4b47a3d623403a8cbdb31d3cb1cd2f78d"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/completion.h",
+      "sha256": "2970b6e2990459fdf2bb09d84a65d34f1c21bb5ed0e2660a600466634e9b4571"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/cpu.h",
+      "sha256": "dbfe02089fcba8ac632c743c725383f15fe9bb9ec7b0974ae627efc61e759aed"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/cpumask.h",
+      "sha256": "b7d5c79347d548dd523fa4a9e07773d331f84146a5ffd54f7e27245b6430a663"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/cputime.h",
+      "sha256": "5c07bca4893814c8b92c143779781d31ae77b2f395ffbd7ddc45049d736477e5"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/cred.h",
+      "sha256": "11cf01aba86ffd03f9dee15e7486551e3b2af1607b3fc5fc130321195405d8f0"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/dcache.h",
+      "sha256": "0a08fff394a3746ad3e470f1e5c5c0a52c52e8adf68e39591eddd0e9a4f69cbc"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/debug_locks.h",
+      "sha256": "aae3f48942336fc2966fabb89a6d0aca7e223efa238f2b43dc4d6b7a62a5215d"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/debugobjects.h",
+      "sha256": "f37df1c90da61e90e4d47c82a09c7abdaf257e0b0f097e9627ff78aca1e6129a"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/device.h",
+      "sha256": "838ad52e5a734a8609ade7ef6aab4a15a01f321daddf13619e72b25fa53beea2"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/dqblk_qtree.h",
+      "sha256": "6278afeea8cb8e0869b8b17b35382b85e2e5ea9bafab3c4d8239ef3be83e027d"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/dqblk_v1.h",
+      "sha256": "6297b0f34c4fa5b6d7af537461fadef08ba22361cd9e3a30ff14e6c3fcc1a8ee"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/dqblk_v2.h",
+      "sha256": "750c33953cc3383884363808c8a3399e554a4f68ba0c5494dfb2e9d2afac3b48"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/dynamic_debug.h",
+      "sha256": "6554fbb23acd7fda8e82652573bfdf5ff56807f56349ae06af28ce8879991b4f"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/elf.h",
+      "sha256": "f59a4fd0dd9c7e869063715de96e874c9ce179ea541593f76fedde92a6993bf0"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/err.h",
+      "sha256": "71204407aa5ff95b5607890a483d9541c15a22785428eb1134028afdfa38e593"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/errno.h",
+      "sha256": "f7b6f06fb3304cd94f64920fe6d54748ec3d25a87904abb559caeebb2da605ea"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/export.h",
+      "sha256": "9d650967e6d477e0544a6382c0ad725ed04eb247eab588c0c2a945399bab84c9"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/fcntl.h",
+      "sha256": "6a9a8a43d1003f2a7fecaf271d15c0f06919a5cf6182e692896fe0ce2d34c549"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/fs.h",
+      "sha256": "cfd03a35ff9ca04d8c20bab65b96d1f3cbaad53b6fc4687d1ed8f88428b244fe"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/gfp.h",
+      "sha256": "a6085268b8e0ae11b54d29e6b31a00dcbe33e7c84ed03147abbbb48991775975"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/highuid.h",
+      "sha256": "353ea7a9a2d63693016894e507685a9805dd50f5dec295444e9e8a575a6cec0c"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/hrtimer.h",
+      "sha256": "251b9197a6172ecc064acd8fb8047e1897e6605980769de0358de453148dc8ee"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/huge_mm.h",
+      "sha256": "7b99cd1c6af173b8d754a71de1ea73484df4eeceba8382b564e8e78566bbc764"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/idr.h",
+      "sha256": "0ebf56fc45e75134fd9a03654f02388744977064ed73001f2c728f73de9e9285"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/init.h",
+      "sha256": "9d3f85579292219dc5789d5ced6f75e9b5408f130e4d12de925988aae8b1c22d"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/ioport.h",
+      "sha256": "6f09bb82bb4172c4d1de864c57b459076270618129de589bc9b36af83f077e45"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/ipc.h",
+      "sha256": "6fa78ed3c09671337fafa5989fb7aff5c24e8fd7cee02a4aef2ee2f4e48750ee"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/irqflags.h",
+      "sha256": "12d1126db3d4616041a628327bcf353570f3bc7dbfd60ab614f15e3d5cf5c418"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/jiffies.h",
+      "sha256": "a606494431a71791d4fa17ae624f6fbf3398eaa159ae51092c1dad063fa91d1a"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/jump_label.h",
+      "sha256": "70668c4e894b7ebe0ba568008fd6a3bd2198b428abb2848cce54d52ea9f898ee"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/kallsyms.h",
+      "sha256": "0241972663702b70d0528d1fc625921140add8568697b7f9ad74882755c1eef5"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/kasan.h",
+      "sha256": "18961cf62a30e4394df927d7fe2474b9b1cf7944c78cee055a79d0ed145eeeca"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/kconfig.h",
+      "sha256": "2832af58ac7ee49a15b5a861e62e2afcbe91a0f72350ef4641d71784960bb46d"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/kdev_t.h",
+      "sha256": "595842c0b9f4731eedf8c97c39f19aa6e4c9ecf36e00e48eab44d8ec9b9d04b9"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/kern_levels.h",
+      "sha256": "3c9c6d08dbbe738c767531ba2292b48b126187d0f4f5eaacd8e68a14cfba95d3"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/kernel.h",
+      "sha256": "ee8dbe43bf40bb493b704591ec068cc9186d483c2b6dfa144728de9d6909bf59"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/kernfs.h",
+      "sha256": "f84fada439dc31271dcb8f4365628d26703f5e2caebf7670d4d5a10248f15b13"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/key.h",
+      "sha256": "da0424c8d25b872c60089fe32d5fd5d536cf0bdbfb86d297839774963c997f52"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/klist.h",
+      "sha256": "ad3112d9d00188c8bd8061ee58192c9e3ee72a8fe675553e3c1da0be69b1b4b3"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/kmemleak.h",
+      "sha256": "356569db85e16e7c4a535a56e58160e8dff2764855cd7f301d2a938f780b5672"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/kmod.h",
+      "sha256": "363c55d9a569a2724b89dc5d02e2e33b0dbef44631473ca4f4ae129403f8dd2f"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/kobject.h",
+      "sha256": "ce0e6604ea65e5f8dc89be14e2d916cd2a0f765e72587068e0a23df9021872c9"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/kobject_ns.h",
+      "sha256": "fee9bf54205814a1b2cfecc4d97c6c46dd7d84ceed72aec678f21e21a9ac7065"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/kref.h",
+      "sha256": "030edc51e80855ea458fb27537c78ca8718713fb382c756b1db82c0b2c22e721"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/ktime.h",
+      "sha256": "bf2d420fc11931e79ce44ac15fda978f20c4b25d685405e37d7d4a6a43e46057"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/latencytop.h",
+      "sha256": "6d4c18a835602e256b9687e92ff77fa30f371d4731cf8bed8c4cac1aa7058433"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/linkage.h",
+      "sha256": "2932c31022fc948c730019d8934016fb860b2b3ef8eac6711c925169804c471f"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/list.h",
+      "sha256": "d3238ee5b290c33db0dc5c4d14908af168ec4ba51a2b1cff56a457d5b1e6b86c"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/list_bl.h",
+      "sha256": "0735b0254d411444b0215e3f99021e43b49255b4b64a7ea7aa7ff16ff31ef20d"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/list_lru.h",
+      "sha256": "e1bd8459a829b6dc3de3f9a232875ea2c9e427bcc4c4a89afd60ecdef38a7807"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/llist.h",
+      "sha256": "bc8f7f4bbe6711152027b8188862f499977533cef284da55df5346b41e1bf543"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/lockdep.h",
+      "sha256": "51c54ac3ec1e8cdd010740070dd8b6d451a49a7148208b2b98f1d40e8e5dd979"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/lockref.h",
+      "sha256": "409afa77d175a0fc45699030cf1573de6c72783da60877d2729c48e325b5570b"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/log2.h",
+      "sha256": "08fa0ed8de04bff62582aec2373100023b906e55c7e922941154f2008975e0ae"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/math64.h",
+      "sha256": "dd91d18945532b22a394dac9d959565ea24c1cc243e193bf11135218549e3e32"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/memory_hotplug.h",
+      "sha256": "e5c95f3ccf1723a035d18b10514fec625feb5b788a443e6aabbc9ede78dc4a55"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/migrate_mode.h",
+      "sha256": "928cec2b9b77b6320c841bfa8a3c265b1e25cd5a74b66719b9f3158bd50c6d71"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/miscdevice.h",
+      "sha256": "0954ba5f25520a0c8b1870765c6a840e68466fbba9febd2f22a94b06e0bc2bee"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/mm.h",
+      "sha256": "15620d505bdfbf14865dc928ac700b7d2ffb5f0d05b3abe83adbcb3a5f79f3f6"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/mm_types.h",
+      "sha256": "fd3a562daeffcf77d1cf7ec857bf55e7a30e31e95d9ca5895f190b48d8b33838"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/mmdebug.h",
+      "sha256": "8624138e56b3ead01c2c6a18a5f59914a719571bcf3ee9405db02426608d2780"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/mmzone.h",
+      "sha256": "0128406eb048ddead20b0737d83ac61b67ed1b22bc3df1ccdf80481aebdb0b8a"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/module.h",
+      "sha256": "bf26ace87e5536f80e78a13a87685e0e11b6b952645ab76f1684e5675692283b"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/moduleparam.h",
+      "sha256": "08c50608b8e9cefe48b2c3b3cba950acfc4688de7f6f39c4482ff634f0fbccfe"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/mutex.h",
+      "sha256": "7045c45c077baa4c145d9085426e18235b50a1c19928d73759820e6f8de4aa92"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/nfs_fs_i.h",
+      "sha256": "0ff578e1d35e26308fe4863a867c2107bfad8c114ae25a7a536c82c887bd03fa"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/node.h",
+      "sha256": "0255ac3390e2a444585aca35468cd39e69b581bef03eca295e5f73c3d02e5bb9"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/nodemask.h",
+      "sha256": "e49f5c154c07ed1ec534a0fa6f16699ee684a3e329d848ea2d386cfda693ec90"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/notifier.h",
+      "sha256": "129515b6d0dd5444f940dc47572db14e0e977c3ccca1fb520e80c7e84d52c0dc"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/ns_common.h",
+      "sha256": "1779ae2510ecdacf77b0d317c7a975d3c03614c7f8d69b2f606740f26c70c043"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/nsproxy.h",
+      "sha256": "3d6ebf5230b9ecad7592b067debb197e5773f8517f3175d9ba6e8b00868ce376"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/numa.h",
+      "sha256": "389033474e34ed27f6586536222357c5dfe1474141333eab6efa569fb91fd0ca"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/osq_lock.h",
+      "sha256": "af90feba3dc0f9dd78f3f660317a0cb28f7bf06cc215e34b4170e180f395a842"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/page-flags-layout.h",
+      "sha256": "0f1d6bd13a17c00c366119d70432a6238802cc33e49416b7b0ee3c7aa04fab2c"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/page-flags.h",
+      "sha256": "4d09d164b3e01b31d2cc90b2c001c96bda18e6ae6169c4435989fb457810ac0b"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/page_ext.h",
+      "sha256": "fdfc6ebaabb8fb9dfaf1c187b3c7f5f0eb7d44a3473be1c4d2c94ca9ebe06795"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/pageblock-flags.h",
+      "sha256": "b279c858856bcf341f51388058b3cf4df4939c58d3def5c836a89a98b5d2a320"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/path.h",
+      "sha256": "56f829d7b459be10e1afa4ca1e01d9984fe158f639867c5b278bac6f7b4cbb6e"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/percpu-defs.h",
+      "sha256": "d4e948a1cdc79dcc0627ae3b2e21becf60cea519231a844a894a13ced1db03a0"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/percpu-refcount.h",
+      "sha256": "25cbe30cc802ae20499a19048bc794edbcc19a3f5cce48e0763f682ca2f3d398"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/percpu-rwsem.h",
+      "sha256": "32bf06053a6ffbbeaeb0fa89c9e5b140c2b8f577509af133ad480f17ef70241d"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/percpu.h",
+      "sha256": "9365ec4534ba99de617f4fb292fe09824a14675389d0eac5f9fe14a224fdea06"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/percpu_counter.h",
+      "sha256": "73a1fdd1efae485c36601e5874f38a272f8a6aa83ac83fc343b95ec313d97c2c"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/pfn.h",
+      "sha256": "503ca34aec9e6ff70f3342ccc3c8ae860205bf092467eafb0b33889744c4dce3"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/pid.h",
+      "sha256": "6bee5d3dd02f6a07f0a0063f33c4b8f4ef3f8467a5f5bae97ca0fcd849ee9922"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/pid_namespace.h",
+      "sha256": "fefabb979ae49237ea2755e840980eaa09bd76a31f8e1e74b390ebd26724230b"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/pinctrl/consumer.h",
+      "sha256": "0b9022fea67df8391b7cac6b1f964063f6eaa1a046f64db90132f033a6c00c70"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/pinctrl/devinfo.h",
+      "sha256": "673b97c0f446834fdac195ee9df0267c8b3338f682a892fba7f8f8af9b1e90df"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/pinctrl/pinctrl-state.h",
+      "sha256": "7fde69806fe85a98ec6bcbbafea2165088f7799b0d0392e244b8be0d85e1517c"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/plist.h",
+      "sha256": "85d0c99b64b7a901a2aff77ddec4abf91b0dd7147c75d476d0f888f3db1d975b"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/pm.h",
+      "sha256": "69cd864e94cc8445cfdcaeb6422d458dd190b35156fd54c115bd9b200f188630"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/pm_wakeup.h",
+      "sha256": "ce2b33a392d8e1d258e1b96b1168efdc71e4b543229e3229370d67c440eb1b1f"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/poison.h",
+      "sha256": "e1dab9751e3024136fef55afc5ce0c70290542c0ff6361571838c13fbfc24c21"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/preempt.h",
+      "sha256": "dbf25a16328fed0b53545a05ccfe0c32138f0283318d804a7a68c37dc4943f51"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/printk.h",
+      "sha256": "bfbce5fb31bd406e7ddb705e1ead28ef21ea5af7975f3222ed355b9433f73c26"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/projid.h",
+      "sha256": "6681a0cbbae0e5514f175a8ddddc95d306a2d83c61e292e50e867cf4d2d07021"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/proportions.h",
+      "sha256": "8407f3ea1ca9b2fcc3458aaf8a924c64fb5ecb9f176dd046803c14da7f3ac4bf"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/quota.h",
+      "sha256": "c10999267a86fe1be797375e9d3bb2977b167e38c03f0db3263bfa00568b5467"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/radix-tree.h",
+      "sha256": "d5e0c425547bce5f52e9c45cbbc03ffc1b4dcca1938b7e39280e168644e48b96"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/range.h",
+      "sha256": "3e56c26d79e54345060d00080faf8020382c3406dc1cf1cfa4b99e7b648e54d7"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/ratelimit.h",
+      "sha256": "e98bd6a0992a176866244039c4fd0429195b3aea6014a9f045c78ed403f5f935"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/rbtree.h",
+      "sha256": "2a84c75c393207b45009b82bbcdb2f861a26069e6e00de62f2e18b2a19206cdb"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/rbtree_latch.h",
+      "sha256": "f2e7e0f25f397544b1a535442840dfe4d4ad9f6f5950b6c3f31dd465d9e9f60a"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/rcu_sync.h",
+      "sha256": "ef84e4d10d622377e283f3d771a39745147a382b2d159e65183024b88ddb6a59"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/rculist.h",
+      "sha256": "c67ddf012d0b347b8bce188aee738adde6e60f56949591367aac5bf12f5ccbe9"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/rculist_bl.h",
+      "sha256": "a667a3ae3c227650bf390f91c307b8b39db7f1c3cbb953cdc087b30297325689"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/rcupdate.h",
+      "sha256": "885b3019352c434741fa65762a8aed146a4af19ba48d0bd1fb38fc57f17998e1"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/rcutree.h",
+      "sha256": "a74dba8ee8a1343bae1d03d38d82e39e2f85e22bbf2e22aa9663aaa33b0f2edc"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/resource.h",
+      "sha256": "514aa5afce78f457a6e27cd14b812f688a20dd5ec942f55ecd15df52f37d0122"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/rtmutex.h",
+      "sha256": "fe8a7b85a333196c21af98db26a8e82bc11b345a34c27b660e56c8c69ef52309"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/rwlock.h",
+      "sha256": "9727e8b5a0a396f3b15483aca8e5075d98839c2af43e20e09aa03257a530b4ab"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/rwlock_api_smp.h",
+      "sha256": "0e68f94e8ddb12029bb77993ade282d822e406f9510c31481caf0003914323cb"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/rwlock_types.h",
+      "sha256": "09c5202c21a311c84bb939e063ec6b96e03cf847134c5179553653cbb027c71c"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/rwsem.h",
+      "sha256": "72f9b01b646a64eb9d4a17e7cda6b57dd7483da73d4c9afb9be19877644c3e9e"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/sched.h",
+      "sha256": "e9b7814fe38bb414a1471888600bd00fe27f15c3c70a752f064f0b87e13b6349"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/sched/prio.h",
+      "sha256": "83ff2e25855b550344f21e5fc4d2df5437ef04e8f920eaf394dede47c191ec76"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/seccomp.h",
+      "sha256": "12a4997ddd2320d41cfc700240ced840d95cc7993a7adf2f75b6a3c938049226"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/selinux.h",
+      "sha256": "df9fbb20b183b267715c6034e69dec3f49a5934d4400006d181ab11b3937ef2c"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/sem.h",
+      "sha256": "b1c5240c2fb9297572e7b9046140960c26c27e21f999668f854bce695e31bc8c"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/semaphore.h",
+      "sha256": "332f5c1d4f5b3fee3567b929333019353e354f8dbb4514e2b84faafa20c4e49d"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/seq_file.h",
+      "sha256": "00df99ec72c5441239e9cb7f20baa6282df2c2e138c24de0968d6fcb47bc3bfe"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/seqlock.h",
+      "sha256": "e5401cbec6266caa186905b6d0253f5348d8bda86e871569ed6a111d35fad4a8"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/shm.h",
+      "sha256": "e41be41a2db37650f1b0aabb8ea6539af08ff1db1205dcf72e803c96bef97456"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/shrinker.h",
+      "sha256": "1d545657a4d36d171bcd3a4628bb1b851d6aa6375dbc70fd346696f985f1778e"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/signal.h",
+      "sha256": "ed2b9074674e1b0af3f83a8321b0e00924dda4b309b83caa81730ae60423d5fa"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/sizes.h",
+      "sha256": "49708873dcde4ce1e6f5a8721dfd39f0ff65ab613a06b7d11a813db9a1e28fe5"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/slab.h",
+      "sha256": "c7d43acbe56bfc77a99066bed7bac9ed97225279c2df6b95c2bc9231cb8f1b1c"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/smp.h",
+      "sha256": "dc027568e473eb8500561a29108c48c7aa10f81fc2135411dabd81bf0e4b7fe5"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/spinlock.h",
+      "sha256": "2034fdf80d02ca179a61c119bf75d8fc2cc24c429dad7c600cff29d7b1f7fc88"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/spinlock_api_smp.h",
+      "sha256": "13c2e9661ef456db446c11e36315dcfc4bbb249415912b0f27abc76bf03eca62"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/spinlock_types.h",
+      "sha256": "922161d8ae25cde39e8f902bba039bb0eacd0d253d6f2d65bf88baf2516556bc"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/srcu.h",
+      "sha256": "b263d83829a3d7d0bdde0a095cac89c644dec25835673295510caf3ea488fe3b"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/stacktrace.h",
+      "sha256": "e5ec6dfc745f67c6919336f3ef8b18060d3e767d0d701d77111f1b9c29cf81d7"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/stat.h",
+      "sha256": "4da238171a35464ff9d9f68b9dfaa18e090a61321411c51786f0544226ac722d"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/stddef.h",
+      "sha256": "c4785d72890ea3de9c8b8892f8e6016de5c629bdd5d098b933365baf533d56f7"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/stop_machine.h",
+      "sha256": "aaf8a67bba67a4400d180b9e8d629677a3c60810d354092c4d8dcfe301a3385b"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/string.h",
+      "sha256": "7911dd781066710840acf6245bba51a7f4996f70210b7280aa9b770175e11878"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/stringify.h",
+      "sha256": "9d9338c8b13be2cc1da4e0343afb52345ba4370b3403f0a8584a1df065f3f159"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/swab.h",
+      "sha256": "d6028565fadf8b30a5ac6836b57197f6391777a09a6c723ac3f7572bdbf42e3a"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/sysctl.h",
+      "sha256": "a5d5d2c5771f5c0c81bb4a1156d0de1782e906085b2f4a55666550c2363bacee"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/sysfs.h",
+      "sha256": "ec66721f4d33b7f044a9240a5e2b76d00f805720065837a54bc1037d0e60bc93"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/task_io_accounting.h",
+      "sha256": "f7406e54447b803c2c740891bf7f923bce9a091111caa19f6682ee3427b26fa4"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/thread_info.h",
+      "sha256": "8d017ee2e84b44e967c050bbf32a4a5c8fe8a1025e774cd119f442cbb1022dfc"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/threads.h",
+      "sha256": "af4bd99f8c87600c050a8666ddbf921d0ad8a2402d96a45b07dc97bd0788d7ad"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/time.h",
+      "sha256": "325d873d30736d927772f7bd176fd9fe1a2d8fc74d7481336fbb8f9ebf85e2f4"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/time64.h",
+      "sha256": "28444849918050e56cf7e7b669e868783f632edb2b56528748f6db53113f8487"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/timecounter.h",
+      "sha256": "a68f3f0305f09b390818bde5bae3928a14e7ea1dfa86c9d374aee2e152a34693"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/timekeeping.h",
+      "sha256": "b01144f61a7d2ddd07c09aa600cfa2360677705d72df68a88ffebbe236876cd4"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/timer.h",
+      "sha256": "618fcbfec2cdf357923639dac3981d438ac02ea1d62de50dd9b1630131d1b09b"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/timerqueue.h",
+      "sha256": "3fdf1edf042876669ba6c2de65065658c04780ce2374477fecb36757c92193b3"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/timex.h",
+      "sha256": "e61693f7b1666ddc7a86505071c084190dd72c627095bfe64742a352900d03d8"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/topology.h",
+      "sha256": "ef759deecc15c3facc77d7c1df1e7f0a17e4b5bb783c5a0ccac90aa2208009db"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/typecheck.h",
+      "sha256": "99bcd3569d59319bebef88f633167b267644bc981c233e36094e78f191ebca01"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/types.h",
+      "sha256": "1a21d625a365149df199a7b7497bbb8fe4a057780bd7105ff3041079cab0e58d"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/uaccess.h",
+      "sha256": "f7d2f57bf6fa7b5d5dca64eee5fcf9a985ce24ce6e8b1521e88416708b6d7069"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/uidgid.h",
+      "sha256": "97a09f8e7d3773bf8a740f88aff092a1812155c340d55247825771f0bf201df4"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/uprobes.h",
+      "sha256": "f5441d80f74284364abf602c801a5b06420a3d2758f128d27ccba7c7c4af395e"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/vermagic.h",
+      "sha256": "a9318a9ceabd869567af5b8304fd348e69913e03a5d56a1ac78b987aa251c404"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/vm_event_item.h",
+      "sha256": "9f6b57813283e96b45c9339650cec1cd829ac51cca425a94a864ccb6829f6110"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/vmstat.h",
+      "sha256": "8080149cbb0126e781ecaec6bbd3256370577b7994b88484be6482b024252e98"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/wait.h",
+      "sha256": "ead182c2b58cbed7dc8e033a39a61b0be9144657f7500c5273e396096e85521e"
+    },
+    {
+      "root": "kernel",
+      "path": "include/linux/workqueue.h",
+      "sha256": "b36cb3401c8cddedb72a3f8030b34117679989b486d91192cb85438b52214f13"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/asm-generic/bitsperlong.h",
+      "sha256": "7168fc12586f612d643dc2b1157413a6af8fd5c37f04b2252bbb7668581bd4ab"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/asm-generic/errno-base.h",
+      "sha256": "889fe661e86321cf161164f95d9c860f44e01982f1e848375ff7b4de35aa7a93"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/asm-generic/errno.h",
+      "sha256": "6914650068360fa2cd7d8217fab7be4a3dd4e98dda25e464a464ebb8909125d2"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/asm-generic/fcntl.h",
+      "sha256": "73c2c59eb2d000aeda08d64f481c775beb40a03a21752946fe929036bfc67f01"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/asm-generic/int-ll64.h",
+      "sha256": "67f15b3431f20bf9a9d5f35e9c388dd64d360433934f7d4da1451a928aadd0d8"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/asm-generic/ioctl.h",
+      "sha256": "399f51c930b8a8d767ee4447801c2ef95a42f55bd057995830f27d7fe5efb1cc"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/asm-generic/ipcbuf.h",
+      "sha256": "2c6204fc28dfe0c487486bab9c8ade70c681c9ad8e13baa7d84ab530b3baecf9"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/asm-generic/param.h",
+      "sha256": "196cf0852584ae1e5ca5632a2f3fdedcc0eb8c87f8641f935e92dd998fe902b6"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/asm-generic/posix_types.h",
+      "sha256": "d83083422ac0074fa32d12b157fd370b20a0a6b726c752891c6e12f1cbee904a"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/asm-generic/resource.h",
+      "sha256": "5b3404e59c0cf85e8a05cb9205eeadf3bd5b2805ac805e345ca06cc58be3fff3"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/asm-generic/sembuf.h",
+      "sha256": "6561136ceaa3eae4d34f5780abf513096db8e3a068c3ab4ae2b27f4c651e9f61"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/asm-generic/shmbuf.h",
+      "sha256": "c2983780b7a7069b741cabe06e342a9d4553a51f0393faf4d612fff253477c55"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/asm-generic/shmparam.h",
+      "sha256": "234e70ba3b6be596f27a227c266e466766d8fdd6effb40da23310e9a28d79543"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/asm-generic/siginfo.h",
+      "sha256": "ff4da53622ca4a10828fa885bff1460468c5d27925ff3d3fa1080371714095f6"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/asm-generic/signal-defs.h",
+      "sha256": "b9e1b4d60213ad35f1ef1c6802bfacd55312be2792c5126b2584eebd51b596e5"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/asm-generic/signal.h",
+      "sha256": "be6d48197dfd0b7270292de5b9e66481a05dfff6eaa5afcc8cdddc087c3c2bf5"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/asm-generic/stat.h",
+      "sha256": "74e2cb8db164bb66642ec84ca2eedfdb2420fb53dd6b626d25bdb920a3f92498"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/asm-generic/swab.h",
+      "sha256": "5f25f1118a051ac6352c2393bd99be23b5fa462fa487053b4498c5f74fab88d8"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/asm-generic/types.h",
+      "sha256": "37d3766e9b76e63bd16e049e77a2020a48be291478bad6c43901f9f7ffc0fb59"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/auxvec.h",
+      "sha256": "259aa6932c847d0c94b4547f783bb0e5e7f9513c0c94a8fd791f1c418a56355c"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/byteorder/little_endian.h",
+      "sha256": "40e3a3e235f582059ce25cf1018cb30b5c4ee9099b858a85ea589e63aedc4538"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/capability.h",
+      "sha256": "5ab89fa9664cf77a96b0997ea4961c85dc5c975c826c43dd766752d0a8b62194"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/const.h",
+      "sha256": "bbd070dbe747295a793cef18aa07f6729d45e590d587bc9a411d2957382e9ffe"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/dqblk_xfs.h",
+      "sha256": "41a2dd9ea7971551b4a7ffb1d15619878cb110dc4b2e449189b49de559a0232b"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/elf-em.h",
+      "sha256": "e904610e66a5ab1e2c0211e56487fef6f2d7de6cafff6f464f4040fc03beeb3d"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/elf.h",
+      "sha256": "8ba0e021ebe2a417ec97a2f6d542be93301ae24fca5c9fc4d5757d6c79aea16f"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/errno.h",
+      "sha256": "a47fb2f49bce0546a1e88805cec954338abb1b2ac87de042166e8e3a74b23261"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/fcntl.h",
+      "sha256": "002f8e59adbd2f8fc381e059e21561978d8c0ae00d1cd87d16ceaaadb302cdba"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/fiemap.h",
+      "sha256": "550252ce3cc9a3cce31a7f61f96abe9361cd35f1efadbebcfc0e97a3e586b65c"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/fs.h",
+      "sha256": "4bf8305bfddf08a7b668e87dfef22e37652189a7c71e10822f6e16ab552e1a3a"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/ioctl.h",
+      "sha256": "2549fe48b8952fb9459d73c986d9fee7ef5e4a5c027f928ed75753487b36d007"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/ipc.h",
+      "sha256": "9971e3de08aab0f73ea74d743d5b9bf21e162bc196388f463ecd5904e53b9fa7"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/kdev_t.h",
+      "sha256": "2ed514266e8f73d350623a26a52e04788872d5f686cc3e01d7796df8030e7337"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/kernel.h",
+      "sha256": "fa0bb377cfd0b1ee4dda151ae10f50f0d3c6345c7a36835c3f0097b0482a4bcb"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/limits.h",
+      "sha256": "f7f88002105f150c006208ff6c322fcfb129ce1b52a19c279282fa9668194674"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/magic.h",
+      "sha256": "f05caab3b94cf0f26c3d63720de13fd2e3086de8d2a8c6cb933e64620e2039d0"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/major.h",
+      "sha256": "20e429769612d88476c4b1d15703364870170a2baf86f0a53ab0239fe93f1e46"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/param.h",
+      "sha256": "633173c5ae0a10bbe640570d681eeaacb0529a1b2bc127f18db1e1ab6bcb1a00"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/posix_types.h",
+      "sha256": "53bfe2beab8e59eb50625122814af2861a0374304f411c894564a9785383d029"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/quota.h",
+      "sha256": "ed77d0b79e721455d0bd0ee184d4c6857157b287281b96b175b3c1070f49b5f1"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/resource.h",
+      "sha256": "23d6f71c2fcb00bf267d1fd6de952c44988c22b2b8039929b8c82ce9246405e9"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/sched.h",
+      "sha256": "1bbfc71e431e8e8cbc869dd6637403af113b9c1ec3f29f1964083c5d970cded4"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/seccomp.h",
+      "sha256": "056c8b349fa4c5b9fc3645809b0b3d968c94ba2f503ead30174346978a3df025"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/sem.h",
+      "sha256": "5c0e207fe9c8638f6d6b117860056ab9c60b62ff907f4911b241fa92d4f5e930"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/shm.h",
+      "sha256": "103287086ed28740c791d6151a6240eb12d991112772d7df64e1496b8c97acf0"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/signal.h",
+      "sha256": "57f951bb010373837e3cf832b2a93a226b3b477ee3cff932f59f8d3f2ac34972"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/stat.h",
+      "sha256": "a5877cf3e2dcd66a6f53dece7383969627db60808d32f80571fa4fca4a0f6f88"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/stddef.h",
+      "sha256": "bbc137bd387509bd3eb29ba6315cc43f13b1dc05206b7edebd9ececafa404dc1"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/string.h",
+      "sha256": "69baaf69588984b0699c38e1ea151868fb86ae81e9c6764bc7112645e85fa5d6"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/swab.h",
+      "sha256": "177e62ba0293a067e66997da596e9fb96b89e6a063c75f4acd55ca62cf06721c"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/sysctl.h",
+      "sha256": "7815847217d77863bf3b7de20a1220e4544cb49462da8e57683ee2a5f3b23d5e"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/sysinfo.h",
+      "sha256": "562d3675a399df49b18307e2a1ef782ae0b40eac19eeedaac1aacda5907fa93a"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/time.h",
+      "sha256": "14099f742e789e8c5857acce15f1c29edc93e9169aef9cc57e63ac50e420f9a1"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/timex.h",
+      "sha256": "fa671e0720d0207fe7a3e6f4b7fb92e985ec4b924d85495bff85a239406b9fcf"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/types.h",
+      "sha256": "599b8e8b92bd9e9671e23471b6908eab90c4798cf38861c13a4feea2f526b0b8"
+    },
+    {
+      "root": "kernel",
+      "path": "include/uapi/linux/wait.h",
+      "sha256": "e488789ceabd2c2bfe1779f397d8d8c85128e97e167b5d51810eb08fb4b42845"
+    }
+  ],
+  "compiles": [
+    {
+      "source": "native_cpu_wait_module_v15.c",
+      "assembly": "native-cpu-wait-module-v15.s",
+      "object": "native-cpu-wait-module-v15.o",
+      "expected_assembly_sha256": "32da345f4ad6f6fc235611be0f9fc7d3795e47d2fb88aba32277d7677aa93155"
+    },
+    {
+      "source": "native_cpu_wait_frontend_v15.c",
+      "assembly": "native-cpu-wait-frontend-v15.s",
+      "object": "native-cpu-wait-frontend-v15.o",
+      "expected_assembly_sha256": "3fcec61e2e0462b5515abd4e13f5354b448eca814647565302f98d2af5e4d024"
+    },
+    {
+      "source": "native_cpu_wait_v15.c",
+      "assembly": "native-cpu-wait-helper-v15.s",
+      "object": "native-cpu-wait-helper-v15.o",
+      "expected_assembly_sha256": "71e8c2e7ba2b3f26b36ac8dda3635fe0d1d26afdca8f9a94504e4ea021342308"
+    },
+    {
+      "source": "native_cpu_wait_sync_v15.c",
+      "assembly": "native-cpu-wait-sync-v15.s",
+      "object": "native-cpu-wait-sync-v15.o",
+      "expected_assembly_sha256": "b966cc7f5fe034d1ff75a953262c2e707cc24786e1174ecdc2875347d73640fb"
+    },
+    {
+      "source": "native_cpu_wait_metadata_v15.c",
+      "assembly": "native-cpu-wait-metadata-v15.s",
+      "object": "native-cpu-wait-metadata-v15.o",
+      "expected_assembly_sha256": "8d8b5e694893c8685ddc27aad5cb6f91a65933b180a65653b151f8ebabf566a6"
+    }
+  ],
+  "bridge": "native_cpu_wait_bridge_v15.S",
+  "objects": [
+    {
+      "name": "native-cpu-wait-module-v15.o",
+      "sha256": "73c49331601cd84fabfcb15e126a7aab8799cd22f7f820837e9e1f324da1b481"
+    },
+    {
+      "name": "native-cpu-wait-frontend-v15.o",
+      "sha256": "2ee6e509d4268b4b4ced5fdcf497e6379a26e0610f4fdd688ff5e70dfc27d8b2"
+    },
+    {
+      "name": "native-cpu-wait-helper-v15.o",
+      "sha256": "3e76b5e51548b7f33a7ff286db679986cbf911d1d150480a6a27cf26fbc8282c"
+    },
+    {
+      "name": "native-cpu-wait-sync-v15.o",
+      "sha256": "538ef9ff21d507691fe3f50320b5e538da801b1fef0296f7816ae53d7e1d7b16"
+    },
+    {
+      "name": "native-cpu-wait-metadata-v15.o",
+      "sha256": "31df69318ea5b3130b7245378e3202d04ee03e8b3936685acc9b248241529304"
+    },
+    {
+      "name": "native-cpu-wait-bridge-v15.o",
+      "sha256": "2ad72d5281b050620c994a6ff375448d1d927b91f9f63619f2fb073bc48d7ac1"
+    }
+  ],
+  "absolute_link_symbols": {
+    "ub_fpd_wait_loop_v15": "0xffffffc000626a98",
+    "ub_fpd_wait_fallthrough_v15": "0xffffffc000626ab4",
+    "ub_antena_wait_loop_v15": "0xffffffc00062aa48",
+    "ub_antena_wait_fallthrough_v15": "0xffffffc00062aa64"
+  }
+}

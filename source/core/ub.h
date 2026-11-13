@@ -40,7 +40,9 @@ struct ub_part {
  const char *process,*sha256;      /* NULL process: step() runs every second */
  const struct ub_payload *payload; /* optional, installed before step() */
  int guarded;                      /* may be switched off by the circuit breaker */
- void (*prepare)(struct ub_part *,struct ub_target *); /* before each install attempt */
+ /* Before install: setting target->retry defers without consuming an install
+  * attempt; setting target->failed refuses installation for this instance. */
+ void (*prepare)(struct ub_part *,struct ub_target *);
  void (*step)(struct ub_part *,struct ub_target *);
  /* core-owned */
  struct ub_target target;
@@ -58,6 +60,10 @@ struct ub_module {
  /* Optional command line handled before the helper starts (another process,
   * e.g. one the kernel runs); returns the exit code, or -1 if not its own. */
  int (*command)(int argc,char **argv);
+ /* Optional disabled-module housekeeping, once after config and on existing
+  * core ticks. May reconcile/finish an already resident operation; must not
+  * activate the disabled feature. NULL leaves disabled modules untouched. */
+ void (*disabled_step)(struct ub_module *);
 };
 
 extern struct ub_module *const ub_modules[]; /* generated/registry.c */

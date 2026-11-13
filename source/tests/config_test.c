@@ -21,8 +21,12 @@ int main(void){
   printf("[%s] %s",(*mm)->id,(*mm)->enabled?"on":"off");
   for(const struct ub_option *o=(*mm)->options;o&&o->key;o++)printf(" %s=%d",o->key,*o->value);
   putchar('\n');
-  /* ssh is user-configurable (off by default); every other module ships on. */
-  if(!(*mm)->enabled&&strcmp((*mm)->id,"ssh")){printf("FAIL: %s is off in the shipped config\n",(*mm)->id);failures++;}
+  /* SSH and experimental CPU are opt-in; CPU optimization is independently Off. */
+  if(!strcmp((*mm)->id,"cpu")){
+   if((*mm)->enabled){puts("FAIL: CPU module enabled in shipped config");failures++;}
+   for(const struct ub_option *o=(*mm)->options;o&&o->key;o++)
+    if(!strcmp(o->key,"optimize")&&*o->value){puts("FAIL: CPU optimization enabled in shipped config");failures++;}
+  }else if(!(*mm)->enabled&&strcmp((*mm)->id,"ssh")){printf("FAIL: %s is off in the shipped config\n",(*mm)->id);failures++;}
  }
  printf("%s (%d failures)\n",failures?"config_test FAILED":"config_test passed",failures);
  return failures!=0;

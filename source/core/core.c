@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "ub.h"
+#include "poke.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -92,6 +93,9 @@ static void install(struct ub_part *p,struct ub_target *t){
  int rc;
  if(t->retry){t->retry--;return;}
  if(p->prepare)p->prepare(p,t);
+ /* Preparation may still be draining an earlier owner of this process.
+  * Never publish hooks until that handoff is complete. */
+ if(t->failed||t->retry)return;
  rc=ub_install_payload(t->pid,p->payload);
  if(rc==0){t->installed=1;ub_changed(p);return;}
  if(rc==-2){t->failed=1;return;}
@@ -156,12 +160,16 @@ void ub_core_start(void){
   char opts[256];size_t n=0;opts[0]=0;
   for(const struct ub_option *o=m->options;o&&o->key&&n<sizeof opts;o++)n+=(size_t)snprintf(opts+n,sizeof opts-n," %s=%d",o->key,*o->value);
   if(m->enabled&&m->start)m->start(m);
+  if(!m->enabled&&m->disabled_step)m->disabled_step(m);
   ub_log("core",UB_ALWAYS,"module %s %s%s",m->id,m->enabled?"on":"off",opts);
  }
 }
 void ub_core_tick(void){
  struct ub_module *m;struct ub_part *p;
+ ub_injector_poll();
  scan();
+ for(struct ub_module *const *mm=ub_modules;(m=*mm);mm++)
+  if(!m->enabled&&m->disabled_step)m->disabled_step(m);
  FOR_PARTS(m,p)if(m->enabled)tick(p);
 }
 
@@ -188,15 +196,8 @@ int main(int argc,char **argv){
   if(ub_mem_read(pid,a,b,n)){fprintf(stderr,"peek PID%d @%08x failed\n",pid,a);return 1;}
   printf("%08x:",a);for(i=0;i<n;i++)printf(" %02x",b[i]);printf("\n");return 0;
  }
- if(argc>=4&&!strcmp(argv[1],"--poke")){
-  int pid=atoi(argv[2]);uint32_t a=(uint32_t)strtoul(argv[3],0,0),v=(uint32_t)strtoul(argv[4],0,0),n=argc>=6?(uint32_t)strtoul(argv[5],0,0):4;
-  unsigned char b[4];uint32_t rb=0;
-  if(n>4)n=4;
-  memcpy(b,&v,4);
-  if(ub_mem_write(pid,a,b,n)){fprintf(stderr,"poke PID%d @%08x <- %08x failed\n",pid,a,v);return 1;}
-  if(ub_mem_read(pid,a,&rb,4)){fprintf(stderr,"readback failed\n");return 1;}
-  printf("PID%d @%08x: wrote %08x, readback %08x %s\n",pid,a,v,rb,(rb&((1u<<(n*8))-1))==(v&((1u<<(n*8))-1))?"OK":"MISMATCH");
-  return 0;
+ if(argc>=2&&!strcmp(argv[1],"--poke")){
+  return ub_poke_command(argc,argv,ub_mem_write,ub_mem_read,stdout,stderr);
  }
  for(struct ub_module *const *mm=ub_modules;(m=*mm);mm++){int rc;if(m->command&&(rc=m->command(argc,argv))>=0)return rc;}
  lock=open(UB_LOCK,O_CREAT|O_RDWR,0600);if(lock<0||flock(lock,LOCK_EX|LOCK_NB))return 0;

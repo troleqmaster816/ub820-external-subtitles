@@ -45,6 +45,17 @@ int main(void){
  menu_set("set helper 6\n");menu_step(0,0);
  CHECK(netflix_key==NETFLIX_HELPER);CHECK(!present(UB_NETFLIX_OFF));CHECK(present(UB_NETFLIX_HELPER));
  read_text(UB_REMOTE_STATUS,buf,sizeof buf);CHECK(!strcmp(buf,"6 helper saved\n"));
+ /* Independent clients with the same seq retain both requests and replies. */
+ {char qa[UB_ACTION_PATH],qb[UB_ACTION_PATH],ra[UB_ACTION_PATH],rb[UB_ACTION_PATH];
+  const char *a="11111111111111111111111111111111",*b="22222222222222222222222222222222";
+  CHECK(!ub_action_path(qa,sizeof qa,UB_REMOTE_REQUEST,'q',a,1));CHECK(!ub_action_path(qb,sizeof qb,UB_REMOTE_REQUEST,'q',b,1));
+  CHECK(!ub_action_path(ra,sizeof ra,UB_REMOTE_REQUEST,'r',a,1));CHECK(!ub_action_path(rb,sizeof rb,UB_REMOTE_REQUEST,'r',b,1));
+  CHECK(!ub_action_envelope(qa,"set nothing 1\n",14,ub_action_clock()+30));CHECK(!ub_action_envelope(qb,"set helper 1\n",13,ub_action_clock()+30));
+  menu_step(0,0);menu_step(0,0);
+  read_text(ra,buf,sizeof buf);{uint32_t expires;char *body=ub_action_body(buf,&expires);CHECK(body&&!strcmp(body,"1 nothing saved\n"));}
+  read_text(rb,buf,sizeof buf);{uint32_t expires;char *body=ub_action_body(buf,&expires);CHECK(body&&!strcmp(body,"1 helper saved\n"));}
+  CHECK(!present(qa)&&!present(qb));unlink(ra);unlink(rb);
+ }
  /* back to Netflix */
  menu_set("set netflix 5\n");menu_step(0,0);
  CHECK(netflix_key==NETFLIX_STOCK);CHECK(!present(UB_NETFLIX_OFF));CHECK(!present(UB_NETFLIX_HELPER));

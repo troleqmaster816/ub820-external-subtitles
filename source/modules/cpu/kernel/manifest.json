@@ -1,0 +1,115 @@
+{
+  "schema": 1,
+  "artifact": {
+    "file": "ub820_cpu_wait_v15.ko",
+    "bytes": 101336,
+    "sha256": "13d23505ec9585aa4eacfdfcd592f4708814a4e897c2aa01e7bcad320a36be70",
+    "module_name": "ub820_cpu_wait_v15",
+    "embedded_version": "0.0-offline-v15",
+    "vermagic": "4.4.8 SMP preempt mod_unload aarch64",
+    "license": "Dual MIT/GPL"
+  },
+  "abi": {
+    "elf_class": 64,
+    "machine": "EM_AARCH64",
+    "endian": "little",
+    "kernel_release": "4.4.8",
+    "module_descriptor_bytes": 768,
+    "module_descriptor_alignment": 128,
+    "init_pointer_offset": 344,
+    "exit_pointer_offset": 688
+  },
+  "compatibility": [
+    {
+      "firmware": "1.82",
+      "kernel_build": "Mon Jun 3 13:43:33 JST 2024",
+      "validation": "device-tested"
+    },
+    {
+      "firmware": "1.85",
+      "kernel_build": "Tue Aug 25 20:30:31 JST 2026",
+      "validation": "exact-build guards; not device-tested"
+    }
+  ],
+  "interface": {
+    "node": "/dev/ub820_cpu_wait",
+    "node_mode": "0600",
+    "commands": [
+      "ON",
+      "OFF"
+    ],
+    "phases": {
+      "inert": 0,
+      "active": 1,
+      "restored_resident": 3
+    },
+    "init_is_inert": true,
+    "activation_pins_until_true_kernel_reset": true,
+    "off_restores_native_words_but_retains_contexts": true,
+    "force_unload_forbidden": true,
+    "default_enabled": false,
+    "default_optimization": false
+  },
+  "source_sha256": {
+    "full_code_guard_fixture_v7.h": "70e1e632460caf3361c9cf5af270b5fa6ea3c98b1e983a95adbcc63a00d02413",
+    "full_code_guard_shape_v7.h": "fd1f3a564c8bd1c0e378efeb74cd503961d7d479be0ac05e73df1ac465d9ca57",
+    "full_code_guard_v7.h": "2c92bbfd4dcd7b1592b6347d3a7481bfec906e189c6a53192b93d8abd3126fcf",
+    "native_binding_types_v5.h": "a6f24af58a7f47e482a3e65879a3513a8c062f26d8039923566267bba9c64369",
+    "native_cpu_wait_bindings_v15.h": "01d3a13239a5196dffa53ba76f9fce0db084efc22f08ce9231309b7ebc72ab77",
+    "native_cpu_wait_bridge_v15.S": "3d4045131797d18598766e522383ca1065ea44ef0dcf6eb0e768adfeab9a5468",
+    "native_cpu_wait_frontend_v15.c": "b91f721ebebc433b01bed6a5790ae69361c79ee3b7916b42a6716afa6ccf912a",
+    "native_cpu_wait_frontend_v15.h": "73a0c64e0df4d8ac5f9afcce4a5633d04f18485f1c78d3beb943e9c034c1a40a",
+    "native_cpu_wait_metadata_v15.c": "827846a9e5a7d69e34220575e40c8027a479dbfcc4558136824e7e22dbf78789",
+    "native_cpu_wait_module_v15.c": "f2c6c7ed0112abdfbd4b92e9c0bb591c7fcfd98452c5452e8f927e9cd643c2e9",
+    "native_cpu_wait_sync_v15.c": "57fcba6597eaae8d0210446f6b6d1a2e63b8de263f0693817b8a7eb0c4bf116c",
+    "native_cpu_wait_sync_v15.h": "0322b7aeea1a4d333f68f9aedc795e37a88fa02db0e97ac4cdd6247eadf03f77",
+    "native_cpu_wait_v15.c": "31baa06dbfbe1016bba206855695cb929c2b6bdc8dcce72f8465d317f8145db4",
+    "native_cpu_wait_v15.h": "37a95f2f786931106d19acf12f90eab834621012cd5a14b78db032c9aee0fa23",
+    "native_observer_sync_guard_data_v12.h": "b1202a69c0073cc19b8622691cd28d8f2c06aa5c78eed87e3cfad4d842215538",
+    "native_preflight_bindings_v9.h": "12cb024cff8705bc97346ec44ccc067f920d11e5478107349c7ebc9d204bdcf1",
+    "resident_wait_controller_v15.h": "074be9d57449f4383a8a5b850c2cc385c5536a4eda3e2a5606b40e42f04805d1"
+  },
+  "source_license": "MIT OR GPL-2.0-only",
+  "build_inputs": "build-inputs.lock.json",
+  "imports": [
+    "__copy_from_user",
+    "__mutex_init",
+    "__put_task_struct",
+    "__task_pid_nr_ns",
+    "__wake_up",
+    "_raw_spin_lock_irqsave",
+    "_raw_spin_unlock_irqrestore",
+    "cpu_online_mask",
+    "find_get_pid",
+    "finish_wait",
+    "flush_icache_range",
+    "get_online_cpus",
+    "get_pid_task",
+    "init_pid_ns",
+    "kallsyms_lookup_name",
+    "kfree",
+    "kmalloc_caches",
+    "kmem_cache_alloc",
+    "memcmp",
+    "memset",
+    "misc_deregister",
+    "misc_register",
+    "mutex_lock_interruptible",
+    "mutex_trylock",
+    "mutex_unlock",
+    "no_llseek",
+    "nonseekable_open",
+    "prepare_to_wait_event",
+    "printk",
+    "probe_kernel_read",
+    "put_online_cpus",
+    "put_pid",
+    "schedule",
+    "scnprintf",
+    "simple_read_from_buffer",
+    "stop_machine",
+    "strcmp",
+    "task_active_pid_ns",
+    "try_module_get"
+  ]
+}

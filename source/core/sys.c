@@ -29,7 +29,7 @@ static int stat_fill(long rc,const unsigned char *k,struct ub_stat *s){
  uint32_t mtime,mode;
  if(rc)return -1;
  memcpy(&s->dev,k,8);memcpy(&mode,k+16,4);memcpy(&s->size,k+48,8);memcpy(&mtime,k+80,4);memcpy(&s->ino,k+96,8);
- s->mode=mode;s->mtime=mtime;return 0;
+ s->mode=mode;s->mtime=mtime;memcpy(&s->uid,k+24,4);memcpy(&s->gid,k+28,4);return 0;
 }
 int ub_stat(const char *path,struct ub_stat *s){unsigned char k[104] __attribute__((aligned(8)));return stat_fill(syscall(NR_STAT64,path,k),k,s);}
 int ub_fstat(int fd,struct ub_stat *s){unsigned char k[104] __attribute__((aligned(8)));return stat_fill(syscall(NR_FSTAT64,fd,k),k,s);}
@@ -39,7 +39,7 @@ static long dents(int fd,char *buf,size_t size){return syscall(NR_GETDENTS64,fd,
 #include <sys/stat.h>
 void ub_now(struct timespec *t){clock_gettime(CLOCK_MONOTONIC,t);}
 void ub_sleep_ms(unsigned ms){struct timespec k={(time_t)(ms/1000),(long)(ms%1000)*1000000},rest;while(nanosleep(&k,&rest)&&errno==EINTR)k=rest;}
-static void stat_copy(const struct stat *st,struct ub_stat *s){s->dev=st->st_dev;s->ino=st->st_ino;s->size=st->st_size;s->mtime=st->st_mtime;s->mode=st->st_mode;}
+static void stat_copy(const struct stat *st,struct ub_stat *s){s->dev=st->st_dev;s->ino=st->st_ino;s->size=st->st_size;s->mtime=st->st_mtime;s->mode=st->st_mode;s->uid=st->st_uid;s->gid=st->st_gid;}
 int ub_stat(const char *path,struct ub_stat *s){struct stat st;if(stat(path,&st))return -1;stat_copy(&st,s);return 0;}
 int ub_fstat(int fd,struct ub_stat *s){struct stat st;if(fstat(fd,&st))return -1;stat_copy(&st,s);return 0;}
 static long dents(int fd,char *buf,size_t size){return syscall(SYS_getdents64,fd,buf,size);}

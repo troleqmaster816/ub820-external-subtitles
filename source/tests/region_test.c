@@ -1,10 +1,17 @@
 /* Host test of the region module's disc parsers on synthetic discs. */
+#define UB_BD_RAM_DIR UB_TEST_DIR "/region-ram"
 #include "../modules/region/module.c"
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
 
 static int failures;
+/* Host tests never install ARM payloads. Use a tiny explicit asset fixture
+ * when exercising atomic configuration publication instead of an ARM DSO. */
+const struct ub_payload ub_payload_region_launch={0};
+const unsigned char ub_asset_region_bd_preload[]={'x'};
+const size_t ub_asset_region_bd_preload_size=1;
+const char ub_asset_region_bd_preload_sha256[]="2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881";
 #define CHECK(c) do{if(!(c)){printf("FAIL %s:%d: %s\n",__FILE__,__LINE__,#c);failures++;}}while(0)
 struct ub_module *const ub_modules[]={&ub_module_region,0};
 /* config.c saves menu choices; on the host the stick is not involved */
@@ -20,6 +27,25 @@ static char *log_text(void){
 
 static void read_text(const char *path,char *buf,size_t cap){FILE *f=fopen(path,"r");size_t n=f?fread(buf,1,cap-1,f):0;if(f)fclose(f);buf[n]=0;}
 static void menu_set(const char *text){FILE *f=fopen(UB_REGION_REQUEST,"w");fputs(text,f);fclose(f);}
+static void test_bd_launch_ownership(void){
+ struct ub_part part={0};struct ub_bd_launch_config c;int fd,saved=bd_region;unsigned saved_ok=bdv_file.ok;
+ bd_region=BD_A;bdv_file.ok=1;bd_launch_armed=0;bd_launch_part=&part;
+ part.target.verified=1;part.target.pid=getpid();part.target.installed=0;
+ CHECK(!bd_launch_publish());CHECK(bd_launch_ready);
+ fd=open(UB_BD_LAUNCH_CONFIG,O_RDONLY);CHECK(fd>=0);if(fd>=0){CHECK(read(fd,&c,sizeof c)==sizeof c);close(fd);CHECK(c.policy==1&&c.magic==UB_BD_LAUNCH_MAGIC);}
+ /* A pending hook already excludes the legacy source writer. */
+ watcher_start();CHECK(!watcher_pid);
+ launch_prepare(&part,&part.target);CHECK(!part.target.retry&&!watcher_pid);
+ part.target.installed=1;launch_step(&part,&part.target);CHECK(bd_launch_armed&&!watcher_pid);
+ /* Make atomic policy publication fail. It must not leave an old choice,
+  * and must not introduce a second source writer beside the existing hook. */
+ unlink(UB_BD_LAUNCH_CONFIG);CHECK(!mkdir(UB_BD_LAUNCH_CONFIG,0700));
+ CHECK(bd_launch_publish()<0&&!bd_launch_ready);watcher_start();CHECK(!watcher_pid);
+ CHECK(!rmdir(UB_BD_LAUNCH_CONFIG));
+ menu_set("set A 301\n");menu_request();CHECK(bd_region==BD_A&&bd_launch_ready); /* same-choice retry */
+ launch_step(&part,&part.target);CHECK(bd_launch_armed&&!watcher_pid);
+ bd_launch_part=0;bd_launch_armed=bd_launch_ready=0;bdv_file.ok=(int)saved_ok;bd_region=saved;
+}
 /* The UB820 Helper menu: status for the menu, a choice applied and saved to
  * sub/ub820_menu.cfg (read back over modules.cfg), invalid choices refused. */
 static void test_menu(void){
@@ -56,12 +82,13 @@ static void test_menu(void){
  * buffer below 4 GB in this process, written through /proc/self/mem like
  * apl_meda_dvdv's), and the DVD menu files. */
 static void test_dvd(void){
- size_t size=0x80000;unsigned char *lib=mmap(0,size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_32BIT,-1,0);
- uint32_t base=(uint32_t)(uintptr_t)lib;int pid=getpid();uint16_t sprm;char buf[256];
+ size_t size=0x80000;unsigned char *lib=mmap(0,size,PROT_READ|PROT_WRITE|PROT_EXEC,MAP_SHARED|MAP_ANONYMOUS|MAP_32BIT,-1,0);
+ uint32_t base=(uint32_t)(uintptr_t)lib;pid_t pid;uint16_t sprm;char buf[256];
  unsigned char *gate=lib+(NAVI_GATE-NAVI_LINK_BASE),*src=lib+(NAVI_REGION_SOURCE-NAVI_LINK_BASE);
  uint16_t *sprm20=(uint16_t *)(lib+(NAVI_SPRM20-NAVI_LINK_BASE));
  int saved=dvd_region;
  CHECK(lib!=MAP_FAILED);if(lib==MAP_FAILED)return;
+ pid=fork();CHECK(pid>=0);if(pid<0){munmap(lib,size);return;}if(!pid){prctl(PR_SET_PTRACER,PR_SET_PTRACER_ANY);for(;;)pause();}
  memcpy(gate,gate_stock,2);memcpy(src,source_stock,4);*sprm20=2;dvd_player=2;dvd_allowed=0;
  /* stock: nothing changes */
  dvd_region=DVD_STOCK;CHECK(dvd_apply(pid,base,1)==0);CHECK(!memcmp(gate,gate_stock,2)&&!memcmp(src,source_stock,4)&&*sprm20==2);
@@ -80,6 +107,29 @@ static void test_dvd(void){
  dvd_region=6;dvd_apply(pid,base,1);CHECK(*sprm20==0x20);
  dvd_region=DVD_STOCK;CHECK(dvd_apply(pid,base,1)==1);
  CHECK(!memcmp(gate,gate_stock,2)&&!memcmp(src,source_stock,4)&&*sprm20==2);
+ /* A guard already in flight may finish its old patch, but the menu must
+  * reap it BEFORE publishing stock. It cannot overwrite stock afterwards. */
+ {
+  int ready[2];char byte;sigset_t term,old;volatile unsigned *finished=(volatile unsigned *)lib;
+  *finished=0;CHECK(!pipe(ready));sigemptyset(&term);sigaddset(&term,SIGTERM);CHECK(!sigprocmask(SIG_BLOCK,&term,&old));
+  dvd_region=DVD_R1;dvd_guard_pid=fork();CHECK(dvd_guard_pid>=0);
+  if(!dvd_guard_pid){
+   struct sigaction action;memset(&action,0,sizeof action);action.sa_handler=dvd_guard_cancelled;sigemptyset(&action.sa_mask);sigaction(SIGTERM,&action,0);
+   dvd_guard_cancel=0;sigprocmask(SIG_SETMASK,&old,0);close(ready[0]);
+   if(write(ready[1],"r",1)!=1)_exit(90);
+   close(ready[1]);while(!dvd_guard_cancel)pause();
+   *finished=dvd_apply(pid,base,1)<0?2u:1u;_exit(0);
+  }
+  sigprocmask(SIG_SETMASK,&old,0);close(ready[1]);CHECK(read(ready[0],&byte,1)==1);close(ready[0]);
+  {FILE *f=fopen(UB_DVD_REQUEST,"w");CHECK(f!=0);if(f){fputs("set stock 99\n",f);fclose(f);}}
+  dvd_menu_request();CHECK(!dvd_guard_pid&&dvd_region==DVD_STOCK&&*finished==1);
+  CHECK(src[0]==1&&source_ours(src)); /* old transaction finished first */
+  CHECK(dvd_apply(pid,base,1)>=0);CHECK(!memcmp(gate,gate_stock,2)&&!memcmp(src,source_stock,4)&&*sprm20==2);
+ }
+ /* Neither site is modified if the other fails the preflight. */
+ memcpy(gate,gate_stock,2);src[0]=0xff;dvd_region=DVD_FREE;
+ CHECK(dvd_apply(pid,base,1)==-1);CHECK(!memcmp(gate,gate_stock,2));
+ memcpy(src,source_stock,4);
  /* unknown code is left alone */
  gate[0]=0xff;dvd_region=DVD_FREE;CHECK(dvd_apply(pid,base,1)==-1);CHECK(gate[0]==0xff);
  (void)sprm;
@@ -92,6 +142,7 @@ static void test_dvd(void){
  read_text(UB_CONFIG_DIR "/ub820_menu.cfg",buf,sizeof buf);CHECK(strstr(buf,"dvd_region=3\n"));
  {FILE *f=fopen(UB_DVD_REQUEST,"w");fputs("set world 5\n",f);fclose(f);}
  dvd_menu_request();CHECK(dvd_region==3);
+ kill(pid,SIGKILL);waitpid(pid,0,0);
  munmap(lib,size);dvd_region=saved;dvd_allowed=0;
 }
 
@@ -206,6 +257,9 @@ int main(void){
    CHECK(WIFEXITED(status)&&WEXITSTATUS(status)==(int)rounds[r].want);
    if(!WIFEXITED(status)||WEXITSTATUS(status)!=(int)rounds[r].want)printf("round %u: status %d\n",r,WIFEXITED(status)?WEXITSTATUS(status):-1);
    usleep(50000);
+   /* Readiness I/O no longer freezes the fake player. It can exit before
+    * the independent one-second no-disc deadline; await only that log. */
+   if(!rounds[r].disc)for(unsigned spin=0;spin<120&&!strstr(log_text(),rounds[r].log);spin++)usleep(10000);
    CHECK(strstr(log_text(),rounds[r].log));
    watcher_stop();bd_test_root=root;
   }
@@ -225,6 +279,7 @@ int main(void){
  decide_clear();
  test_menu();
  test_dvd();
+ test_bd_launch_ownership();
  watcher_stop();
  printf("%s (%d failures)\n",failures?"region_test FAILED":"region_test passed",failures);
  return failures!=0;

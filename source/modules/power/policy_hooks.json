@@ -1,0 +1,50 @@
+{
+  "format": "ub820-ui-hooks-v1",
+  "program": "apl_mgr",
+  "firmware": "1.82",
+  "sha256": "5ba307fa43e18ee0aa72576ff4e5a49b316f7f239794fb84579f638ec00ba6a9",
+  "payload_source": "policy.c",
+  "initialize_by_loader_only": true,
+  "gateway_hint": "0x28800000",
+  "hooks": [
+    {
+      "target": "0x1d9b8",
+      "minimum": 8,
+      "replacement": "ub_hook_power_dispatch",
+      "original_pointer": "ub_original_power_dispatch",
+      "prototype": "int fn(void *ctx)",
+      "note": "Post-receive native manager classifier; safe8-byte push.w/movw prologue. Return0 consumes private controls, including packets returned by a receive already active during hook installation; native events delegate unchanged."
+    },
+    {
+      "target": "0x282a2a9c",
+      "source_image": "libeep.so",
+      "source_sha256": {"1.82":"f96b86235dc43bd0e91d8c36616c3117cdfb98986faf863097684513799994fc","1.85":"95392e85df97d3692f0e7f74f048fe225da7950ff99cada38d1c493064b3c440"},
+      "replacement": "ub_hook_power_eep_read",
+      "original_pointer": "ub_original_power_eep_read",
+      "prototype": "int fn(void *out, unsigned length, unsigned key)",
+      "note": "Always original read first; only successful1-byte70c3 read may return local policy2. Never writes EEPROM. Safe4-byte push/mov prologue."
+    },
+    {
+      "target": "0x29093a14",
+      "source_image": "libfpc.so",
+      "source_sha256": {"1.82":"68994b0338236c9cd91fa734b30e56553b328512538d54ce7544a9ec9c1c269b","1.85":"848cf84d13295b84b6de1562dab2fe162a5831276efb38506d7668d2822fc5f1"},
+      "replacement": "ub_hook_power_fpc_auto",
+      "original_pointer": "ub_original_power_fpc_auto",
+      "prototype": "int fn(unsigned enabled, unsigned timer_code)",
+      "note": "Observes original result during same-owner-thread apply. Safe4-byte push/mov prologue, before mov at+4 and BL at+6; do not force8-byte prefix."
+    }
+  ],
+  "bindings": [
+    {"symbol":"ub_native_power_configure","value":"0x2ca9d","note":"Unchanged native AP-OFF configuration method, Thumb entry."},
+    {"symbol":"ub_power_owner_return","value":"0x210ee","note":"Return PC bit0 cleared for native post-get classifier call, BL at210ea."}
+  ],
+  "variants": [
+    {
+      "firmware":"1.85",
+      "sha256":"eeb1b73b4c2b2857aae7699c8f74eaefdb77fd4aeaf79eea579b55aeb76a8ca0",
+      "hooks":{"ub_hook_power_dispatch":"0x1f218","ub_hook_power_eep_read":"0x282a2a9c","ub_hook_power_fpc_auto":"0x29093a14"},
+      "bindings":{"ub_native_power_configure":"0x2cb15","ub_power_owner_return":"0x2117e"}
+    }
+  ],
+  "lifecycle":"Install only after actual mapped library hashes are checked. Initial policy passes through stock. Readiness must be published only after all hooks install. Controls wake existing native EV owner thread; no periodic worker/key injection."
+}

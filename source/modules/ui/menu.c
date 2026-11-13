@@ -26,12 +26,17 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "helper_actions.h"
+#include "../external_subtitles/brightness_io.h"
 #include "tiles_png.h"
 
 typedef void *Widget;
 typedef unsigned int GType;
 extern Widget CTK_window_new(void),CTK_fixed_new(void),CTK_label_new(const char *);
 extern Widget CTK_stock_button_new(int,const char *);
+extern Widget CTK_plotbar_new(void);
+extern GType CTK_plotbar_get_type(void);
+extern void CTK_plotbar_set_min_value(Widget,int),CTK_plotbar_set_max_value(Widget,int);
+extern void CTK_plotbar_set_indicator(Widget,int);
 extern GType CTK_window_get_type(void),CTK_fixed_get_type(void),CTK_button_get_type(void),CTK_imagebutton_get_type(void);
 extern GType gtk_container_get_type(void),gtk_fixed_get_type(void),gtk_label_get_type(void);
 extern Widget gtk_type_check_object_cast(Widget,GType);
@@ -73,8 +78,8 @@ void (*ub_original_input)(void *,int,int);
 #define ROOT_SLOTS 6u   /* smngbr_ibtn_01..06 */
 #define MAX_CUSTOM 2u
 #define VIEW_ROWS 9u
-#define SUB_ACTIONS 3u
-#define HELPER_ROWS 6u
+#define SUB_ACTIONS 5u
+#define HELPER_ROWS 8u
 #define DROP_ROWS 11u
 /* Our root slots show our own tiles, the caption drawn in white and, for the
  * selected state, in the stock focus colour (tiles_png.h). CTK takes an image
@@ -104,16 +109,20 @@ void (*ub_original_input)(void *,int,int);
 #define TIMER_MS 100u
 #define POLL_TICKS 3u     /* status files every 300 ms */
 #define FIFO_RETRY 20u    /* reopen the key FIFO every 2 s while it is missing */
+/* Storage's existing tool budget is20s. This bounds only the UI transport
+ * wait, allowing callback margin; it never cancels or replays a USB write. */
+#define BRIGHTNESS_SAVE_WAIT 30u
 enum { PAGE_SUBS, PAGE_HELPER };
-enum { H_REGION, H_DVD, H_NETFLIX, H_SSH, H_LOG, H_SAVE };
-enum { DROP_NONE, DROP_SUBS, DROP_REGION, DROP_NETFLIX, DROP_DVD };
+enum { H_REGION, H_DVD, H_NETFLIX, H_SSH, H_LOG, H_SAVE, H_POWER, H_CPU };
+enum { DROP_NONE, DROP_SUBS, DROP_REGION, DROP_NETFLIX, DROP_DVD, DROP_POWER, DROP_CPU, DROP_BRIGHTNESS };
 struct descriptor { uint32_t id,type,label,state; int32_t child; };
 static int custom_descriptor(const struct descriptor *d){return d->id==CUSTOM_ID&&d->child==0;}
 struct menu_state {
  void *ctx; Widget owner,window,fixed,title,info,footer,rows[VIEW_ROWS],list,list_fixed,drop[DROP_ROWS];
  int tiled[MAX_CUSTOM];
  unsigned int base,count,kinds[MAX_CUSTOM],kind;  /* our root categories: base..base+count-1 */
- unsigned int selected,first,timer,seq,pending,pending_ticks,epoch,needs_list,refresh_guard;
+ unsigned int selected,first,timer,seq,pending,epoch,needs_list,refresh_guard;
+ uint32_t pending_deadline;
  uint32_t media_kind,media_number,deck_mode;
  int active; struct ub_status status; char notice[128];
  int log_view; unsigned int log_first,log_count; char *log_lines[LOG_LINES];
@@ -122,8 +131,16 @@ struct menu_state {
  int preview;               /* shown for the focused tile, not entered yet */
  int keys_fd,keys_open;     /* UB_KEYS_FIFO, read end */
  unsigned int ticks,keys_retry;
+ uint32_t overlay_deadline;
 };
 static struct menu_state m;
+/* Editing outlives the popup: closing OPTIONS still lets the existing UI
+ * timer finish an acknowledged Cancel. One request is outstanding at a time. */
+static struct {
+ unsigned active,cancel,commit,reset,edited,saving,op,percent,level,sent_percent;
+ uint32_t epoch,edit,seq,pid,birth_lo,birth_hi,backend_pid,backend_birth_lo,backend_birth_hi,save_deadline;
+ unsigned char token[16];struct ub_brightness_save_ack save;
+} brightness;
 static struct helper_state hs;
 static char log_text[LOG_BYTES+1];
 static struct ub_status incoming;
@@ -140,10 +157,14 @@ static void close_list(void){
  if(w){unregister_window(w);gtk_widget_destroy(w);}
 }
 static int create_list(void);
+static void render_brightness(void);
+static void brightness_abort(void),brightness_pump(void),brightness_forget(void);
+static int brightness_ack(const struct ub_status *);
 static void close_child(int restore){
  Widget w=m.window;
+ if(m.kind==PAGE_SUBS&&m.drop_kind==DROP_BRIGHTNESS)brightness_abort();
  close_list();
- if(m.overlay){m.overlay=0;unlink(UB_OVERLAY_OPEN);restore=0;}
+ if(m.overlay){m.overlay=0;unlink(UB_OVERLAY_OPEN);unlink(UB_OVERLAY_ABORT);m.overlay_deadline=0;restore=0;}
  m.window=0;m.active=0;m.preview=0;m.log_view=0;m.drop_kind=DROP_NONE;
  if(w){unregister_window(w);gtk_widget_destroy(w);}
  m.fixed=m.title=m.info=m.footer=0;memset(m.rows,0,sizeof m.rows);
@@ -155,7 +176,7 @@ static void set_notice(const char *text){ha_copy(m.kind==PAGE_HELPER?hs.notice:m
 
 /* ---- Rows of the open page ------------------------------------------------- */
 static unsigned int helper_rows(unsigned int *ids){
- unsigned int n=0;ids[n++]=H_REGION;if(hs.dvd_known)ids[n++]=H_DVD;if(hs.netflix_known)ids[n++]=H_NETFLIX;if(hs.ssh_enabled)ids[n++]=H_SSH;ids[n++]=H_LOG;ids[n++]=H_SAVE;return n;
+ unsigned int n=0;ids[n++]=H_REGION;if(hs.dvd_known)ids[n++]=H_DVD;if(hs.netflix_known)ids[n++]=H_NETFLIX;if(hs.power_enabled)ids[n++]=H_POWER;if(hs.cpu_enabled)ids[n++]=H_CPU;if(hs.ssh_enabled)ids[n++]=H_SSH;ids[n++]=H_LOG;ids[n++]=H_SAVE;return n;
 }
 static const char *helper_text(unsigned int id,char *buf,size_t cap){
  if(id==H_REGION){
@@ -175,6 +196,14 @@ static const char *helper_text(unsigned int id,char *buf,size_t cap){
   return buf;
  }
  if(id==H_SSH)return hs.ssh_running?"Stop SSH":"Start SSH";
+ if(id==H_POWER){
+  if(m.drop_kind==DROP_POWER)return "Auto power-off";
+  snprintf(buf,cap,"Auto power-off: %s",ha_power_value(&hs));return buf;
+ }
+ if(id==H_CPU){
+  if(m.drop_kind==DROP_CPU)return "CPU optimization";
+  snprintf(buf,cap,"CPU optimization: %s",ha_cpu_value(&hs));return buf;
+ }
  if(id==H_LOG)return "Helper log";
  return hs.log_always?"Log is saved to USB automatically":"Save log to USB";
 }
@@ -184,7 +213,13 @@ static const char *row_text(unsigned int n,char *buf,size_t cap){
  if(m.kind==PAGE_HELPER){unsigned int ids[HELPER_ROWS],c=helper_rows(ids);return n<c?helper_text(ids[n],buf,cap):"";}
  if(n==0)return "[..] Up one folder";
  if(n==1)return m.drop_kind==DROP_SUBS?"Subtitles":m.status.enabled?"Subtitles: On":"Subtitles: Off";
- if(n==2)return "Refresh files";
+ if(n==2){
+  if(!m.status.brightness_available||!m.status.brightness_known)return "Text brightness: unavailable";
+  if(m.status.brightness_percent==100)return "Text brightness: Original (100%)";
+  snprintf(buf,cap,"Text brightness: %u%%",m.status.brightness_percent);return buf;
+ }
+ if(n==3)return "Reset text brightness";
+ if(n==4)return "Refresh files";
  n-=SUB_ACTIONS;if(n>=m.status.count)return "";
  snprintf(buf,cap,"%s%s",m.status.items[n].kind==UB_KIND_DIR?"[Folder] ":"",m.status.items[n].name);
  for(i=0;buf[i];i++)if((unsigned char)buf[i]<32||buf[i]==127)buf[i]=' ';
@@ -228,6 +263,8 @@ static void render_log(void){
 /* The open list beside the selected row. */
 static const char *drop_text(unsigned int k){
  if(m.drop_kind==DROP_SUBS)return k?"Off":"On";
+ if(m.drop_kind==DROP_POWER)return k?"Off":"On";
+ if(m.drop_kind==DROP_CPU)return k?"Off":"On";
  if(m.drop_kind==DROP_NETFLIX)return k<HA_NETFLIX_CHOICES?ha_netflix_labels[k]:"";
  if(m.drop_kind==DROP_DVD)return k<HA_DVD_CHOICES?ha_dvd_labels[k]:"";
  return k<HA_REGION_CHOICES?ha_region_labels[k]:"";
@@ -237,6 +274,7 @@ static const char *drop_text(unsigned int k){
 static void render_drop(void){
  unsigned int i,top=m.selected>=m.first?m.selected-m.first:0;int x,y,h;
  if(m.drop_kind==DROP_NONE){close_list();return;}
+ if(m.drop_kind==DROP_BRIGHTNESS){render_brightness();return;}
  if(!m.list&&create_list()!=0){close_list();m.drop_kind=DROP_NONE;return;}
  h=LIST_PAD+(int)m.drop_count*35+LIST_PAD-4;
  x=PAGE_X+PAGE_W-LIST_W;y=PAGE_Y+94+(int)top*35-LIST_PAD;
@@ -253,6 +291,14 @@ static void render_drop(void){
 static void render(void){
  unsigned int i,total=total_rows();char text[512],row[160];
  if(!m.active||!m.window)return;
+ /* A backend loss/unknown result removes the choice that owns this popup.
+  * Close it before rendering the newly compacted rows or their values. */
+ if(m.drop_kind==DROP_POWER&&(!hs.power_enabled||!hs.power_known)){
+  m.drop_kind=DROP_NONE;close_list();
+ }
+ if(m.drop_kind==DROP_CPU&&(!hs.cpu_enabled||!hs.cpu_known)){
+  m.drop_kind=DROP_NONE;close_list();
+ }
  if(m.log_view){render_log();return;}
  if(m.selected>=total)m.selected=total?total-1:0;
  if(m.selected<m.first)m.first=m.selected;
@@ -272,47 +318,204 @@ static void render(void){
   else gtk_widget_hide(m.rows[i]);
  }
  render_drop();
- if(m.drop_kind!=DROP_NONE)ha_copy(text,"Up/Down: choose   OK: take   Return: keep as it was",sizeof text);
+ if(m.drop_kind==DROP_BRIGHTNESS)ha_copy(text,brightness.saving||brightness.op==UB_OP_BRIGHTNESS_COMMIT?"Saving brightness to USB...":"Left/Right: 1%   Up/Down: 10%\nOK: save   Return: cancel",sizeof text);
+ else if(m.drop_kind!=DROP_NONE)ha_copy(text,"Up/Down: choose   OK: take   Return: keep as it was",sizeof text);
  else if(m.preview)snprintf(text,sizeof text,"%s\nOK: open   OPTIONS: close",notice()[0]?notice():m.kind==PAGE_HELPER?"":m.status.message);
  else snprintf(text,sizeof text,"%s\nUp/Down: choose   OK: select   %s",notice()[0]?notice():m.kind==PAGE_HELPER?"":m.status.message,m.overlay?"Return: close":"Return: back   OPTIONS: close");
  gtk_label_set_text(cast(m.footer,gtk_label_get_type()),text);
 }
 
 /* ---- External Subtitles requests ---------------------------------------- */
+/* Check elapsed time, not timer callback counts: a busy UI may dispatch its
+ * timer late. Also called on a click so an expired request cannot keep the
+ * page stuck behind a generic busy message until the next timer arrives. */
+static int subtitle_pending_expire(void){
+ uint32_t now;
+ if(!m.pending)return 0;
+ if(!ha_action_now(&now)&&(int32_t)(now-m.pending_deadline)<0)return 0;
+ m.pending=0;m.needs_list=1;
+ if(brightness.active&&brightness.op){
+  if(brightness.op==UB_OP_BRIGHTNESS_COMMIT){ha_copy(m.notice,"Brightness save result is unconfirmed; reopen to check",sizeof m.notice);brightness_forget();return 1;}
+  if(brightness.op==UB_OP_BRIGHTNESS_CANCEL){ha_copy(m.notice,"Brightness restore is still awaiting confirmation",sizeof m.notice);return 1;}
+  brightness.op=0;brightness.cancel=1;brightness.commit=0;
+ }
+ ha_copy(m.notice,m.epoch?"Subtitle helper did not answer; refresh files to retry":"Subtitle helper is not ready; check Helper log, then refresh files",sizeof m.notice);
+ return 1;
+}
+static int publish_request(const struct ub_request *r,uint32_t now){
+ char temp[512];int fd;size_t at=0;ssize_t n;
+ snprintf(temp,sizeof temp,"%s.ui-%ld",UB_REQUEST_FILE,(long)getpid());
+ fd=open(temp,O_WRONLY|O_CREAT|O_TRUNC,0600);if(fd<0)return -1;
+ while(at<sizeof *r){n=write(fd,(const char *)r+at,sizeof *r-at);if(n<0&&errno==EINTR)continue;if(n<=0){close(fd);unlink(temp);return -1;}at+=(size_t)n;}
+ if(close(fd)){unlink(temp);return -1;}
+ if(rename(temp,UB_REQUEST_FILE)){unlink(temp);return -1;}
+ m.pending=r->seq;m.pending_deadline=now+(m.epoch?12u:3u);return 0;
+}
 static int send_request(unsigned int op,const char *path){
- struct ub_request r;char temp[512];int fd;size_t at=0;ssize_t n;
- if(m.pending){ha_copy(m.notice,"A request is already running",sizeof m.notice);render();return -1;}
+ struct ub_request r;uint32_t now;
+ subtitle_pending_expire();
+ if(brightness.active){ha_copy(m.notice,"Finish the current brightness change first",sizeof m.notice);brightness_pump();render();return -1;}
+ if(m.pending){ha_copy(m.notice,"Waiting for subtitle helper to answer",sizeof m.notice);render();return -1;}
+ if(ha_action_now(&now))goto bad;
  if(op!=UB_OP_LIST&&(m.needs_list||!m.epoch)){ha_copy(m.notice,"Refresh files before selecting",sizeof m.notice);render();return -1;}
  if(path&&path[0]&&!bounded_path(path)){ha_copy(m.notice,"Path is too long or invalid",sizeof m.notice);render();return -1;}
  memset(&r,0,sizeof r);r.magic=UB_MAGIC;r.version=UB_VERSION;r.seq=++m.seq;
  if(!r.seq)r.seq=++m.seq;
  r.epoch=op==UB_OP_LIST?0:m.epoch;r.op=op;ha_copy(r.path,path,sizeof r.path);
- snprintf(temp,sizeof temp,"%s.ui-%ld",UB_REQUEST_FILE,(long)getpid());
- fd=open(temp,O_WRONLY|O_CREAT|O_TRUNC,0600);if(fd<0)goto bad;
- while(at<sizeof r){n=write(fd,(char *)&r+at,sizeof r-at);if(n<=0){close(fd);unlink(temp);goto bad;}at+=(size_t)n;}
- if(close(fd)!=0){unlink(temp);goto bad;}
- if(rename(temp,UB_REQUEST_FILE)!=0){unlink(temp);goto bad;}
- m.pending=r.seq;m.pending_ticks=0;m.notice[0]=0;render();return 0;
+ if(publish_request(&r,now))goto bad;
+ m.notice[0]=0;render();return 0;
 bad:ha_copy(m.notice,"Cannot contact subtitle helper",sizeof m.notice);render();return -1;
 }
 static int status_valid(struct ub_status *s){
  unsigned int i;if(s->magic!=UB_MAGIC||s->version!=UB_VERSION||s->count>UB_MAX_ITEMS||!s->epoch)return 0;
+ if(s->text_level>255||s->brightness_percent>100||s->brightness_known>1||s->brightness_available>1||s->brightness_phase>UB_BRIGHTNESS_COMMIT)return 0;
  if(!memchr(s->dir,0,sizeof s->dir)||!memchr(s->current,0,sizeof s->current)||!memchr(s->message,0,sizeof s->message))return 0;
  for(i=0;i<s->count;i++)if((s->items[i].kind!=UB_KIND_FILE&&s->items[i].kind!=UB_KIND_DIR)||!memchr(s->items[i].name,0,UB_NAME_BYTES)||!memchr(s->items[i].path,0,UB_PATH_BYTES)||!bounded_path(s->items[i].path))return 0;
  return 1;
 }
 static void read_status(void){
- int fd;ssize_t n;size_t at=0;char extra;
- fd=open(UB_STATUS_FILE,O_RDONLY);if(fd<0)return;
- while(at<sizeof incoming){n=read(fd,(char *)&incoming+at,sizeof incoming-at);if(n<=0)break;at+=(size_t)n;}
- n=read(fd,&extra,1);close(fd);if(at!=sizeof incoming||n!=0||!status_valid(&incoming))return;
+ if(ub_br_private_read(UB_STATUS_FILE,&incoming,sizeof incoming)||!status_valid(&incoming))return;
+ int same_backend=brightness.active&&!memcmp(brightness.token,incoming.brightness_token,16)&&brightness.backend_pid==incoming.brightness_pid&&brightness.backend_birth_lo==incoming.brightness_birth_lo&&brightness.backend_birth_hi==incoming.brightness_birth_hi;
+ int accepted_commit=same_backend&&(brightness.saving||
+  (brightness.op==UB_OP_BRIGHTNESS_COMMIT&&incoming.brightness_commit_seq==brightness.seq&&incoming.brightness_commit_epoch==brightness.epoch&&incoming.brightness_commit_percent==brightness.percent&&incoming.brightness_commit_level==brightness.level));
  /* Generation changes invalidate pending mutations. A fresh LIST is the only
   * epoch-independent request; never replay SELECT/ON/OFF into a new backend. */
- if(m.epoch&&m.epoch!=incoming.epoch){m.pending=0;m.needs_list=1;ha_copy(m.notice,"Helper restarted; refresh files before selecting",sizeof m.notice);}
+ if(m.epoch&&m.epoch!=incoming.epoch){
+  if(!accepted_commit){brightness_forget();m.pending=0;}
+  m.needs_list=1;ha_copy(m.notice,accepted_commit?"Playback changed; text brightness save is finishing":"Helper restarted; refresh files before selecting",sizeof m.notice);
+ }
  m.epoch=incoming.epoch;
  if(incoming.seq>m.seq)m.seq=incoming.seq;
- if(m.pending&&incoming.seq==m.pending){m.pending=0;if(incoming.result==UB_OK)m.needs_list=0;}
- memcpy(&m.status,&incoming,sizeof m.status);render();
+ memcpy(&m.status,&incoming,sizeof m.status);
+ if(brightness.active){
+  if(!same_backend){brightness_forget();m.pending=0;m.needs_list=1;ha_copy(m.notice,"Subtitle engine changed; brightness edit closed",sizeof m.notice);}
+  else if(brightness.op&&incoming.seq==brightness.seq){
+   uint32_t edit_epoch=brightness.epoch;
+   if(brightness_ack(&incoming)){m.pending=0;if(incoming.result==UB_OK&&edit_epoch==m.epoch)m.needs_list=0;}
+  }
+ }else if(m.pending&&incoming.seq==m.pending){m.pending=0;if(incoming.result==UB_OK)m.needs_list=0;}
+ brightness_pump();render();
+}
+static int brightness_owner(uint32_t *pid,uint32_t *lo,uint32_t *hi){
+ char text[2048],*p;uint64_t value=0;
+ if(!ha_read_line("/proc/self/stat",text,sizeof text)||(p=strrchr(text,')'))==0||p[1]!=' ')return -1;
+ p+=2;for(unsigned field=3;field<22;field++){p=strchr(p,' ');if(!p)return -1;while(*p==' ')p++;}
+ if(*p<'0'||*p>'9')return -1;
+ do{unsigned d=(unsigned)(*p++-'0');if(value>UINT64_C(1844674407370955161)||(value==UINT64_C(1844674407370955161)&&d>5))return -1;value=value*10u+d;}while(*p>='0'&&*p<='9');
+ if(!value||(*p&&*p!=' '))return -1;
+ *pid=(uint32_t)getpid();*lo=(uint32_t)value;*hi=(uint32_t)(value>>32);return *pid>1?0:-1;
+}
+static int brightness_owned(const struct ub_status *s){
+ return s->brightness_edit==brightness.edit&&s->brightness_edit_epoch==brightness.epoch&&
+  s->brightness_owner_pid==brightness.pid&&s->brightness_owner_start_lo==brightness.birth_lo&&s->brightness_owner_start_hi==brightness.birth_hi;
+}
+static void brightness_forget(void){
+ if(m.pending==brightness.seq)m.pending=0;
+ memset(&brightness,0,sizeof brightness);
+ if(m.drop_kind==DROP_BRIGHTNESS){m.drop_kind=DROP_NONE;close_list();}
+}
+static void brightness_abort(void){
+ if(!brightness.active||brightness.saving||brightness.op==UB_OP_BRIGHTNESS_COMMIT)return;
+ brightness.cancel=1;brightness.commit=0;brightness.reset=0;
+}
+static int brightness_send(unsigned op){
+ struct ub_request r;uint32_t now;
+ if(m.pending||brightness.op||ha_action_now(&now))return -1;
+ memset(&r,0,sizeof r);r.magic=UB_MAGIC;r.version=UB_VERSION;r.seq=++m.seq;if(!r.seq)r.seq=++m.seq;
+ r.epoch=brightness.epoch;r.op=op;r.brightness.edit=op==UB_OP_BRIGHTNESS_BEGIN?0:brightness.edit;
+ r.brightness.value=op==UB_OP_BRIGHTNESS_PREVIEW||op==UB_OP_BRIGHTNESS_COMMIT?brightness.percent:0;
+ r.brightness.owner_pid=brightness.pid;r.brightness.owner_start_lo=brightness.birth_lo;r.brightness.owner_start_hi=brightness.birth_hi;memcpy(r.brightness.token,brightness.token,16);
+ if(publish_request(&r,now)){ha_copy(m.notice,"Cannot contact subtitle helper",sizeof m.notice);return -1;}
+ brightness.seq=r.seq;brightness.op=op;
+ brightness.sent_percent=r.brightness.value;
+ if(op==UB_OP_BRIGHTNESS_BEGIN)brightness.edit=r.seq;
+ if(op==UB_OP_BRIGHTNESS_COMMIT){
+  memset(&brightness.save,0,sizeof brightness.save);brightness.save.magic=UB_BRIGHTNESS_SAVE_MAGIC;brightness.save.version=UB_BRIGHTNESS_PROTOCOL;
+  memcpy(brightness.save.token,brightness.token,16);brightness.save.pid=brightness.backend_pid;brightness.save.birth_lo=brightness.backend_birth_lo;brightness.save.birth_hi=brightness.backend_birth_hi;
+  brightness.save.edit=brightness.edit;brightness.save.epoch=brightness.epoch;brightness.save.seq=r.seq;brightness.save.percent=brightness.percent;brightness.save.level=brightness.level;
+ }
+ return 0;
+}
+static int brightness_ack(const struct ub_status *s){
+ unsigned op=brightness.op;
+ if(s->result==UB_OK){
+  if(op==UB_OP_BRIGHTNESS_BEGIN||op==UB_OP_BRIGHTNESS_PREVIEW){
+   if(!brightness_owned(s)||s->brightness_phase!=UB_BRIGHTNESS_PREVIEW||!s->brightness_known)return 0;
+   if(op==UB_OP_BRIGHTNESS_PREVIEW&&(s->brightness_percent!=brightness.sent_percent||s->text_level!=ub_brightness_level(brightness.sent_percent)))return 0;
+  }else if(op==UB_OP_BRIGHTNESS_COMMIT){
+   if((s->brightness_phase!=UB_BRIGHTNESS_COMMIT&&s->brightness_phase!=UB_BRIGHTNESS_NONE)||
+      (s->brightness_phase==UB_BRIGHTNESS_COMMIT&&!brightness_owned(s))||
+      (s->brightness_phase==UB_BRIGHTNESS_NONE&&s->brightness_edit))return 0;
+   if(s->brightness_commit_seq!=brightness.seq||s->brightness_commit_epoch!=brightness.epoch||
+      s->brightness_commit_percent!=brightness.percent||s->brightness_commit_level!=brightness.level)return 0;
+  }else if(op==UB_OP_BRIGHTNESS_CANCEL&&(s->brightness_edit||s->brightness_phase!=UB_BRIGHTNESS_NONE||!s->brightness_known))return 0;
+ }
+ brightness.op=0;
+ if(s->result!=UB_OK){
+  ha_copy(m.notice,s->message[0]?s->message:"Brightness change was not confirmed",sizeof m.notice);
+  brightness.commit=brightness.reset=0;
+  if(op==UB_OP_BRIGHTNESS_CANCEL)brightness.cancel=0;
+  if(op==UB_OP_BRIGHTNESS_BEGIN||!brightness_owned(s))brightness_forget();
+  else if(s->brightness_known){brightness.percent=s->brightness_percent;brightness.level=s->text_level;m.drop_sel=brightness.percent;}
+  return 1;
+ }
+ if(op==UB_OP_BRIGHTNESS_CANCEL){ha_copy(m.notice,"Brightness restored; no choice saved",sizeof m.notice);brightness_forget();return 1;}
+ if(op==UB_OP_BRIGHTNESS_COMMIT){uint32_t now=0;brightness.saving=1;if(!ha_action_now(&now))brightness.save_deadline=now+BRIGHTNESS_SAVE_WAIT;ha_copy(m.notice,"Saving text brightness to USB...",sizeof m.notice);return 1;}
+ brightness.level=s->text_level;
+ if(op==UB_OP_BRIGHTNESS_BEGIN){if(!brightness.reset&&!brightness.edited)brightness.percent=s->brightness_percent;m.drop_sel=brightness.percent;}
+ return 1;
+}
+static void brightness_pump(void){
+ if(!brightness.active)return;
+ if(brightness.saving){
+  struct ub_brightness_save_ack ack;uint32_t now;
+  if(ub_br_private_read(UB_BRIGHTNESS_SAVE_ACK,&ack,sizeof ack)||ack.result<UB_BRIGHTNESS_SAVED||ack.result>UB_BRIGHTNESS_SAVE_UNKNOWN||memcmp(&ack,&brightness.save,offsetof(struct ub_brightness_save_ack,result))){
+   if(!brightness.save_deadline||ha_action_now(&now)||(int32_t)(now-brightness.save_deadline)>=0){ha_copy(m.notice,"Brightness applied; USB save result is unconfirmed",sizeof m.notice);brightness_forget();}
+   return;
+  }
+  ha_copy(m.notice,ack.result==UB_BRIGHTNESS_SAVED?"Text brightness saved":ack.result==UB_BRIGHTNESS_SAVE_STALE?"Playback changed; brightness was not saved":ack.result==UB_BRIGHTNESS_SAVE_ERROR?"Brightness applied; not saved to USB":"Brightness applied; USB save result is unconfirmed",sizeof m.notice);
+  brightness_forget();return;
+ }
+ if(brightness.op||m.pending)return;
+ if(brightness.cancel){brightness_send(UB_OP_BRIGHTNESS_CANCEL);return;}
+ if(m.status.brightness_percent!=brightness.percent||
+    ((brightness.edited||brightness.commit||brightness.reset)&&m.status.text_level!=ub_brightness_level(brightness.percent))){brightness_send(UB_OP_BRIGHTNESS_PREVIEW);return;}
+ if(brightness.commit)brightness_send(UB_OP_BRIGHTNESS_COMMIT);
+}
+static void brightness_begin(unsigned reset){
+ subtitle_pending_expire();
+ if(brightness.active){
+  if(!brightness.cancel&&!brightness.saving&&brightness.op!=UB_OP_BRIGHTNESS_COMMIT){if(m.drop_kind!=DROP_BRIGHTNESS)close_list();m.drop_kind=DROP_BRIGHTNESS;m.drop_sel=brightness.percent;render();return;}
+  ha_copy(m.notice,"The previous brightness change is still finishing",sizeof m.notice);render();return;
+ }
+ if(m.pending||m.needs_list||!m.epoch){ha_copy(m.notice,"Refresh files before changing brightness",sizeof m.notice);render();return;}
+ if(!m.status.brightness_available||!m.status.brightness_known){ha_copy(m.notice,"Text brightness is not available yet",sizeof m.notice);render();return;}
+ memset(&brightness,0,sizeof brightness);
+ if(brightness_owner(&brightness.pid,&brightness.birth_lo,&brightness.birth_hi)){ha_copy(m.notice,"Cannot verify the menu process",sizeof m.notice);render();return;}
+ unsigned token=0;for(unsigned i=0;i<16;i++)token|=m.status.brightness_token[i];
+ if(!token||!m.status.brightness_pid||!(m.status.brightness_birth_lo|m.status.brightness_birth_hi)){ha_copy(m.notice,"Brightness helper is not ready",sizeof m.notice);render();return;}
+ brightness.active=1;brightness.epoch=m.epoch;brightness.percent=reset?100:m.status.brightness_percent;brightness.level=m.status.text_level;brightness.reset=reset;brightness.commit=reset;
+ brightness.backend_pid=m.status.brightness_pid;brightness.backend_birth_lo=m.status.brightness_birth_lo;brightness.backend_birth_hi=m.status.brightness_birth_hi;memcpy(brightness.token,m.status.brightness_token,16);
+ if(m.drop_kind!=DROP_BRIGHTNESS)close_list();
+ m.drop_kind=DROP_BRIGHTNESS;m.drop_sel=brightness.percent;
+ if(brightness_send(UB_OP_BRIGHTNESS_BEGIN))brightness_forget();
+ render();
+}
+static void brightness_key(unsigned key){
+ unsigned value=brightness.percent;
+ if(!brightness.active||m.drop_kind!=DROP_BRIGHTNESS)return;
+ if(brightness.op==UB_OP_BRIGHTNESS_COMMIT||brightness.saving){if(key==KEY_BACK){m.drop_kind=DROP_NONE;close_list();}return;}
+ if(key==KEY_BACK){brightness_abort();brightness_pump();render();return;}
+ if(brightness.cancel)return;
+ if(key==KEY_OK){brightness.commit=1;brightness_pump();render();return;}
+ if(brightness.commit)return;
+ if(key==KEY_LEFT){if(value)value--;}
+ else if(key==KEY_RIGHT){if(value<100)value++;}
+ else if(key==KEY_UP)value=value>90?100:value+10;
+ else if(key==KEY_DOWN)value=value<10?0:value-10;
+ else return;
+ if(value!=brightness.percent)brightness.edited=1;
+ brightness.percent=value;m.drop_sel=value;brightness_pump();render();
 }
 static int owner_alive(void){
  void *ctx=ub_get_ctx?ub_get_ctx(0x27):0;
@@ -322,7 +525,7 @@ static void overlay_key(unsigned int key);
 static void ensure_timer(void);
 /* Key presses from apl_mgr (u32 key codes); the FIFO stays open for reading
  * so that apl_mgr knows the overlay can take keys. */
-static void read_keys(void){
+static void read_keys(int discard){
  uint32_t keys[16];ssize_t n;unsigned int i;
  if(!m.keys_open){
   if(m.keys_retry){m.keys_retry--;return;}
@@ -331,20 +534,32 @@ static void read_keys(void){
   m.keys_open=1;
  }
  while((n=read(m.keys_fd,keys,sizeof keys))>0)
-  for(i=0;i+1<=(unsigned int)n/sizeof *keys;i++)overlay_key(keys[i]);
+  for(i=0;!discard&&i+1<=(unsigned int)n/sizeof *keys;i++)overlay_key(keys[i]);
+}
+static int overlay_renew(void){
+ uint32_t now;
+ if(ha_action_now(&now))return -1;
+ m.overlay_deadline=now+3u;
+ return ub_action_write(UB_OVERLAY_OPEN,(const char *)&m.overlay_deadline,sizeof m.overlay_deadline);
 }
 static int timer_tick(void *unused){
+ uint32_t now;int discard=ha_exists(UB_OVERLAY_ABORT);
  (void)unused;
- read_keys();
+ if(m.overlay&&(discard||ha_action_now(&now)||(int32_t)(now-m.overlay_deadline)>=0)){close_child(0);discard=1;}
+ unlink(UB_OVERLAY_ABORT);
+ read_keys(discard);
+ if(m.overlay&&overlay_renew())close_child(0);
  if(++m.ticks<POLL_TICKS)return 1;
  m.ticks=0;
+ if(m.active&&!m.overlay&&!owner_alive())close_child(0);
+ int edited=brightness.active;
+ if(edited){read_status();if(subtitle_pending_expire())render();brightness_pump();}
  if(m.active){
-  if(!m.overlay&&!owner_alive())close_child(0);
-  else if(m.kind==PAGE_SUBS){
-   read_status();
-   if(m.pending&&++m.pending_ticks>=40){m.pending=0;m.needs_list=1;ha_copy(m.notice,"Helper timed out; refresh files to retry",sizeof m.notice);render();}
+  if(m.kind==PAGE_SUBS){
+   if(!edited)read_status();
+   if(subtitle_pending_expire())render();
   }else{
-   int changed=ha_region_poll(&hs);changed|=ha_dvd_poll(&hs);changed|=ha_netflix_poll(&hs);changed|=ha_ssh_poll(&hs);changed|=ha_log_poll(&hs);
+   int changed=ha_region_poll(&hs);changed|=ha_dvd_poll(&hs);changed|=ha_netflix_poll(&hs);changed|=ha_power_poll(&hs);changed|=ha_cpu_poll(&hs);changed|=ha_ssh_poll(&hs);changed|=ha_log_poll(&hs);
    if(changed&&!m.log_view)render();
   }
  }
@@ -352,9 +567,48 @@ static int timer_tick(void *unused){
 }
 
 /* ---- Child window --------------------------------------------------------- */
-static void owner_destroyed(Widget w,void *unused){(void)unused;if(w==m.owner){if(!m.overlay)close_child(0);m.owner=0;memset(m.tiled,0,sizeof m.tiled);m.count=0;m.pending=0;}}
+static void owner_destroyed(Widget w,void *unused){(void)unused;if(w==m.owner){if(!m.overlay)close_child(0);m.owner=0;memset(m.tiled,0,sizeof m.tiled);m.count=0;if(!brightness.active)m.pending=0;}}
 static Widget label(Widget fixed,const char *name,int x,int y,int width,int height){
  Widget w=CTK_label_new("");if(!w)return 0;gtk_widget_set_name(w,name);gtk_fixed_put(cast(fixed,gtk_fixed_get_type()),w,x,y);gtk_widget_set_uposition(w,x,y);gtk_widget_set_usize(w,width,height);gtk_label_set_justify(cast(w,gtk_label_get_type()),0);gtk_widget_show(w);return w;
+}
+/* Native CTK plotbar, as used by stock FUN_0013762c: integer bounds and
+ * indicator, with the player's existing Navi_PltA skin. It is a small adjacent
+ * control, not a list containing one widget for every possible percentage. */
+static int create_brightness(void){
+ Widget bar;
+ m.list=CTK_window_new();if(!m.list)return -1;
+ gtk_widget_set_name(m.list,"ub820_brightness_window_CmnE_18");
+ CTK_window_set_layer(cast(m.list,CTK_window_get_type()),m.overlay?3:2);
+ m.list_fixed=CTK_fixed_new();if(!m.list_fixed)return -1;
+ gtk_widget_set_name(m.list_fixed,"ub820_brightness_fixed_SWIN_C_18");
+ CTK_fixed_set_shape(cast(m.list_fixed,CTK_fixed_get_type()),3);CTK_fixed_set_alpha(cast(m.list_fixed,CTK_fixed_get_type()),255);
+ gtk_container_add(cast(m.list,gtk_container_get_type()),m.list_fixed);gtk_widget_show(m.list_fixed);
+ m.drop[0]=label(m.list_fixed,"ub820_brightness_title_SLBL_A_18",10,6,320,24);
+ m.drop[1]=label(m.list_fixed,"ub820_brightness_value_SLBL_A_18",10,32,320,26);
+ bar=CTK_plotbar_new();if(!bar)return -1;
+ gtk_widget_set_name(bar,"ub820_brightness_bar_Navi_PltA_18");
+ gtk_fixed_put(cast(m.list_fixed,gtk_fixed_get_type()),bar,20,68);gtk_widget_set_uposition(bar,20,68);gtk_widget_set_usize(bar,300,22);
+ CTK_plotbar_set_max_value(cast(bar,CTK_plotbar_get_type()),100);
+ CTK_plotbar_set_min_value(cast(bar,CTK_plotbar_get_type()),0);gtk_widget_show(bar);m.drop[2]=bar;
+ m.drop[3]=label(m.list_fixed,"ub820_brightness_hint_SLBL_B_16",10,96,320,22);
+ if(!m.drop[0]||!m.drop[1]||!m.drop[3])return -1;
+ if(ub_register_window&&ub_register_window(m.list)!=0)return -1;
+ return 0;
+}
+static void render_brightness(void){
+ char text[64];unsigned top=m.selected>=m.first?m.selected-m.first:0;int y;
+ if(!m.list&&create_brightness()){close_list();m.drop_kind=DROP_NONE;return;}
+ y=PAGE_Y+94+(int)top*35-LIST_PAD;
+ if(y+124>PAGE_Y+PAGE_H)y=PAGE_Y+PAGE_H-124;
+ gtk_widget_set_uposition(m.list,PAGE_X+PAGE_W-340,y);gtk_widget_set_usize(m.list,340,124);gtk_widget_set_usize(m.list_fixed,340,124);
+ gtk_label_set_text(cast(m.drop[0],gtk_label_get_type()),"Text brightness");
+ if(brightness.cancel)ha_copy(text,"Restoring previous brightness...",sizeof text);
+ else if(brightness.saving||brightness.op==UB_OP_BRIGHTNESS_COMMIT)ha_copy(text,"Saving to USB...",sizeof text);
+ else if(m.drop_sel==100)ha_copy(text,brightness.op?"Original (100%) - applying...":"Original (100%)",sizeof text);
+ else snprintf(text,sizeof text,brightness.op?"%u%% - applying...":"%u%%",m.drop_sel);
+ gtk_label_set_text(cast(m.drop[1],gtk_label_get_type()),text);
+ CTK_plotbar_set_indicator(cast(m.drop[2],CTK_plotbar_get_type()),(int)m.drop_sel);
+ gtk_label_set_text(cast(m.drop[3],gtk_label_get_type()),"0% is black text, not Off");gtk_widget_show(m.list);
 }
 static Widget row_button(const char *name,int x,int y,int width){
  Widget w=CTK_stock_button_new(1,"");if(!w)return 0;
@@ -410,7 +664,7 @@ bad:close_child(0);return -1;
 }
 static void open_child(unsigned int kind){
  if(m.active)return;
- m.kind=kind;m.notice[0]=0;m.pending=0;
+ m.kind=kind;m.notice[0]=0;if(!brightness.active)m.pending=0;
  ha_load(&hs);
  if(kind==PAGE_SUBS)read_status();
  m.media_kind=*field(m.ctx,0x33f8);m.media_number=*field(m.ctx,0x33f4);m.deck_mode=*field(m.ctx,0x33e4);
@@ -420,6 +674,14 @@ static void open_child(unsigned int kind){
 static void open_drop(unsigned int kind){
  m.drop_kind=kind;
  if(kind==DROP_SUBS){m.drop_count=2;m.drop_sel=m.status.enabled?0:1;}
+ else if(kind==DROP_POWER){
+  if(!hs.power_enabled||!hs.power_known){set_notice("Power control is not ready; reopen Helper to refresh");m.drop_kind=DROP_NONE;render();return;}
+  m.drop_count=2;m.drop_sel=hs.power_choice?0:1;
+ }
+ else if(kind==DROP_CPU){
+  if(!hs.cpu_enabled||!hs.cpu_known){ha_cpu_unavailable(&hs);m.drop_kind=DROP_NONE;render();return;}
+  m.drop_count=2;m.drop_sel=hs.cpu_choice?0:1;
+ }
  else if(kind==DROP_NETFLIX){m.drop_count=HA_NETFLIX_CHOICES;m.drop_sel=hs.netflix_choice<HA_NETFLIX_CHOICES?hs.netflix_choice:0;}
  else if(kind==DROP_DVD){m.drop_count=HA_DVD_CHOICES;m.drop_sel=hs.dvd_choice<HA_DVD_CHOICES?hs.dvd_choice:0;}
  else{
@@ -436,6 +698,8 @@ static void take_drop(void){
  if(kind==DROP_SUBS){
   if((k==0)!=(m.status.enabled!=0))send_request(k==0?UB_OP_ON:UB_OP_OFF,"");
  }else if(kind==DROP_REGION)ha_region_set(&hs,k);
+ else if(kind==DROP_POWER)ha_power_set(&hs,k?0:1);
+ else if(kind==DROP_CPU)ha_cpu_set(&hs,k?0:1);
  else if(kind==DROP_NETFLIX)ha_netflix_set(&hs,k);
  else if(kind==DROP_DVD)ha_dvd_set(&hs,k);
  render();
@@ -447,6 +711,8 @@ static void choose_helper(void){
  case H_REGION:open_drop(DROP_REGION);break;
  case H_DVD:open_drop(DROP_DVD);break;
  case H_NETFLIX:open_drop(DROP_NETFLIX);break;
+ case H_POWER:open_drop(DROP_POWER);break;
+ case H_CPU:open_drop(DROP_CPU);break;
  case H_SSH:ha_ssh_toggle(&hs);render();break;
  case H_LOG:load_log();m.log_view=1;render();break;
  default:ha_log_save(&hs);render();break;
@@ -463,7 +729,9 @@ static void choose_row(void){
   if(strlen(path)<8)ha_copy(path,"/mnt/usb",sizeof path);
   send_request(UB_OP_LIST,path);
  }else if(n==1)open_drop(DROP_SUBS);
- else if(n==2)send_request(UB_OP_LIST,m.status.dir[0]?m.status.dir:"/mnt/usb");
+ else if(n==2)brightness_begin(0);
+ else if(n==3)brightness_begin(1);
+ else if(n==4)send_request(UB_OP_LIST,m.status.dir[0]?m.status.dir:"/mnt/usb");
  else if(n-SUB_ACTIONS<m.status.count){struct ub_item *it=&m.status.items[n-SUB_ACTIONS];send_request(it->kind==UB_KIND_DIR?UB_OP_LIST:UB_OP_SELECT,it->path);}
 }
 
@@ -527,7 +795,7 @@ unsigned int ub_hook_root_builder(int update){
  ret=ub_original_root_builder?ub_original_root_builder(update):0;
  if(!ub_get_ctx)return ret;
  ctx=ub_get_ctx(0x27);if(!ctx)return ret;owner=root_window(ctx);
- if(m.ctx!=ctx||m.owner!=owner){if(!m.overlay)close_child(0);memset(m.tiled,0,sizeof m.tiled);m.count=0;m.ctx=ctx;m.owner=owner;m.pending=0;if(owner)gtk_signal_connect(owner,"destroy",owner_destroyed,0);}
+ if(m.ctx!=ctx||m.owner!=owner){if(!m.overlay)close_child(0);memset(m.tiled,0,sizeof m.tiled);m.count=0;m.ctx=ctx;m.owner=owner;if(!brightness.active)m.pending=0;if(owner)gtk_signal_connect(owner,"destroy",owner_destroyed,0);}
  n=*field(ctx,COUNT_OFF);rows=(struct descriptor *)((char *)ctx+ROW_OFF);
  /* already appended (a nested build) */
  for(k=0;k<n&&k<m.count&&custom_descriptor(&rows[n-1-k]);k++){}
@@ -582,6 +850,7 @@ static int page_key(unsigned int key){
   else if(key==KEY_OK||key==KEY_BACK||key==KEY_LEFT||key==KEY_RIGHT)m.log_view=0;
   render();return PK_DONE;
  }
+ if(m.drop_kind==DROP_BRIGHTNESS&&key<0x90){brightness_key(key);return PK_DONE;}
  if(m.drop_kind!=DROP_NONE&&key<0x90){
   if(key==KEY_UP)m.drop_sel=m.drop_sel?m.drop_sel-1:m.drop_count-1;
   else if(key==KEY_DOWN){m.drop_sel++;if(m.drop_sel>=m.drop_count)m.drop_sel=0;}
@@ -602,10 +871,9 @@ static void overlay_key(unsigned int key){
  if(key==KEY_NETFLIX){
   if(m.active&&m.overlay)close_child(0);
   else if(!m.active){
-   int fd;
-   m.overlay=1;m.kind=PAGE_HELPER;m.notice[0]=0;m.pending=0;ha_load(&hs);
+   m.overlay=1;m.kind=PAGE_HELPER;m.notice[0]=0;if(!brightness.active)m.pending=0;ha_load(&hs);
    if(create_child()!=0){m.overlay=0;return;}
-   fd=open(UB_OVERLAY_OPEN,O_WRONLY|O_CREAT|O_TRUNC,0600);if(fd>=0)close(fd);
+   if(overlay_renew())close_child(0);
   }
   return;
  }
@@ -617,7 +885,7 @@ static void overlay_key(unsigned int key){
 }
 static void ensure_timer(void){
  if(m.timer)return;
- unlink(UB_OVERLAY_OPEN);  /* none is open in a new apl_dispsrv */
+ unlink(UB_OVERLAY_OPEN);unlink(UB_OVERLAY_ABORT);  /* none is open in a new apl_dispsrv */
  m.timer=g_timeout_add(TIMER_MS,timer_tick,0);
 }
 /* apl_dispsrv's main message callback (gdk_input_add, UI thread): starts the

@@ -1,0 +1,24 @@
+{
+  "format": "ub820-ui-hooks-v1",
+  "program": "apl_medm",
+  "firmware": "1.82",
+  "sha256": "c092d29f3a16df117ae36d9ac915dd2dad87d1ea1fb9ca29bfcc7bb48d9971a4",
+  "payload_source": "launch.c",
+  "initialize_by_loader_only": true,
+  "hooks": [
+    {
+      "target": "0x14aec",
+      "replacement": "ub_hook_launch",
+      "original_pointer": "ub_original_launch",
+      "prototype": "int fn(uintptr_t *descriptor)",
+      "note": "Native FUN_00014ae0+0xc, after null and lifecycle guards and before push {r4,r5,lr}; sub sp,#0x4c. At this point r0 still holds descriptor, LR/SP unchanged. The entire 0x14ae0..0x14bc8 launcher is identical in both firmware. Only the exact BD path and non-debug launch use the replacement fork+execve branch. Descriptor slots: 2 debug selector string, 3 executable path, 4 argv, 6 child PID, 7 lifecycle. All other launches delegate the original trampoline."
+    }
+  ],
+  "bindings": [
+    {"symbol": "ub_debug_name", "value": "0xcdea0", "note": "Runtime debug selector string compared by the original launcher, not a guessed literal."}
+  ],
+  "variants": [
+    {"firmware":"1.85", "sha256":"c276565c1f7b57705bab32e0c9feaf16c008e660aa284e93022b818b896a99ca", "hooks":{"ub_hook_launch":"0x14aec"}, "bindings":{"ub_debug_name":"0xcdea0"}}
+  ],
+  "lifecycle": "Long-lived media manager; install before the next disc launch. It does not alter an already-running apl_bdv."
+}

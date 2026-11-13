@@ -4,8 +4,20 @@
 #include <stddef.h>
 extern const unsigned char ub_tool_ufs[];
 extern const size_t ub_tool_ufs_size;
+extern const unsigned char ub_tool_events[];
+extern const size_t ub_tool_events_size;
+extern const unsigned char ub_tool_cpu_wait[];
+extern const size_t ub_tool_cpu_wait_size;
 extern const unsigned char ub_tool_dropbear[];
 extern const size_t ub_tool_dropbear_size;
 extern const unsigned char ub_tool_dropbearkey[];
 extern const size_t ub_tool_dropbearkey_size;
+extern const unsigned char ub_tool_busybox[];
+extern const size_t ub_tool_busybox_size;
+extern const unsigned char ub_tool_sftp_server[];
+extern const size_t ub_tool_sftp_server_size;
+extern const unsigned char ub_tool_scp[];
+extern const size_t ub_tool_scp_size;
+extern const unsigned char ub_tool_dbclient[];
+extern const size_t ub_tool_dbclient_size;
 #endif

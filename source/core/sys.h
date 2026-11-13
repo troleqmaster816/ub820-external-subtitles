@@ -11,7 +11,7 @@
 #include <sys/types.h>
 #include <time.h>
 
-struct ub_stat { unsigned long long dev,ino; long long size,mtime; unsigned mode; };
+struct ub_stat { unsigned long long dev,ino; long long size,mtime; unsigned mode,uid,gid; };
 struct ub_dir { int fd,pos,len; char buf[4096] __attribute__((aligned(8))); };
 
 /* CLOCK_MONOTONIC */

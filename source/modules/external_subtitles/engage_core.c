@@ -18,7 +18,8 @@
  * real UI toggle event 0x8eb5 (sender 0xc3b5, ctl 0x39, arg 1) instead; the
  * handler FUN_00018544 toggles byte 5 on and draws.
  *
- * All paths are absolute.  No flash writes, no code patching, no signals.
+ * All paths are absolute. Code changes use a stopped-thread transaction.
+ * No flash writes.
  *
  * Build (device, static ARM):
  *   arm-linux-gnueabihf-gcc -static -Os -s -o engage engage.c
@@ -39,6 +40,8 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/syscall.h>
+#include "injector.h"
+#include "log.h"
 
 #ifndef EVT_PATH
 #define EVT_PATH "/usr/dtvrec/bin/evtSend"
@@ -122,7 +125,6 @@ static int mem_write_buf(int pid, unsigned long addr, const void *buf, size_t le
 #define STYLE_FG_ADDR   0x1eb76UL
 #define STYLE_TEXT_BG   0x1eb88UL
 #define STYLE_BAND      0x1ed3eUL
-#define LIBTIWIN_BASE_DEF 0x293a0000UL
 #define LIBTIWIN_OUTLINE  0x15462UL
 
 static const unsigned char style_font[22] = {
@@ -132,35 +134,48 @@ static const unsigned char style_fg[4] = { 0x4f, 0xf0, 0xff, 0x32 };
 /* MOVS low half must be zero: ff 22 encoded opaque BLUE 0xff0000ff. */
 static const unsigned char style_text_bg[6] = { 0x00, 0x22, 0xcf, 0xf6, 0x00, 0x72 };
 static const unsigned char style_band[6] = { 0x00, 0x22, 0xc0, 0xf2, 0x00, 0x02 };
-static const unsigned char style_outline = 0x04;
+/* Full instruction windows, including the outline MOVS: never patch a
+ * Thumb opcode byte separately while another thread can execute it. */
+static const unsigned char style_font_stock[22] = {
+ 0x5a,0x59,0x58,0x69,0x53,0x6f,0x6e,0x67,0x5f,0x47,0x42,
+ 0x31,0x38,0x30,0x33,0x30,0x5f,0x63,0x2e,0x74,0x74,0x66};
+static const unsigned char style_background_stock[6] = {0x50,0x22,0xc9,0xf2,0x00,0x02};
+static const unsigned char style_outline_stock[2] = {0x00,0x20};
+static const unsigned char style_outline[2] = {0x04,0x20};
+#ifndef UB_STYLE_PROC_ROOT
+#define UB_STYLE_PROC_ROOT "/proc"
+#endif
 
+/* Resolve the actual executable mapping and pin the backing library. No
+ * guessed base: a missing/unknown libtiwin disables the entire transaction. */
 static unsigned long libtiwin_base(int pid) {
-    static char buf[0x10000];
-    char path[32];
-    int fd;
-    ssize_t n;
-    char *p;
-    snprintf(path, sizeof path, "/proc/%d/maps", pid);
-    fd = open(path, O_RDONLY);
-    if (fd < 0) return 0;
-    n = read(fd, buf, sizeof buf - 1);
-    close(fd);
-    if (n <= 0) return 0;
-    buf[n] = 0;
-    p = buf;
-    while ((p = strstr(p, "libtiwin.so.0.0.0")) != NULL) {
-        char *ls = p;
-        char *perm;
-        while (ls > buf && ls[-1] != '\n') ls--;
-        perm = strstr(ls, " r-xp ");
-        if (perm && perm < p) {
-            unsigned long start = strtoul(ls, NULL, 16);
-            unsigned long off = strtoul(perm + 6, NULL, 16);
-            if (off == 0) return start;
-        }
-        p++;
-    }
-    return 0;
+ static char buf[0x10000];char path[64],name[512],perms[8],digest[65];
+ unsigned long start,end,offset;int fd;ssize_t n;size_t used=0;char *line,*next;
+ snprintf(path,sizeof path,UB_STYLE_PROC_ROOT "/%d/maps",pid);
+ fd=open(path,O_RDONLY);if(fd<0)return 0;
+ /* proc seq_file may return one page even when the buffer is much larger.
+  * libtiwin commonly appears beyond that first page: consume through EOF. */
+ while(used<sizeof(buf)-1){
+  n=read(fd,buf+used,sizeof(buf)-1-used);
+  if(n<0){if(errno==EINTR)continue;close(fd);return 0;}
+  if(!n)break;
+  used+=(size_t)n;
+ }
+ close(fd);
+ if(!used || used==sizeof(buf)-1){ub_log("external_subtitles",UB_ALWAYS,"Cannot read complete maps for style PID%d; skipped",pid);return 0;}
+ buf[used]=0;
+ for(line=buf;line && *line;line=next) {
+  next=strchr(line,'\n');if(next)*next++=0;
+  name[0]=0;
+  if(sscanf(line,"%lx-%lx %7s %lx %*s %*s %511[^\n]",&start,&end,perms,&offset,name)!=5)continue;
+  const char *base=strrchr(name,'/');
+  if(!base || strcmp(base+1,"libtiwin.so.0.0.0") || strcmp(perms,"r-xp") || offset)continue;
+  if(ub_hash_file(name,digest)){ub_log("external_subtitles",UB_ALWAYS,"Cannot hash style library %s; skipped",name);return 0;}
+  if(strcmp(digest,"6d2216fcd15814defdfc2357ddb5b517bf85398d26d1f530d61bed22087994bf") &&
+     strcmp(digest,"2ab151241aa18d6f9817aa3510bc6610c84c49af2e943e8ed920175583d0d6c0")){ub_log("external_subtitles",UB_ALWAYS,"Style library %s has an unknown hash; skipped",name);return 0;}
+  return start;
+ }
+ ub_log("external_subtitles",UB_ALWAYS,"No verified libtiwin executable mapping for style PID%d",pid);return 0;
 }
 
 static void font_size_set(void) {
@@ -171,31 +186,19 @@ static void font_size_set(void) {
     }
 }
 
-static int style_site(int pid, unsigned long addr, const unsigned char *want,
-                      size_t len) {
-    unsigned char cur[32];
-    int i, same = 1;
-    if (mem_read_buf(pid, addr, cur, len) != 0) return -1;
-    for (i = 0; i < (int)len; i++)
-        if (cur[i] != want[i]) { same = 0; break; }
-    if (same) return 0;
-    if (mem_write_buf(pid, addr, want, len) != 0) return -1;
-    if (mem_read_buf(pid, addr, cur, len) != 0) return -1;
-    for (i = 0; i < (int)len; i++)
-        if (cur[i] != want[i]) return -1;
-    return 0;
+static int style_patch_specs(int pid,struct ub_code_patch patches[5]) {
+ unsigned long ti=libtiwin_base(pid);if(!ti || ti>0xffffffffUL-LIBTIWIN_OUTLINE)return -1;
+ patches[0]=(struct ub_code_patch){STYLE_FONT_ADDR,sizeof style_font,style_font_stock,0,style_font};
+ patches[1]=(struct ub_code_patch){STYLE_FG_ADDR,sizeof style_fg,style_fg,0,style_fg};
+ patches[2]=(struct ub_code_patch){STYLE_TEXT_BG,sizeof style_text_bg,style_background_stock,0,style_text_bg};
+ patches[3]=(struct ub_code_patch){STYLE_BAND,sizeof style_band,style_background_stock,0,style_band};
+ patches[4]=(struct ub_code_patch){(uint32_t)(ti+LIBTIWIN_OUTLINE),sizeof style_outline,style_outline_stock,0,style_outline};
+ return 0;
 }
-
 static int style_patch(int pid) {
-    unsigned long ti = libtiwin_base(pid);
-    int ok = 1;
-    if (!ti) ti = LIBTIWIN_BASE_DEF;
-    if (style_site(pid, STYLE_FONT_ADDR, style_font, sizeof style_font) != 0) ok = 0;
-    if (style_site(pid, STYLE_FG_ADDR, style_fg, sizeof style_fg) != 0) ok = 0;
-    if (style_site(pid, STYLE_TEXT_BG, style_text_bg, sizeof style_text_bg) != 0) ok = 0;
-    if (style_site(pid, STYLE_BAND, style_band, sizeof style_band) != 0) ok = 0;
-    if (style_site(pid, ti + LIBTIWIN_OUTLINE, &style_outline, 1) != 0) ok = 0;
-    return ok ? 0 : -1;
+ struct ub_code_patch patches[5];
+ if(style_patch_specs(pid,patches))return -3;
+ return ub_patch_code(pid,patches,5);
 }
 
 static int find_bdplay(void) {

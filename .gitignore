@@ -4,3 +4,7 @@ __pycache__/
 *.pyc
 USB-CONTENTS/sub/ssh_password
 USB-CONTENTS/sub/authorized_keys
+
+# Local diagnostics, device captures and review reports are not project docs.
+/analysis/
+/docs/firmware-analysis/
