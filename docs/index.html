@@ -95,10 +95,10 @@ On remotes without that button, use <strong>Player Settings &gt; System &gt; UB8
 </table></div>
 <h2 id="setup">Setup</h2>
 <p>You need a <strong>FAT32 USB stick</strong> and a DP-UB820 running supported firmware.
-For a first install, use the repository's <code>USB-CONTENTS</code> folder; the release
-ZIP only updates an existing stick.</p>
+The release ZIP contains the loader and <code>sub</code> folder, ready to copy to the stick.</p>
 <ol>
-<li>Copy the contents of <a href="https://github.com/troleqmaster816/ub820-external-subtitles/tree/main/USB-CONTENTS"><code>USB-CONTENTS/</code></a> to the stick's root.
+<li>Extract the release ZIP to the stick's root, or copy the contents of
+   <a href="https://github.com/troleqmaster816/ub820-external-subtitles/tree/main/USB-CONTENTS"><code>USB-CONTENTS/</code></a>.
    Keep <code>LOADER.MKV</code> beside the <code>sub</code> folder.</li>
 <li>Put your <code>.srt</code> files anywhere on the stick. Subfolders work.</li>
 <li>Start with a fresh player session. If Quick Start is enabled, unplug the
@@ -111,8 +111,8 @@ ZIP only updates an existing stick.</p>
 may keep it running. Leave the stick connected while using external subtitles
 or saving settings.</p>
 <h3 id="updating-an-existing-stick">Updating an existing stick</h3>
-<p>The release ZIP contains the updated <code>sub</code> files, not the loader. Replace
-<strong><code>sub/engage</code></strong>, keep your existing configuration and SSH credentials, and
+<p>The release ZIP also works for a fresh install. To update an existing stick,
+replace <strong><code>sub/engage</code></strong>, keep your existing configuration and SSH credentials, and
 fully restart the player before launching the helper again. The included
 <code>modules.cfg</code> is a fresh-default example; you do not need to replace your own.</p>
 <h2 id="external-subtitles">External subtitles</h2>

@@ -20,10 +20,10 @@ On remotes without that button, use **Player Settings > System > UB820 Helper**.
 ## Setup
 
 You need a **FAT32 USB stick** and a DP-UB820 running supported firmware.
-For a first install, use the repository's `USB-CONTENTS` folder; the release
-ZIP only updates an existing stick.
+The release ZIP contains the loader and `sub` folder, ready to copy to the stick.
 
-1. Copy the contents of [`USB-CONTENTS/`](USB-CONTENTS) to the stick's root.
+1. Extract the release ZIP to the stick's root, or copy the contents of
+   [`USB-CONTENTS/`](USB-CONTENTS).
    Keep `LOADER.MKV` beside the `sub` folder.
 2. Put your `.srt` files anywhere on the stick. Subfolders work.
 3. Start with a fresh player session. If Quick Start is enabled, unplug the
@@ -38,8 +38,8 @@ or saving settings.
 
 ### Updating an existing stick
 
-The release ZIP contains the updated `sub` files, not the loader. Replace
-**`sub/engage`**, keep your existing configuration and SSH credentials, and
+The release ZIP also works for a fresh install. To update an existing stick,
+replace **`sub/engage`**, keep your existing configuration and SSH credentials, and
 fully restart the player before launching the helper again. The included
 `modules.cfg` is a fresh-default example; you do not need to replace your own.
 
