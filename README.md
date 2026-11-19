@@ -67,6 +67,12 @@ player's **Subtitle Luminance** setting for disc subtitles.
 Fractional subtitle timing is enabled by default, avoiding the stock engine's
 whole-second timing steps.
 
+In source since 0.2 (not yet in a release): if the player's subtitle settings
+file is busy when you choose the first file, the menu asks you to try again
+instead of starting with subtitles Off. Subtitle style is reapplied until it
+takes effect, and a session left open after a failed automatic load is closed
+when playback ends.
+
 ## UB820 Helper
 
 Open Helper from **OPTIONS**, **Player Settings > System**, or the **Netflix**
@@ -89,6 +95,21 @@ button. Press Netflix again or **Return** to close the overlay.
 Menu choices are saved in **`sub/ub820_menu.cfg`**. If saving fails, the menu
 says so; the new setting may last only until the player restarts.
 
+In source since 0.2 (not yet in a release):
+
+- **USB saving and recovery:** files written by the helper are saved as
+  `<name>.new`, the previous file is moved to `<name>.old`, the new file takes
+  its place, and `.old` is removed. If a save is interrupted, the previous copy
+  is read back at the next start. If a stray parked copy is present, the helper
+  keeps menu choices in RAM rather than overwriting the stick. `modules.cfg`
+  and SSH files are never read from a backup copy. In `sub/ub820_menu.cfg`, the
+  last of repeated keys wins, and a file over 256 lines is not rewritten.
+- **Retries and status:** after a failed save, choosing the same value again
+  retries saving for **Auto power-off**, **Netflix button**, **Blu-ray region**
+  and **DVD region**. **Auto power-off** keeps showing `(not saved)` until
+  saved, and "retrying" notices update once the retry succeeds. If two DVDs are
+  mounted at once, each keeps its own region result.
+
 ## Configuration
 
 Edit [`sub/modules.cfg`](USB-CONTENTS/sub/modules.cfg) to enable modules or
@@ -100,6 +121,17 @@ The supplied defaults enable external subtitles, Helper menus, region controls,
 the Netflix shortcut and the helper log. Regions stay at **Player default**,
 text brightness is **100%**, and automatic idle shutdown stays **On**.
 **The SSH and CPU modules, CPU optimization and detailed diagnostics are off.**
+
+In source since 0.2 (not yet in a release): a new `native_events` module is
+enabled by default (independent of `[region]`). It prepares a pre-main preload
+for Blu-ray, DVD playback and Player Settings so interrupted native event waits
+are retried instead of tearing down the player's setting database. To turn it
+off in `sub/modules.cfg`:
+
+```ini
+[native_events]
+enabled=0
+```
 
 ### CPU optimization
 
@@ -119,6 +151,18 @@ This is experimental. Short tests on 1.82 covered menus, the remote, the front-p
 Eject button, Blu-ray playback, external subtitles, pause, seeking and chapters.
 Long playback, power/standby and CEC still need testing. CPU optimization has
 not been tested on a 1.85 player.
+
+In source since 0.2 (not yet in a release): opening the Helper page no longer
+cancels an automatic startup retry. When a saved **On** is applied automatically
+at start, the helper writes `auto_on_armed=1` under `[cpu]` in
+`sub/ub820_menu.cfg` and clears it only after a fresh check 30 minutes later
+still finds optimization **On**, or when you choose **Off**; a failed USB clear
+is retried every minute. If the marker is still set at the next start, or if
+`sub/ub820_menu.cfg` was unreadable at startup, automatic **On** is skipped and
+**On** can still be chosen manually. If the kernel component reports an
+unexpected state while its identity is verified, choosing **Off** still restores
+the original instructions. See the
+[CPU module documentation](source/modules/cpu/README.md) for details.
 
 ### SSH
 
@@ -150,6 +194,8 @@ Logs go to `sub/ub820_submenu.log`; the previous session is kept as
 `sub/ub820_submenu.prev.log`. If it cannot preserve the previous log there,
 the helper uses a separate filename and reports it. Set `diagnostics=1` for
 player crashes, stuck threads and kernel messages. Logging begins with the helper.
+In source since 0.2 (not yet in a release), `diagnostics=1` also enables native
+event-library error details for later Blu-ray launches.
 
 ## Compatibility and limits
 
@@ -165,6 +211,14 @@ player crashes, stuck threads and kernel messages. Logging begins with the helpe
   not handle region checks written in BD-J. Choose a region letter for those discs.
 - The file browser shows up to **64 entries per folder** and supports full paths
   up to **250 bytes**. The selected subtitle file is remembered for that playback.
+- **Unreleased changes in source since 0.2:** the prebuilt
+  `USB-CONTENTS/sub/engage` is still 0.2. On a 1.82 player, Blu-ray playback
+  with external `.srt` subtitles and retry of an interrupted native event wait
+  have been exercised against this source; Player Settings, DVD playback, CPU
+  optimization, region changes, auto power-off, the new USB write/recovery
+  scheme for `ub820_menu.cfg`, and firmware 1.85 have not yet been tested on
+  hardware. A native event wait already in progress in the media manager when
+  the helper starts cannot be protected retroactively.
 
 ## Troubleshooting
 
@@ -180,7 +234,7 @@ player crashes, stuck threads and kernel messages. Logging begins with the helpe
 ## Source and license
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for building and module development.
-The prebuilt helper is `USB-CONTENTS/sub/engage`.
+The prebuilt helper is `USB-CONTENTS/sub/engage` (currently release 0.2).
 
 The helper is [MIT-licensed](LICENSE). Bundled components retain their own
 licenses: [SSH tools and BusyBox](source/tools/ssh/README.md),
