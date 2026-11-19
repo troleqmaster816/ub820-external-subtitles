@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #define UB_HOST_TEST 1
 #define UB_STYLE_PROC_ROOT "/tmp/ub820-subtitle-style-test"
+#define UB_DISC_STYLE_FONT_FILE UB_STYLE_PROC_ROOT "/font"
 #include <unistd.h>
 static ssize_t chunked_read(int,void *,size_t);
 #define read chunked_read
@@ -72,7 +73,15 @@ int main(void){
  assert(fputs("293a0000-293d8000 r-xp 00000000 00:01 1 /known/libtiwin.so.0.0.0\n",file)>=0);
  for(int i=0;i<2000;i++)assert(fputs("28000000-28010000 r-xp 00000000 00:01 2 /known/other.so\n",file)>=0);
  assert(!fclose(file));assert(style_patch(42)==-3);assert(transactions==3);
+ /* Calibration is published whole by rename and reports failure. */
+ assert(!font_size_set());file=fopen(UB_DISC_STYLE_FONT_FILE,"r");assert(file);char value[16]={0};
+ assert(fread(value,1,sizeof value-1,file)==4&&!strcmp(value,"122\n"));fclose(file);
+ assert(access(UB_DISC_STYLE_FONT_FILE ".tmp",F_OK));
+ assert(!mkdir(UB_DISC_STYLE_FONT_FILE ".tmp",0700));disc_style.font_percent=130;assert(font_size_set()<0);
+ file=fopen(UB_DISC_STYLE_FONT_FILE,"r");assert(file);memset(value,0,sizeof value);
+ assert(fread(value,1,sizeof value-1,file)==4&&!strcmp(value,"122\n"));fclose(file); /* previous value intact */
+ rmdir(UB_DISC_STYLE_FONT_FILE ".tmp");unlink(UB_DISC_STYLE_FONT_FILE);
  unlink(UB_STYLE_PROC_ROOT "/42/maps");rmdir(UB_STYLE_PROC_ROOT "/42");rmdir(UB_STYLE_PROC_ROOT);
- puts("subtitle_style_test passed: six-site transaction; hash/base rejection; short reads/EINTR; truncation rejected");
+ puts("subtitle_style_test passed: six-site transaction; hash/base rejection; short reads/EINTR; truncation rejected; calibration by rename with failure reported");
  return 0;
 }

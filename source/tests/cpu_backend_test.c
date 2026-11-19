@@ -65,7 +65,7 @@ static int fixture_flock(int,int);
 
 static const char fixture_boot[]="00000000-0000-4000-8000-000000000001";
 static int module_present,native_mode,node_fd[4096],loads,ons,offs,short_on,short_off,partial_on,stale_on,bad_state,save_calls,save_rc,forks,wait_ready;
-static int off_no_effect,manual_off_during_on,disable_during_on;
+static int off_no_effect,manual_off_during_on,disable_during_on,wait_echild,rejected_flag;
 static int lease_signal_fd=-1,blocking_locks,cleanup_advance_time;
 static uint64_t now_ms=100000;
 const unsigned char ub_tool_cpu_wait[UB_CPU_ARTIFACT_BYTES]={0};
@@ -82,7 +82,7 @@ static void fixture_kcore(void){
 }
 static void fixture_status_file(void){
  char text[512];int phase=native_mode;
- int n=snprintf(text,sizeof text,"cpu_wait=1 build=1.82 phase=%d pinned_until_reset=%d intended_enabled=%d rc=0 fault=%d begin_rc=0\nfpd pid=9001 bypass=%d rejected=0 observed_task_state=0\nantena pid=9002 bypass=%d rejected=0 observed_task_state=0\n",phase,phase!=0,phase==1,bad_state,phase!=1,phase!=1);
+ int n=snprintf(text,sizeof text,"cpu_wait=1 build=1.82 phase=%d pinned_until_reset=%d intended_enabled=%d rc=0 fault=%d begin_rc=0\nfpd pid=9001 bypass=%d rejected=%d observed_task_state=0\nantena pid=9002 bypass=%d rejected=0 observed_task_state=0\n",phase,phase!=0,phase==1,bad_state,phase!=1,rejected_flag,phase!=1);
  int fd=open("./native",O_WRONLY|O_CREAT|O_TRUNC,0600);assert(fd>=0&&write(fd,text,(size_t)n)==n&&!close(fd));
 }
 static int fixture_open(const char *path,int flags,...){
@@ -95,7 +95,8 @@ static int fixture_close(int fd){if(fd>=0&&fd<4096)node_fd[fd]=0;return close(fd
 static ssize_t fixture_write(int fd,const void *data,size_t n){
  if(fd>=0&&fd<4096&&node_fd[fd]){
   if(n==3&&!memcmp(data,"ON\n",3)){ons++;native_mode=partial_on?2:1;if(partial_on)bad_state=1;fixture_kcore();if(stale_on){struct cpu_owner latest;assert(!read_record(OWNER,&latest,sizeof latest));latest.enabled=0;latest.desired=0;latest.token[0]^=1;assert(!atomic_file(OWNER,&latest,sizeof latest,1));}if(manual_off_during_on)handle_request(CPU_OFF,2,"./reply.2",112);if(disable_during_on)disabled_step(0);if(partial_on){errno=EIO;return -1;}return short_on?2:3;}
-  if(n==4&&!memcmp(data,"OFF\n",4)){offs++;if(off_no_effect){errno=EINTR;return off_no_effect==1?-1:2;}native_mode=3;fixture_kcore();return short_off?2:4;}
+  /* rw15_off success clears the controller fault; a context rejection is sticky */
+  if(n==4&&!memcmp(data,"OFF\n",4)){offs++;if(off_no_effect){errno=EINTR;return off_no_effect==1?-1:2;}native_mode=3;bad_state=0;fixture_kcore();return short_off?2:4;}
   assert(!"unexpected native command");return -1;
  }
  return write(fd,data,n);
@@ -104,7 +105,7 @@ static long fixture_syscall(long number,...){assert(number==SYS_init_module);loa
 static int fixture_uname(struct utsname *u){memset(u,0,sizeof *u);strcpy(u->release,"4.4.8");strcpy(u->machine,"armv8l");return 0;}
 static int fixture_statfs(const char *p,struct statfs *s){assert(!strcmp(p,"/tmp"));memset(s,0,sizeof *s);s->f_type=0x01021994;return 0;}
 static pid_t fixture_fork(void){forks++;wait_ready=0;return 40000+forks;}
-static pid_t fixture_waitpid(pid_t pid,int *status,int options){assert(pid==pending.pid&&options==WNOHANG);if(!wait_ready)return 0;*status=0;return pid;}
+static pid_t fixture_waitpid(pid_t pid,int *status,int options){assert(pid==pending.pid&&options==WNOHANG);if(wait_echild){errno=ECHILD;return -1;}if(!wait_ready)return 0;*status=0;return pid;}
 static int fixture_flock(int fd,int operation){
  if(operation==LOCK_EX){blocking_locks++;if(lease_signal_fd>=0){assert(write(lease_signal_fd,"w",1)==1);assert(!close(lease_signal_fd));lease_signal_fd=-1;}}
  int rc=flock(fd,operation);if(operation==LOCK_EX&&cleanup_advance_time)now_ms=200000;return rc;
@@ -131,15 +132,24 @@ int ub_dir_open(struct ub_dir *d,const char *p){(void)d;(void)p;return -1;}
 const char *ub_dir_next(struct ub_dir *d){(void)d;return 0;}
 void ub_dir_close(struct ub_dir *d){(void)d;}
 void ub_log(const char *m,int l,const char *f,...){(void)m;(void)l;(void)f;}
-int ub_setting_set(const char *m,const char *k,const char *v){assert(!strcmp(m,"cpu")&&!strcmp(k,"optimize"));save_calls++;optimize=!strcmp(v,"on");return save_rc;}
+static int arm_calls,arm_rc,menu_known_at_boot;
+int ub_menu_known_at_start(void){return menu_known_at_boot;}
+int ub_setting_set(const char *m,const char *k,const char *v){
+ assert(!strcmp(m,"cpu"));
+ if(!strcmp(k,"auto_on_armed")){arm_calls++;armed=!strcmp(v,"1");return arm_rc;} /* applied, then the USB result */
+ assert(!strcmp(k,"optimize"));save_calls++;optimize=!strcmp(v,"on");return save_rc;
+}
 const char *ub_stick_error(int n){(void)n;return "fixture";}
+int ub_child_sanitize(unsigned keep){(void)keep;return 0;}
+int ub_setting_set_saved(const char *m,const char *k,const char *v){int old=armed;int rc=ub_setting_set(m,k,v);if(rc)armed=old;return rc;}
 
 static void reset_fixture(void){
  if(pending.job[0])unlink(pending.job);
  if(pending.result[0])unlink(pending.result);
  memset(&pending,0,sizeof pending);
  unlink(OWNER);unlink(RECEIPT);unlink(LATCH);unlink(LOCK);module_present=native_mode=loads=ons=offs=short_on=short_off=partial_on=stale_on=bad_state=save_calls=save_rc=forks=wait_ready=blocking_locks=cleanup_advance_time=0;lease_signal_fd=-1;
- off_no_effect=manual_off_during_on=disable_during_on=0;
+ off_no_effect=manual_off_during_on=disable_during_on=wait_echild=rejected_flag=0;
+ armed=armed_here=arm_calls=arm_rc=marker_clear_pending=0;healthy_at=busy_retry_at=marker_retry_at=0;busy_retries=0;menu_known_at_boot=1;
  module_enabled=started=1;effective=-1;optimize=automatic_pending=automatic_blocked=cleanup_pending=0;now_ms=100000;
  memset(node_fd,0,sizeof node_fd);memset(&owner,0,sizeof owner);owner.magic=UB_CPU_MAGIC;owner.version=UB_CPU_VERSION;owner.pid=(unsigned)getpid();owner.born=500;owner.enabled=1;owner.desired=1;memcpy(owner.boot,fixture_boot,37);owner.token[0]=17;assert(!atomic_file(OWNER,&owner,sizeof owner,1));fixture_kcore();
 }
@@ -208,24 +218,162 @@ static void blocking_cleanup_test(int supersede_on){
  if(supersede_on){assert(r.mode==1&&offs==0&&native_mode==1);puts("PASS cleanup respects a newer On policy published while waiting for the lease");}
  else{assert(r.mode==0&&offs==1&&native_mode==3&&now_ms==200000);puts("PASS single cleanup waits for lease release then verifies Off after its parent deadline");}
 }
-int main(void){
- char dir[]="/tmp/ub820-cpu-own-fixture-XXXXXX";assert(mkdtemp(dir)&&!chdir(dir));parser_tests();struct cpu_result r;
+/* A kernel anomaly (PARTIAL/fault, or a sticky context rejection) leaves
+ * identity verifiable: an explicit Off reaches rw15_off; automatic paths
+ * never write. Without a verified identity Off stays refused. */
+static void anomaly_off_test(void){
+ struct cpu_result r;
+ reset_fixture();partial_on=1;r=trial(CPU_ON);assert(r.mode==-1&&r.code==CPU_UNCERTAIN&&ons==1&&native_mode==2&&latch_pending(owner.boot)&&strstr(r.message,"select Off"));
+ r=trial(CPU_QUERY);assert(r.mode==-1&&r.code==CPU_UNCERTAIN&&strstr(r.message,"select Off")&&!offs);
+ owner.desired=0;assert(!atomic_file(OWNER,&owner,sizeof owner,1));
+ r=trial(CPU_RECONCILE);assert(r.mode==-1&&!offs&&!r.off_attempted&&latch_pending(owner.boot));
+ r=trial(CPU_OFF);assert(r.mode==0&&!r.code&&r.off_attempted&&offs==1&&native_mode==3&&!latch_pending(owner.boot));
+ r=trial(CPU_QUERY);assert(r.mode==0&&!r.code);
+ /* sticky rejection while On: Off restores stock code and reports Off; On stays refused */
+ reset_fixture();owned_inert();r=trial(CPU_ON);assert(r.mode==1&&ons==1);rejected_flag=1;
+ r=trial(CPU_QUERY);assert(r.mode==-1&&strstr(r.message,"select Off"));
+ owner.desired=0;assert(!atomic_file(OWNER,&owner,sizeof owner,1));
+ r=trial(CPU_OFF);assert(r.mode==0&&!r.code&&offs==1&&!latch_pending(owner.boot));
+ r=trial(CPU_QUERY);assert(r.mode==0&&!r.code);
+ owner.desired=1;assert(!atomic_file(OWNER,&owner,sizeof owner,1));
+ r=trial(CPU_ON);assert(r.code&&r.mode==-1&&ons==1&&!latch_pending(owner.boot));
+ /* identity not verifiable (receipt lost while pinned): never written */
+ reset_fixture();partial_on=1;r=trial(CPU_ON);assert(!unlink(RECEIPT));owner.desired=0;assert(!atomic_file(OWNER,&owner,sizeof owner,1));
+ r=trial(CPU_OFF);assert(r.mode==-1&&!offs&&strstr(r.message,"restart player required"));
+ puts("PASS kernel anomaly with verified identity: explicit Off reaches rw15_off; automatic paths and unverified identity never write");
+}
+/* A failure between init_module and the receipt: the provably inert resident
+ * module is adopted with a new receipt; an activated one never is. */
+static void adoption_test(void){
+ struct cpu_result r;struct cpu_receipt rec;
+ reset_fixture();assert(!mkdir(RECEIPT,0700));r=trial(CPU_ON);assert(r.mode==-1&&loads==1&&!ons&&module_present);assert(!rmdir(RECEIPT));
+ r=trial(CPU_QUERY);assert(r.mode==0&&!r.code&&!read_record(RECEIPT,&rec,sizeof rec)&&rec.base==UINT64_C(0xffffffbffc0d0000));
+ r=trial(CPU_OFF);assert(r.mode==0&&!offs&&!latch_pending(owner.boot)); /* the failed attempt's latch: Off clears it without a write */
+ r=trial(CPU_ON);assert(r.mode==1&&!r.code&&loads==1&&ons==1);
+ assert(!unlink(RECEIPT));r=trial(CPU_QUERY);assert(r.mode==-1&&access(RECEIPT,F_OK));
+ r=trial(CPU_ON);assert(r.mode==-1&&ons==1&&loads==1);
+ puts("PASS inert resident module without receipt is adopted; an activated one never is");
+}
+/* RW15_ALREADY (rc=1) is the kernel's successful no-op. */
+static void already_test(void){
+ struct cpu_native s;
+ assert(!native_parse("cpu_wait=1 build=1.82 phase=1 pinned_until_reset=1 intended_enabled=1 rc=1 fault=0 begin_rc=0\nfpd pid=11 bypass=0 rejected=0 observed_task_state=0\nantena pid=12 bypass=0 rejected=0 observed_task_state=0\n",&s)&&cpu_native_mode(&s)==1);
+ assert(!native_parse("cpu_wait=1 build=1.85 phase=0 pinned_until_reset=0 intended_enabled=0 rc=1 fault=0 begin_rc=0\nfpd pid=11 bypass=1 rejected=0 observed_task_state=0\nantena pid=12 bypass=1 rejected=0 observed_task_state=0\n",&s)&&cpu_native_mode(&s)==0);
+ s.rc=-1;assert(cpu_native_mode(&s)==-1);s.rc=2;assert(cpu_native_mode(&s)==-1);
+ puts("PASS RW15_ALREADY is success; other kernel results stay unknown");
+}
+/* ECHILD (inherited SIGCHLD ignore) with a valid nonce-bound result. */
+static void echild_test(void){
+ reset_fixture();wait_echild=1;assert(!begin(CPU_ON,1,1,"./reply.1",110));completed(1,CPU_OK,0);poll_worker();assert(!pending.active&&effective==1&&save_calls==1);
+ reset_fixture();wait_echild=1;assert(!begin(CPU_ON,1,1,"./reply.1",110));poll_worker();assert(!pending.active&&effective==-1&&!save_calls&&automatic_blocked);
+ unlink("./reply.1");puts("PASS ECHILD accepts a valid result file; none is still a failure");
+}
+/* A busy device at startup is retried a bounded number of times. */
+static void busy_retry_test(void){
+ unsigned i;int before;
+ reset_fixture();optimize=1;automatic_pending=1;assert(!begin(CPU_QUERY,0,0,0,0));completed(-1,CPU_BUSY,0);poll_worker();
+ assert(!pending.active&&forks==1&&!automatic_blocked);
+ step(0,0);assert(forks==1);
+ now_ms+=5000;step(0,0);assert(pending.active&&pending.operation==CPU_QUERY&&forks==2);
+ completed(0,CPU_OK,0);poll_worker();assert(pending.active&&pending.operation==CPU_ON&&forks==3);
+ completed(-1,CPU_BUSY,1);poll_worker();assert(!pending.active&&!automatic_blocked); /* the automatic On found it busy */
+ now_ms+=5000;step(0,0);assert(pending.active&&pending.operation==CPU_QUERY&&forks==4);
+ for(i=0;i<10&&pending.active;i++){completed(-1,CPU_BUSY,0);poll_worker();now_ms+=5000;step(0,0);}
+ assert(!pending.active);before=forks;now_ms+=60000;step(0,0);step(0,0);assert(forks==before&&forks<=8);
+ /* A page-open GET in the retry window reads only: the automatic retry
+  * still runs and can still apply the saved On. */
+ reset_fixture();optimize=1;automatic_pending=1;assert(!begin(CPU_QUERY,0,0,0,0));completed(-1,CPU_BUSY,0);poll_worker();assert(busy_retry_at&&forks==1);
+ handle_request(CPU_QUERY,1,"./menu.1",115);assert(busy_retry_at&&pending.active&&forks==2);
+ completed(0,CPU_OK,0);poll_worker();assert(!pending.active&&effective==0&&busy_retry_at);
+ now_ms+=5000;step(0,0);assert(pending.active&&pending.operation==CPU_QUERY&&automatic_pending&&forks==3);
+ completed(0,CPU_OK,0);poll_worker();assert(pending.active&&pending.operation==CPU_ON&&forks==4);unlink("./menu.1");
+ /* Off can also arrive while that page-open GET is still running. A BUSY
+  * reply to the deferred Off must not revive the older automatic On. */
+ reset_fixture();optimize=1;automatic_pending=1;assert(!begin(CPU_QUERY,0,0,0,0));completed(-1,CPU_BUSY,0);poll_worker();
+ handle_request(CPU_QUERY,1,"./menu.1",115);handle_request(CPU_OFF,2,"./menu.2",115);
+ assert(pending.deferred_off);completed(1,CPU_OK,0);poll_worker();assert(pending.active&&pending.operation==CPU_OFF);
+ completed(-1,CPU_BUSY,0);poll_worker();assert(!pending.active);
+ now_ms+=5000;step(0,0);assert(!pending.active&&forks==3);unlink("./menu.1");unlink("./menu.2");
+ unlink(UB_CPU_ENABLED);unlink(UB_CPU_STATUS);puts("PASS busy startup is retried from a fresh query, a bounded number of times; a page-open GET does not cancel it");
+}
+/* Disabled (default): no worker and no /proc/kcore read when nothing is resident. */
+static void disabled_start_test(void){
+ reset_fixture();started=0;module_enabled=1;disabled_step(0);assert(!pending.active&&forks==0);
+ reset_fixture();owned_inert();started=0;module_enabled=1;disabled_step(0);assert(pending.active&&pending.operation==CPU_RECONCILE&&forks==1);
+ reset_fixture();puts("PASS disabled start forks no worker unless a module is resident or an activation is latched");
+}
+/* The USB breaker across boots for the automatic On. */
+static void armed_test(void){
+ reset_fixture();optimize=1;automatic_pending=1;assert(!begin(CPU_QUERY,0,0,0,0));completed(0,CPU_OK,0);poll_worker();
+ assert(arm_calls==1&&armed==1&&pending.active&&pending.operation==CPU_ON&&forks==2); /* armed on USB before the On */
+ completed(1,CPU_OK,0);poll_worker();assert(effective==1&&armed==1&&!save_calls);
+ now_ms+=CPU_HEALTHY_MS-1;step(0,0);assert(armed==1&&arm_calls==1&&forks==2);
+ /* At the end of the interval a fresh query decides, not the last result. */
+ now_ms+=2;step(0,0);assert(armed==1&&arm_calls==1&&pending.active&&pending.operation==CPU_QUERY&&forks==3);
+ completed(1,CPU_OK,0);poll_worker();assert(armed==0&&arm_calls==2&&!healthy_at); /* cleared after a healthy interval */
+ /* The fresh query finds it Off: the marker stays. */
+ reset_fixture();armed=1;armed_here=1;effective=1;healthy_at=now_ms+CPU_HEALTHY_MS;
+ now_ms+=CPU_HEALTHY_MS;step(0,0);assert(pending.active&&forks==1);completed(0,CPU_OK,0);poll_worker();assert(armed==1&&!arm_calls);
+ /* A busy health check retries a read; finding Off cannot trigger an On. */
+ reset_fixture();armed=armed_here=optimize=effective=1;healthy_at=now_ms;
+ step(0,0);assert(pending.health_check);completed(-1,CPU_BUSY,0);poll_worker();
+ assert(healthy_at>now_ms&&!busy_retry_at);
+ now_ms=healthy_at;step(0,0);assert(pending.health_check&&pending.operation==CPU_QUERY);
+ completed(0,CPU_OK,0);poll_worker();assert(!pending.active&&armed&&!arm_calls&&forks==2);
+ /* The original breaker value is unknown even if USB is writable by now. */
+ reset_fixture();menu_known_at_boot=0;optimize=automatic_pending=1;
+ assert(!begin(CPU_QUERY,0,0,0,0));completed(0,CPU_OK,0);poll_worker();
+ assert(!pending.active&&!arm_calls&&forks==1&&strstr(message,"unreadable at startup"));
+ /* The clear is not saved: retried until the USB takes it. */
+ reset_fixture();armed=1;armed_here=1;effective=1;healthy_at=now_ms+CPU_HEALTHY_MS;arm_rc=4;
+ now_ms+=CPU_HEALTHY_MS;step(0,0);completed(1,CPU_OK,0);poll_worker();assert(arm_calls==1&&marker_clear_pending);
+ step(0,0);assert(arm_calls==1);arm_rc=0;now_ms+=CPU_MARKER_RETRY_MS;step(0,0);assert(arm_calls==2&&!marker_clear_pending&&!armed);
+ /* The same for an orderly Off whose save fails. */
+ reset_fixture();armed=1;arm_rc=4;effective=1;handle_request(CPU_OFF,4,"./reply.4",112);completed(0,CPU_OK,0);poll_worker();
+ assert(effective==0&&arm_calls==1&&marker_clear_pending);arm_rc=0;now_ms+=CPU_MARKER_RETRY_MS;step(0,0);assert(arm_calls==2&&!marker_clear_pending);unlink("./reply.4");
+ /* left set by an earlier run: no automatic On at start; manual On still works */
+ reset_fixture();armed=1;optimize=1;automatic_pending=1;assert(!begin(CPU_QUERY,0,0,0,0));completed(0,CPU_OK,0);poll_worker();
+ assert(!pending.active&&forks==1&&!arm_calls&&effective==0&&strstr(message,"automatic On skipped"));
+ handle_request(CPU_ON,2,"./reply.2",112);assert(pending.active&&forks==2);completed(1,CPU_OK,0);poll_worker();assert(effective==1&&save_calls==1&&armed==1&&healthy_at);
+ /* an orderly Off clears it */
+ handle_request(CPU_OFF,3,"./reply.3",112);assert(pending.active&&forks==3);completed(0,CPU_OK,0);poll_worker();assert(effective==0&&armed==0&&arm_calls==1&&!healthy_at);
+ /* the marker cannot be saved: no automatic On */
+ reset_fixture();arm_rc=5;optimize=1;automatic_pending=1;assert(!begin(CPU_QUERY,0,0,0,0));completed(0,CPU_OK,0);poll_worker();
+ assert(!pending.active&&forks==1&&arm_calls==1&&!armed&&strstr(message,"not saved"));
+ /* A deferred Off keeps the exact sub-second deadline. */
+ reset_fixture();assert(!begin(CPU_QUERY,0,1,"./reply.1",110));
+ handle_request(CPU_OFF,2,"./reply.2",112);pending.deadline=112750;now_ms=112500;
+ completed(1,CPU_OK,0);poll_worker();assert(pending.active&&pending.operation==CPU_OFF&&pending.deadline==112750);
+ reset_fixture();unlink("./reply.1");
+ /* saved Off with a stale marker: the automatic Off path is unaffected */
+ reset_fixture();armed=1;optimize=0;automatic_pending=1;assert(!begin(CPU_QUERY,0,0,0,0));completed(1,CPU_OK,0);poll_worker();assert(pending.active&&pending.operation==CPU_OFF&&!arm_calls);
+ unlink("./reply.2");unlink("./reply.3");unlink(UB_CPU_ENABLED);unlink(UB_CPU_STATUS);reset_fixture();puts("PASS automatic On is armed on USB first; a stale marker blocks only automatic On; healthy interval or Off clears it");
+}
+static const struct { const char *name;void (*run)(void); } single[]={
+ {"armed",armed_test},
+ {"anomaly",anomaly_off_test},{"adoption",adoption_test},{"already",already_test},{"echild",echild_test},{"busy",busy_retry_test},{"disabled",disabled_start_test},
+};
+int main(int argc,char **argv){
+ char dir[]="/tmp/ub820-cpu-own-fixture-XXXXXX";assert(mkdtemp(dir)&&!chdir(dir));
+ if(argc==2){for(unsigned i=0;i<sizeof single/sizeof *single;i++)if(!strcmp(argv[1],single[i].name)){single[i].run();return 0;}return 2;}
+ parser_tests();struct cpu_result r;
  reset_fixture();owner.enabled=0;owner.desired=0;assert(!atomic_file(OWNER,&owner,sizeof owner,1));r=trial(CPU_QUERY);assert(r.mode==0&&!r.code&&!loads&&!ons&&!offs);r=trial(CPU_OFF);assert(r.mode==0&&!r.code&&!loads&&!ons&&!offs);puts("PASS disabled absent query/off: zero load/On");
  reset_fixture();owner.desired=0;assert(!atomic_file(OWNER,&owner,sizeof owner,1));r=trial(CPU_QUERY);assert(r.mode==0&&!loads&&!ons);puts("PASS enabled Off stays lazy");
  reset_fixture();r=trial(CPU_ON);assert(r.mode==1&&!r.code&&loads==1&&ons==1&&!offs&&!latch_pending(owner.boot));r=trial(CPU_ON);assert(r.mode==1&&!r.code&&loads==1&&ons==1);puts("PASS one load/On and native-active adoption without repeat On");
  r=trial(CPU_QUERY);assert(r.mode==1&&!r.code&&ons==1&&!offs);puts("PASS GET is kernel read-only");
  owner.desired=0;assert(!atomic_file(OWNER,&owner,sizeof owner,1));r=trial(CPU_OFF);assert(r.mode==0&&!r.code&&offs==1&&native_mode==3);puts("PASS existing Off restores without unload/reinit");
  reset_fixture();short_on=1;r=trial(CPU_ON);assert(r.mode==-1&&r.code==CPU_UNCERTAIN&&ons==1&&latch_pending(owner.boot));r=trial(CPU_ON);assert(r.mode==-1&&ons==1&&loads==1);owner.desired=0;assert(!atomic_file(OWNER,&owner,sizeof owner,1));r=trial(CPU_OFF);assert(!r.code&&r.mode==0&&offs==1&&!latch_pending(owner.boot));puts("PASS short On latches uncertainty/no resend; explicit verified Off recovers");
- reset_fixture();partial_on=1;r=trial(CPU_ON);assert(r.mode==-1&&r.code==CPU_UNCERTAIN&&ons==1&&native_mode==2&&latch_pending(owner.boot)&&strstr(r.message,"restart player required"));owner.desired=0;assert(!atomic_file(OWNER,&owner,sizeof owner,1));r=trial(CPU_OFF);assert(r.mode==-1&&offs==0&&strstr(r.message,"restart player required")&&latch_pending(owner.boot));r=trial(CPU_QUERY);assert(r.mode==-1&&strstr(r.message,"restart player required")&&!strstr(r.message,"select Off"));puts("PASS true partial/fault with mixed code words stays fail-closed and requires restart");
+ anomaly_off_test();
  reset_fixture();r=trial(CPU_ON);assert(r.mode==1);short_off=1;owner.desired=0;assert(!atomic_file(OWNER,&owner,sizeof owner,1));r=trial(CPU_OFF);assert(r.mode==-1&&r.code==CPU_UNCERTAIN&&r.off_attempted==1&&offs==1&&latch_pending(owner.boot));short_off=0;r=trial(CPU_RECONCILE);assert(r.mode==0&&!r.code&&!r.off_attempted&&offs==1&&!latch_pending(owner.boot));puts("PASS short Off remains unknown and latched; recovery confirms stock words without resend");
  reset_fixture();stale_on=1;r=trial(CPU_ON);assert(!r.code&&r.mode==0&&ons==1&&offs==1&&native_mode==3&&!latch_pending(owner.boot));puts("PASS stale-generation On completion performs Off under same lease");
  reset_fixture();owned_inert();r=trial(CPU_ON);assert(r.mode==1&&ons==1);owner.enabled=0;owner.desired=0;assert(!atomic_file(OWNER,&owner,sizeof owner,1));r=trial(CPU_QUERY);assert(r.mode==1&&offs==0);r=trial(CPU_OFF);assert(r.mode==0&&!r.code&&offs==1);puts("PASS disabled QUERY never mutates; explicit reconciliation Off works");
- reset_fixture();owned_inert();assert(!unlink(RECEIPT));r=trial(CPU_QUERY);assert(r.mode==-1&&!ons&&!offs&&!loads);r=trial(CPU_ON);assert(r.mode==-1&&!ons&&!offs&&!loads);puts("PASS untrusted resident instance never adopted or reloaded");
+ adoption_test();
  reset_fixture();owned_inert();int lock=open(LOCK,O_RDWR|O_CREAT,0600);assert(lock>=0&&!flock(lock,LOCK_EX|LOCK_NB));r=trial(CPU_ON);assert(r.code==CPU_BUSY&&!ons&&!loads);close(lock);puts("PASS worker lease prevents competing mutation");
  reset_fixture();owned_inert();bad_state=1;r=trial(CPU_QUERY);assert(r.mode==-1&&!ons&&!offs);puts("PASS malformed/unhealthy native status never reported Off");
  reset_fixture();struct cpu_owner other=owner;other.token[0]^=1;assert(!atomic_file(OWNER,&other,sizeof other,1));r=trial(CPU_ON);assert(r.code==CPU_STALE&&!loads&&!ons);puts("PASS superseded generation cannot activate");
  blocking_cleanup_test(0);blocking_cleanup_test(1);
  combined_uncertain_off_test(0);combined_uncertain_off_test(1);corrupt_latch_test();
  parent_tests();
- unlink(OWNER);unlink(RECEIPT);unlink(LATCH);unlink(LOCK);unlink("./native");unlink("./kcore");assert(!chdir("/tmp")&&!rmdir(dir));puts("cpu_backend_test passed (31 scenarios)");return 0;
+ already_test();echild_test();busy_retry_test();disabled_start_test();armed_test();reset_fixture();
+ unlink(OWNER);unlink(RECEIPT);unlink(LATCH);unlink(LOCK);unlink("./native");unlink("./kcore");assert(!chdir("/tmp")&&!rmdir(dir));puts("cpu_backend_test passed (36 scenarios)");return 0;
 }

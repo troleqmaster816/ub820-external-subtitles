@@ -70,7 +70,7 @@ const struct ub_payload_variant *ub_payload_variant(const struct ub_payload *p,c
 }
 int ub_hash_file(const char *path,char sha[65]){
  hashes++;
- if(!strcmp(path,"/usr/dtvrec/bin/apl_mgr")){strcpy(sha,wrong_manager?SHA185:(cohort185?SHA185:UB_SHA256_APL_MGR));if(wrong_manager)sha[0]='x';return 0;}
+ if(!strncmp(path,"/proc/",6)){strcpy(sha,wrong_manager?SHA185:(cohort185?SHA185:UB_SHA256_APL_MGR));if(wrong_manager)sha[0]='x';return 0;}
  const char *name=strrchr(path,'/');assert(name);name++;
  for(unsigned i=0;i<UB_POWER_LIBRARY_GUARD_COUNT;i++)if(!strcmp(name,ub_power_library_guards[i].name)){
   const struct ub_power_library_guard *g=&ub_power_library_guards[i];strcpy(sha,cohort185?g->sha185:g->sha182);
@@ -104,7 +104,7 @@ static void remove_files(void){
 static void reset(void){
  remove_files();memset(&pending,0,sizeof pending);memset(token,0,sizeof token);memset(token_hex,0,sizeof token_hex);
  memset(&parts[0].target,0,sizeof parts[0].target);parts[0].tripped=0;
- auto_off=1;effective=-1;available=blocked=initial_sent=owner_pid=0;owner_born=0;serial=menu_seq=0;menu_message[0]=0;
+ auto_off=1;effective=-1;available=blocked=initial_sent=owner_pid=unsaved=0;owner_born=0;serial=menu_seq=0;menu_message[0]=0;
  fork_failure=wait_ready=wait_code=wait_missing=cohort185=wrong_manager=wrong_base=wrong_path=wrong_library=save_error=0;
  forks=reaps=saves=hashes=maps=0;seconds=1000;
 }
@@ -192,6 +192,26 @@ int main(void){
  assert(effective==0&&!blocked&&!pending.active&&pending.producer_status==7);cases++;
  reset();boot_ready();parts[0].target.born=100;request(13,"set off 13\n",seconds+5);control_step(0,0);
  assert(pending.active);parts[0].target.born=101;control_step(0,0);assert(blocked&&effective<0);cases++;
+ /* Native Off applied, its USB save failed: choosing Off again after the USB
+  * returns retries only the save (no second native request). */
+ reset();boot_ready();request(31,"set off 31\n",seconds+5);control_step(0,0);
+ native_ack(token_hex,pending.serial,0,UB_POWER_OK);wait_ready=1;save_error=4;control_step(0,0);wait_ready=0;
+ assert(saves==1&&effective==0&&unsaved&&strstr(read_reply(31,text,sizeof text),"31 off unsaved applied; not saved to USB"));
+ assert(ub_read_file(UB_POWER_STATUS,text,sizeof text)>0&&strstr(text,"31 off unsaved applied; not saved to USB"));
+ save_error=0;request(32,"set off 32\n",seconds+5);control_step(0,0);
+ assert(saves==2&&forks==2&&!pending.active&&!unsaved&&effective==0&&strstr(read_reply(32,text,sizeof text),"32 off saved"));
+ request(33,"set off 33\n",seconds+5);control_step(0,0);assert(saves==2&&forks==2&&strstr(read_reply(33,text,sizeof text),"already applied"));cases++;
+ /* -1 (value not taken by the settings) also stays unsaved and retryable. */
+ save_error=-1;request(34,"set on 34\n",seconds+5);control_step(0,0);native_ack(token_hex,pending.serial,1,UB_POWER_OK);wait_ready=1;control_step(0,0);wait_ready=0;
+ assert(saves==3&&effective==1&&unsaved&&strstr(read_reply(34,text,sizeof text),"not saved"));
+ save_error=0;request(35,"set on 35\n",seconds+5);control_step(0,0);assert(saves==4&&!unsaved&&strstr(read_reply(35,text,sizeof text),"35 on saved"));cases++;
+ /* Off applied but not saved, then an On that cannot start: its message
+  * replaces the old one, the unsaved field still says Off is not kept. */
+ reset();boot_ready();request(41,"set off 41\n",seconds+5);control_step(0,0);
+ native_ack(token_hex,pending.serial,0,UB_POWER_OK);wait_ready=1;save_error=4;control_step(0,0);wait_ready=0;save_error=0;
+ fork_failure=1;request(42,"set on 42\n",seconds+5);control_step(0,0);fork_failure=0;
+ assert(effective==0&&unsaved&&strstr(read_reply(42,text,sizeof text),"42 off unsaved request could not be sent"));
+ assert(ub_read_file(UB_POWER_STATUS,text,sizeof text)>0&&strstr(text,"42 off unsaved "));cases++;
  remove_files();assert(!rmdir(directory));
  printf("power_test passed (%u scenarios)\n",cases);return 0;
 }

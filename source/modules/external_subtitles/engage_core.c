@@ -42,6 +42,7 @@
 #include <sys/syscall.h>
 #include "injector.h"
 #include "log.h"
+#include "sys.h"
 
 #ifndef EVT_PATH
 #define EVT_PATH "/usr/dtvrec/bin/evtSend"
@@ -253,12 +254,15 @@ static int playdat_byte5(int *out) {
     return rc;
 }
 
-static int playdat_set_on(void) {
+/* lock_op LOCK_EX waits (this program); LOCK_EX|LOCK_NB returns 1 while
+ * another holder has the lock, so a periodic caller retries later. Byte 0 is
+ * the vertical position (-8 here, the configured one for the helper). */
+static int playdat_write_on(int lock_op, int position) {
     int lf, fd, rc = -1;
     unsigned char b[8];
     lf = open(PLAY_LOCK, O_CREAT | O_RDWR, 0666);
     if (lf < 0) return -1;
-    if (flock(lf, LOCK_EX) != 0) { close(lf); return -1; }
+    if (flock(lf, lock_op) != 0) { int busy = errno == EWOULDBLOCK; close(lf); return busy ? 1 : -1; }
     memset(b, 0, sizeof b);
     fd = open(PLAY_DAT, O_RDONLY);
     if (fd >= 0) {
@@ -269,7 +273,7 @@ static int playdat_set_on(void) {
      * subtitle baseline (measured on screen); size index 0 = 52 px scaled
      * by /tmp/ti_font_size=122 to ~63 units (cap ~116 px, native 116).
      * No sync, UTF-8, external on.  Preserve bytes 1, 6, 7. */
-    b[0] = (unsigned char)-8;
+    b[0] = (unsigned char)position;
     b[2] = 0;
     b[3] = 0;
     b[4] = 0;
@@ -283,26 +287,45 @@ static int playdat_set_on(void) {
     close(lf);
     return rc;
 }
+static int playdat_set_on(void) { return playdat_write_on(LOCK_EX, -8) ? -1 : 0; }
 
-static int run_evt(char *const argv[]) {
+/* Start evtSend without waiting for it. */
+static pid_t evt_start(char *const argv[]) {
     pid_t p = fork();
-    int st;
-    if (p < 0) return -1;
     if (p == 0) {
+        if (ub_child_sanitize(7)) _exit(126);
         execve(argv[0], argv, NULL);
         _exit(127);
     }
+    return p;
+}
+
+/* Nonblocking reap: 0 still running, 1 finished (*code is its exit status,
+ * -1 if a signal ended it), -1 the child can no longer be reaped. */
+static int evt_reap(pid_t p, int *code) {
+    int st;
+    pid_t r = waitpid(p, &st, WNOHANG);
+    if (r == 0) return 0;
+    if (r != p) return r < 0 && errno == EINTR ? 0 : -1;
+    *code = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+    return 1;
+}
+
+static int run_evt(char *const argv[]) {
+    pid_t p = evt_start(argv);
+    int st;
+    if (p < 0) return -1;
     if (waitpid(p, &st, 0) < 0) return -1;
     return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 }
 
 /* 0xb233: start the SRT worker (sender 0xc352, ctl 0x3b, kind 1, type 1). */
+static char *const evt_load_argv[] = {
+    EVT_PATH, "0xc352", "0x44", "0xc44c", "0x1", "0x0", "0x1",
+    "0x3b", "0xb233", NULL
+};
 static int evt_load(void) {
-    char *const argv[] = {
-        EVT_PATH, "0xc352", "0x44", "0xc44c", "0x1", "0x0", "0x1",
-        "0x3b", "0xb233", NULL
-    };
-    return run_evt(argv);
+    return run_evt(evt_load_argv);
 }
 
 /* 0x8eb5: External Subtitle on/off toggle (sender 0xc3b5, ctl 0x39, kind 1,

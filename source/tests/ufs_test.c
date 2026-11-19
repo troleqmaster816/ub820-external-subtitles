@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <limits.h>
 int ufs_main(int,char **);
 static int close_result,read_count;
 int UFS_Init(void){return 0;}
@@ -18,6 +19,12 @@ int UFS_Write(unsigned h,void *buf,unsigned long long n,unsigned long long *done
  (void)h;(void)buf;*done=n;return 0;
 }
 int UFS_Close(unsigned h){(void)h;return close_result;}
+/* Not reached here (tests/ufs_replace_test.c covers them). */
+int UFS_OpenDir(const char *path,unsigned *h){(void)path;(void)h;return -1;}
+int UFS_ReadDir(unsigned h,void *r,unsigned *n){(void)h;(void)r;*n=0;return -1;}
+int UFS_CloseDir(unsigned h){(void)h;return 0;}
+int UFS_Rename(const char *a,const char *b){(void)a;(void)b;return -1;}
+int UFS_Unlink(const char *a){(void)a;return -1;}
 static int failures;
 #define CHECK(c) do{if(!(c)){printf("FAIL ufs_test:%d: %s\n",__LINE__,#c);failures++;}}while(0)
 int main(void){
@@ -26,7 +33,7 @@ int main(void){
  char *argv[]={"ufs","read","fixture-source",path,0};
  fd=open(path,O_WRONLY|O_CREAT|O_TRUNC,0600);CHECK(fd>=0);
  if(fd>=0){CHECK(write(fd,"old\n",4)==4);close(fd);}
- close_result=-123;CHECK(ufs_main(4,argv)==8);CHECK(access(temp,F_OK));
+ close_result=INT_MIN;CHECK(ufs_main(4,argv)==8);CHECK(access(temp,F_OK));
  fd=open(path,O_RDONLY);n=fd>=0?read(fd,text,sizeof text):0;if(fd>=0)close(fd);
  CHECK(n==4&&!memcmp(text,"old\n",4));
  close_result=0;CHECK(ufs_main(4,argv)==0);CHECK(access(temp,F_OK));

@@ -86,9 +86,21 @@ int ub_mount_for(const char *path,char *line,size_t line_size);
 
 /* Config (core/config.c). */
 void ub_config_load(void);
+/* The menu configuration was read completely or confirmed absent at startup. */
+int ub_menu_known_at_start(void);
 /* Apply a menu choice and save it to sub/ub820_menu.cfg on the stick:
- * 0 saved, -1 invalid value, >0 applied but not saved (ub_stick_error). */
+ *   0   applied and saved;
+ *   -1  invalid module, key or value: nothing applied (the only negative);
+ *   >0  applied in RAM but not saved; ub_stick_error(code) says why. This
+ *       includes the storage tool not starting (UB_STICK_NO_TOOL) or timing
+ *       out (UB_STICK_TIMEOUT), and UB_STICK_UNREAD: the stick's file could
+ *       not be read at start, so it is left untouched and the choice is saved
+ *       with it, merged, by a later call once it reads (see core/storage.h).
+ * A caller must treat >0 as "applied", e.g. publish the new value. */
 int ub_setting_set(const char *module,const char *key,const char *value);
+/* Prerequisite setting: failure restores RAM and the later-save set. A USB
+ * timeout remains an unknown disk outcome; no disk rollback is promised. */
+int ub_setting_set_saved(const char *module,const char *key,const char *value);
 
 /* Core loop (core/core.c); split out so host tests can drive it. */
 void ub_core_start(void);

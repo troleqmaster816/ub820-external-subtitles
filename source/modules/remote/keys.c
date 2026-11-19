@@ -37,17 +37,20 @@ int (*ub_original_key_filter)(int *);
 #define CTX_KEY (0xe4/4)
 #define KEY_NETFLIX 0x168
 #define O_WRONLY_NONBLOCK (O_WRONLY|O_NONBLOCK|O_CLOEXEC)
+/* apl_mgr is multithreaded and starts programs: probes never wait for a FIFO
+ * peer and never leak into a concurrent exec. */
+#define O_PROBE (O_RDONLY|O_NONBLOCK|O_CLOEXEC)
 
-static int exists(const char *path){int fd=open(path,0);if(fd<0)return 0;close(fd);return 1;}
+static int exists(const char *path){int fd=open(path,O_PROBE);if(fd<0)return 0;close(fd);return 1;}
 /* Reader-open alone does not prove a functioning UI: it refreshes a lease
  * from its normal timer. Once expired, unrelated keys return to stock. */
 static int overlay_live(void){
- uint32_t expires,now;int fd=open(UB_OVERLAY_OPEN,0),n;
+ uint32_t expires,now;int fd=open(UB_OVERLAY_OPEN,O_PROBE),n;
  if(fd<0)return 0;
  n=read(fd,&expires,sizeof expires);close(fd);
  return n==(int)sizeof expires&&!ub_payload_now(&now)&&(int32_t)(expires-now)>0;
 }
-static void abort_overlay(void){int fd=open(UB_OVERLAY_ABORT,0101,0600);if(fd>=0)close(fd);}
+static void abort_overlay(void){int fd=open(UB_OVERLAY_ABORT,O_WRONLY|O_CREAT|O_NONBLOCK|O_CLOEXEC,0600);if(fd>=0)close(fd);}
 /* A temporary read descriptor pins a reader through write(), so a UI exit
  * between the first open and the write cannot deliver SIGPIPE to apl_mgr.
  * It never reads/steals data; no reader at the first open still fails. */
@@ -64,17 +67,19 @@ static int to_overlay(int key,int press){
  close(fd);return !press||n==(int)sizeof record?0:-1;
 }
 
+/* Runs on apl_mgr's key thread: the caller's errno is restored, so neither it
+ * nor the stock filter sees the failed probes of absent marker files. */
 int ub_hook_key_filter(int *ctx){
+ int saved=errno,drop=0;
  if(ctx&&ctx[CTX_PASS_ALL]!=2){
   int key=ctx[CTX_KEY],press=ctx[CTX_EVENT]==1;
-  if(key==KEY_NETFLIX){
-   if(exists(UB_NETFLIX_HELPER)){if(to_overlay(key,press)&&overlay_live())abort_overlay();return 1;}
-   if(exists(UB_NETFLIX_OFF))return 1;
-  }
-  if(overlay_live()){
+  if(key==KEY_NETFLIX&&exists(UB_NETFLIX_HELPER)){if(to_overlay(key,press)&&overlay_live())abort_overlay();drop=1;}
+  else if(key==KEY_NETFLIX&&exists(UB_NETFLIX_OFF))drop=1;
+  else if(overlay_live()){
    if(to_overlay(key,press))abort_overlay();
-   return 1; /* failed press closes overlay; never pass it to hidden stock */
+   drop=1; /* failed press closes overlay; never pass it to hidden stock */
   }
  }
- return ub_original_key_filter(ctx);
+ errno=saved;
+ return drop?1:ub_original_key_filter(ctx);
 }

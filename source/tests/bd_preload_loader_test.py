@@ -8,7 +8,7 @@ from pathlib import Path
 import hashlib,json,os,re,shutil,subprocess,sys
 
 ROOT=Path(__file__).resolve().parents[2]
-OUT=ROOT/'analysis'/'next-pass'/'bd-loader'
+OUT=Path(os.environ.get('UB820_LOADER_TEST_OUTPUT',ROOT/'analysis'/'next-pass'/'bd-loader'))
 
 def linux(path):
     s=str(Path(path).resolve()).replace('\\','/')
@@ -25,7 +25,7 @@ def main():
     (OUT/'results.json').write_text(json.dumps({'status':'building','ld_bind_now':True},indent=2)+'\n')
     lib=OUT/'sysroot'/'lib';lib.mkdir(parents=True,exist_ok=True)
     fwlib=ROOT/'analysis'/'v182'/'rootfs'/'lib'
-    for src,dst in [('ld-2.20-2014.11.so','ld-linux-armhf.so.3'),('libc-2.20-2014.11.so','libc.so.6')]:
+    for src,dst in [('ld-2.20-2014.11.so','ld-linux-armhf.so.3'),('libc-2.20-2014.11.so','libc.so.6'),('libdl-2.20-2014.11.so','libdl.so.2'),('libpthread-2.20-2014.11.so','libpthread.so.0')]:
         shutil.copyfile(fwlib/src,lib/dst)
     exe=OUT/'bd-loader-fixture';preload=OUT/'bd-preload-fixture.so'
     flags=['-mthumb','-march=armv7-a','-mfpu=neon','-mfloat-abi=hard','-Os','-fno-stack-protector','-Wall','-Wextra','-Werror']
@@ -38,8 +38,8 @@ def main():
     digest=hashlib.sha256(exe.read_bytes()).hexdigest()
     defines=['-DUB_BD_EXE_HASH_182="'+digest+'"','-DUB_BD_EXE_HASH_185="'+digest+'"']
     defines += ['-DUB_BD_SOURCE%d=0x%xu'%(i,symbols['region_source%d'%i]) for i in range(3)]
-    run(['arm-linux-gnueabihf-gcc',*flags,'-shared','-fPIC','-nostdlib','-nostartfiles','-Wl,--hash-style=sysv','-Wl,-z,defs',*defines,
-         linux(ROOT/'source'/'modules'/'region'/'bd_preload.c'),linux(lib/'libc.so.6'),'-lgcc','-o',linux(preload)])
+    run(['arm-linux-gnueabihf-gcc',*flags,'-shared','-fPIC','-nostdlib','-nostartfiles','-Wl,--hash-style=sysv','-Wl,-z,defs','-I'+linux(ROOT/'source/core'),*defines,
+         linux(ROOT/'source'/'modules'/'region'/'bd_preload.c'),linux(lib/'libdl.so.2'),linux(lib/'libpthread.so.0'),linux(lib/'libc.so.6'),'-lgcc','-o',linux(preload)])
     inherited=OUT/'bd-inherited-fixture.so'
     run(['arm-linux-gnueabihf-gcc',*flags,'-shared','-fPIC','-nostdlib','-nostartfiles','-Wl,--hash-style=sysv',
          linux(fixture/'bd_loader_inherited.c'),linux(lib/'libc.so.6'),'-lgcc','-o',linux(inherited)])
@@ -59,7 +59,7 @@ def main():
         result={'policy':policy,'inherited_preload':old,'returncode':p.returncode,'stdout':p.stdout,'stderr':p.stderr,'passed':not p.returncode and 'bd_preload_loader_test passed:' in p.stdout}
         results.append(result)
         print('policy',policy,'inherited',bool(old),'PASS' if result['passed'] else 'FAIL',p.stdout.strip(),p.stderr.strip())
-    production=ROOT/'source'/'build'/'region_bd_preload.so'
+    production=Path(os.environ.get('UB820_PRELOAD_TEST_ASSET',ROOT/'source'/'build'/'native_events_bd_preload.so'))
     production_result={'present':production.is_file()}
     if production.is_file():
         # This is the unmodified production DSO, with its firmware hash pins.

@@ -15,7 +15,9 @@
 #undef UB_POWER_ENABLED
 #undef UB_POWER_REQUEST
 #undef UB_POWER_STATUS
-static char enabled_path[256],request_path[256],status_path[256];
+#undef UB_REMOTE_STATUS
+static char enabled_path[256],request_path[256],status_path[256],remote_path[256];
+#define UB_REMOTE_STATUS remote_path
 #define UB_POWER_ENABLED enabled_path
 #define UB_POWER_REQUEST request_path
 #define UB_POWER_STATUS status_path
@@ -25,6 +27,7 @@ static void test_server_now(struct timespec *out){out->tv_sec=seconds;out->tv_ns
 #include "action_ipc.h"
 #undef ub_now
 static int test_clock(clockid_t id,struct timespec *out){assert(id==CLOCK_MONOTONIC);out->tv_sec=seconds;out->tv_nsec=0;return 0;}
+#include "log_mode_fixture.h"
 #define clock_gettime test_clock
 #include "../modules/ui/menu.c"
 #undef clock_gettime
@@ -62,7 +65,7 @@ static void reply_to(struct helper_state *s,unsigned seq,const char *text){char 
 static void cancel(struct helper_state *s){ha_action_cancel(s,UB_POWER_REQUEST,s->power_seq);}
 int main(void){
  char directory[]="/tmp/ub820-power-ui-XXXXXX",text[192],reply[UB_ACTION_PATH],label[128];
- unsigned ids[HELPER_ROWS],seq,choice;const char *message;unsigned checks=0;
+ unsigned ids[HELPER_ROWS],seq,choice,kept;const char *message;unsigned checks=0;
  struct helper_state a={0},b={0};
  assert(mkdtemp(directory));
  snprintf(enabled_path,sizeof enabled_path,"%s/enabled",directory);
@@ -75,7 +78,7 @@ int main(void){
  ha_power_set(&a,0);assert(!a.power_wait&&!strcmp(ha_power_value(&a),"not available"));checks++;
  put(enabled_path,"");assert(ha_power_poll(&a)&&a.power_enabled&&!a.power_known);
  hs.power_enabled=1;assert(helper_rows(ids)==7&&ids[3]==H_POWER&&ids[4]==H_SSH&&ids[5]==H_LOG&&ids[6]==H_SAVE);checks++;
- put(status_path,"0 on current\n");assert(ha_power_poll(&a)&&a.power_known&&a.power_choice==1);checks++;
+ put(status_path,"0 on saved current\n");assert(ha_power_poll(&a)&&a.power_known&&a.power_choice==1);checks++;
  hs=a;assert(!strcmp(helper_text(H_POWER,label,sizeof label),"Auto power-off: On"));
  m.drop_kind=DROP_POWER;assert(!strcmp(drop_text(0),"On")&&!strcmp(drop_text(1),"Off"));m.drop_kind=DROP_NONE;
  ha_power_set(&a,0);assert(a.power_wait&&a.power_choice==1&&a.power_known);checks++;
@@ -86,7 +89,7 @@ int main(void){
  reply_to(&b,b.power_seq,"1 on saved\n");ha_power_poll(&a);assert(a.power_wait);assert(ha_power_poll(&b)&&!b.power_wait&&b.power_choice==1);checks++;
  reply_to(&a,a.power_seq,"1 off saved\n");assert(ha_power_poll(&a)&&!a.power_wait&&a.power_choice==0&&strstr(a.notice,"Manual POWER"));checks++;
  ha_power_set(&a,1);assert(a.power_wait&&a.power_choice==0);
- snprintf(text,sizeof text,"%u off native policy unavailable\n",a.power_seq);reply_to(&a,a.power_seq,text);
+ snprintf(text,sizeof text,"%u off saved native policy unavailable\n",a.power_seq);reply_to(&a,a.power_seq,text);
  assert(ha_power_poll(&a)&&!a.power_wait&&a.power_choice==0&&strstr(a.notice,"native policy unavailable"));checks++;
  ha_power_set(&a,1);assert(a.power_wait);seconds+=30;
  assert(ha_power_poll(&a)&&!a.power_wait&&!a.power_known&&a.power_uncertain&&strstr(a.notice,"reopen Helper"));checks++;
@@ -102,13 +105,39 @@ int main(void){
  hs.power_enabled=1;hs.power_known=0;m.list=(Widget)(uintptr_t)2;m.list_fixed=(Widget)(uintptr_t)3;m.drop_kind=DROP_POWER;
  render();assert(m.drop_kind==DROP_NONE&&!m.list&&!m.list_fixed);checks++;
  m.active=0;m.window=0;
- assert(!ha_power_status("4294967295 off saved",&seq,&choice,&message)&&seq==UINT32_MAX&&!choice);
- assert(ha_power_status("4294967296 off saved",&seq,&choice,&message));
- assert(ha_power_status("-1 off saved",&seq,&choice,&message));
- assert(ha_power_status("1 offline saved",&seq,&choice,&message));
- assert(ha_power_status("1 on",&seq,&choice,&message));checks++;
+ assert(!ha_power_status("4294967295 off saved",&seq,&choice,&kept,&message)&&seq==UINT32_MAX&&!choice);
+ assert(ha_power_status("4294967296 off saved",&seq,&choice,&kept,&message));
+ assert(ha_power_status("-1 off saved",&seq,&choice,&kept,&message));
+ assert(ha_power_status("1 offline saved",&seq,&choice,&kept,&message));
+ assert(ha_power_status("1 on",&seq,&choice,&kept,&message));
+ assert(!ha_power_status("2 off unsaved request could not be sent",&seq,&choice,&kept,&message)&&kept&&!strcmp(message,"request could not be sent"));
+ assert(ha_power_status("2 off unsavedx",&seq,&choice,&kept,&message));checks++;
+ /* Off applied but not saved to USB: choosing Off again sends a request (the
+  * module retries only the save); once saved, the same choice sends nothing. */
+ {struct helper_state c={0};
+  put(enabled_path,"");put(status_path,"5 off unsaved applied; not saved to USB (source could not be opened)\n");
+  assert(ha_power_poll(&c)&&c.power_known&&!c.power_choice&&c.power_unsaved&&!strcmp(ha_power_value(&c),"Off (not saved)"));
+  ha_power_set(&c,0);assert(c.power_wait);
+  {int found=0;snprintf(label,sizeof label,"set off %u\n",c.power_seq);
+   while(ub_action_receive(UB_POWER_REQUEST,text,sizeof text,reply,sizeof reply))found|=!strcmp(text,label)&&strstr(reply,c.action_session)!=0;
+   assert(found);}
+  snprintf(text,sizeof text,"%u off saved\n",c.power_seq);reply_to(&c,c.power_seq,text);
+  assert(ha_power_poll(&c)&&!c.power_wait&&!c.power_unsaved&&!strcmp(ha_power_value(&c),"Off")&&strstr(c.notice,"Manual POWER"));
+  seq=c.power_counter;ha_power_set(&c,0);assert(!c.power_wait&&c.power_counter==seq);
+  put(status_path,"6 off saved\n");assert(!ha_power_poll(&c)&&!c.power_unsaved);unlink(enabled_path);checks++;}
  cancel(&a);cancel(&b);seconds+=100;
  while(ub_action_receive(UB_POWER_REQUEST,text,sizeof text,reply,sizeof reply)){}
  unlink(status_path);assert(!rmdir(directory));
+ /* An answer that was not "saved" is followed: the later public status of
+  * that request updates the notice, and the same value can be chosen again. */
+ {struct helper_state n;memset(&n,0,sizeof n);snprintf(remote_path,sizeof remote_path,"/tmp/ub820-power-ui-remote.%d",(int)getpid());
+  n.netflix_known=1;n.netflix_choice=2;n.netflix_follow=33;n.netflix_pref.revision.sec=42;ha_copy(n.netflix_said,"not in effect yet (retrying)",sizeof n.netflix_said);
+  FILE *rf=fopen(remote_path,"w");assert(rf);fputs("33 helper not in effect yet (retrying)\nSTATE 42 0 1\n",rf);fclose(rf);
+  assert(!ha_netflix_poll(&n)&&n.netflix_follow==33);
+  rf=fopen(remote_path,"w");assert(rf);fputs("33 helper saved\nSTATE 42 0 0\n",rf);fclose(rf);
+  assert(ha_netflix_poll(&n)&&!n.netflix_follow&&!strcmp(n.notice,"Netflix button: UB820 Helper"));
+  n.netflix_follow=34;rf=fopen(remote_path,"w");assert(rf);fputs("35 nothing saved\nSTATE 42 1 0\n",rf);fclose(rf);
+  ha_netflix_poll(&n);assert(!n.netflix_follow); /* another request since */
+  unlink(remote_path);checks++;}
  printf("power_ui_test passed (%u scenarios)\n",checks);return 0;
 }

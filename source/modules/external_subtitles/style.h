@@ -11,11 +11,17 @@
 struct ub_disc_style { int font_percent, position, bottom_align; };
 static struct ub_disc_style disc_style = {122,-8,1};
 
-static void font_size_set(void) {
- char value[16];int n=snprintf(value,sizeof value,"%d\n",disc_style.font_percent);
- int fd=open(UB_DISC_STYLE_FONT_FILE,O_WRONLY|O_CREAT|O_TRUNC,0666);
- if(fd>=0){if(write(fd,value,(size_t)n)!=n)ub_log("external_subtitles",UB_ALWAYS,"Font calibration write failed");close(fd);}
- else ub_log("external_subtitles",UB_ALWAYS,"Font calibration file open failed");
+/* Publish the complete value by rename: a reader never sees a truncated or
+ * partial file. 0 written; -1 failed and the caller retries this write alone. */
+static int font_size_set(void) {
+ char value[16];int n=snprintf(value,sizeof value,"%d\n",disc_style.font_percent),rc=-1;
+ int fd=open(UB_DISC_STYLE_FONT_FILE ".tmp",O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC,0666);
+ if(fd<0)return -1;
+ if(write(fd,value,(size_t)n)==n)rc=0;
+ if(close(fd))rc=-1;
+ if(!rc&&rename(UB_DISC_STYLE_FONT_FILE ".tmp",UB_DISC_STYLE_FONT_FILE))rc=-1;
+ if(rc)unlink(UB_DISC_STYLE_FONT_FILE ".tmp");
+ return rc;
 }
 
 /* In esl_tst_UpdateDisplayText, r3 holds the counted number of lines.
@@ -39,14 +45,9 @@ static int style_patch(int pid) {
   disc_rows_stock,disc_rows_aligned,want};
  return ub_patch_code(pid,patches,6);
 }
+/* One locked write with the configured position. Never waits for the lock:
+ * 0 written, 1 busy (retry on a later tick), -1 failed. */
 static int playdat_set_on(void) {
- int lf,fd,rc=-1;unsigned char value=(unsigned char)disc_style.position;
- if(legacy_playdat_set_on())return -1;
- if(disc_style.position==-8)return 0;
- lf=open(PLAY_LOCK,O_CREAT|O_RDWR,0666);if(lf<0)return -1;
- if(flock(lf,LOCK_EX)){close(lf);return -1;}
- fd=open(PLAY_DAT,O_WRONLY);
- if(fd>=0){if(pwrite(fd,&value,1,0)==1)rc=0;close(fd);}
- flock(lf,LOCK_UN);close(lf);return rc;
+ return playdat_write_on(LOCK_EX|LOCK_NB,disc_style.position);
 }
 #endif

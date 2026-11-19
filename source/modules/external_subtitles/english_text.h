@@ -89,6 +89,7 @@ static void english_text_step(struct ub_part *p,struct ub_target *t){
  rc=ub_install_payload(t->pid,&ub_payload_external_subtitles_native_text);
  if(!rc){t->installed=1;t->state[0]=1;ub_changed(p);ub_log(LANG_ID,UB_INFO,"Native English lookup fallback installed in PID%d (firmware %s); rows and popups use it on lookup",t->pid,t->state[4]==185?"1.85":"1.82");}
  else if(rc==-2){t->failed=1;t->state[0]=-1;ub_log(LANG_ID,UB_ALWAYS,"Native English text installation quarantined PID%d",t->pid);}
+ else if(rc==1){t->failed=1;t->state[0]=-1;ub_log(LANG_ID,UB_ALWAYS,"Native English text not installed: PID%d already has changed code (%s)",t->pid,ub_install_stage());}
  else if(++t->state[2]>=LANG_ATTEMPTS){t->failed=1;t->state[0]=-1;ub_log(LANG_ID,UB_ALWAYS,"Native English text installation stopped at %s after %d attempts",ub_install_stage(),t->state[2]);}
  else{t->state[3]=LANG_RETRY_SECONDS;ub_log(LANG_ID,UB_INFO,"Native English text attempt %d stalled at %s; retrying",t->state[2],ub_install_stage());}
 }

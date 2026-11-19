@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -65,12 +67,28 @@ static struct ub_module logm={"log","test",1,log_options,0,0,0,0,0};
 static struct ub_module plain={"plain","test",1,0,0,plain_parts,3,0,disabled_housekeeping};
 static struct ub_module off={"other","test",1,0,forbidden_disabled_start,disabled_parts,1,0,disabled_housekeeping};
 static struct ub_module clockm={"clock","test",1,0,0,clock_parts,1,0,0};
-struct ub_module *const ub_modules[]={&logm,&ext,&plain,&off,&clockm,0};
+/* Hook sites of a process that already carries changed code (an earlier
+ * helper run): refused once, before any stop and before prepare. */
+#define SITE 0x13000000u
+static const unsigned char stock_site[4]={0x2d,0xe9,0xf0,0x41},hooked_site[4]={0xdf,0xf8,0x00,0xf0};
+static const struct ub_hook_spec site_hook={SITE,4,"r","o",stock_site,stock_site,0};
+static const struct ub_payload_variant site_variant={.firmware="1.82",.sha256=self_sha,.hooks=&site_hook,.hook_count=1};
+static const struct ub_payload site_payload={.process="fake_hooked",.sha256=self_sha,.variants=&site_variant,.variant_count=1};
+static int site_prepares;
+static void prepare_count(struct ub_part *p,struct ub_target *t){(void)p;(void)t;site_prepares++;}
+static struct ub_part site_parts[]={{"engine","fake_hooked",self_sha,&site_payload,1,prepare_count,0,{0},0,0}};
+static struct ub_module sitem={"sites","test",1,0,0,site_parts,1,0,0};
+struct ub_module *const ub_modules[]={&logm,&ext,&plain,&off,&clockm,&sitem,0};
+int ub_core_lock(const char *path);
 
-static int child(void){
+static int named_child(const char *name){
  pid_t pid=fork();
- if(!pid){prctl(PR_SET_NAME,"fake_ui");for(;;)pause();}
+ if(!pid){prctl(PR_SET_NAME,name);for(;;)pause();}
  usleep(100000);return pid;
+}
+static int child(void){return named_child("fake_ui");}
+static int log_has(const char *text){
+ static char buf[65536];FILE *f=fopen(UB_LOG_FILE,"r");size_t n=f?fread(buf,1,sizeof buf-1,f):0;if(f)fclose(f);buf[n]=0;return strstr(buf,text)!=0;
 }
 static void stop(int pid){kill(pid,SIGKILL);waitpid(pid,0,0);}
 /* A ready handshake avoids timing assumptions; EOF requests an ordinary
@@ -102,7 +120,10 @@ int main(void){
  write_file(UB_CONFIG_DIR "/disc_style.cfg","font_percent=130\nposition=-5 # comment\nusb_log=0\nnative_options=1\n");
  write_file(UB_CONFIG_DIR "/modules.cfg","# test\n[external_subtitles]\nposition=-3\nfont_percent=500\n[log]\nlevel=debug\ncount=7\nbogus=1\n[other]\nenabled=0\n[missing]\nenabled=1\n");
  ub_log_open();
+ signal(SIGCHLD,SIG_IGN);sigset_t blocked;sigemptyset(&blocked);sigaddset(&blocked,SIGCHLD);sigprocmask(SIG_BLOCK,&blocked,0);
  ub_core_start();
+ struct sigaction disposition;sigaction(SIGCHLD,0,&disposition);CHECK(disposition.sa_handler==SIG_DFL);
+ sigset_t current;sigprocmask(SIG_SETMASK,0,&current);CHECK(!sigismember(&current,SIGCHLD));
  CHECK(font==130);CHECK(position==-3);CHECK(usb==0);CHECK(level==2);CHECK(count==7);CHECK(!off.enabled);CHECK(ext.enabled);
  CHECK(ub_module_enabled("plain"));CHECK(!ub_module_enabled("other"));CHECK(!ub_module_enabled("missing"));
  /* Disabled housekeeping runs after configuration, without starting its
@@ -125,6 +146,9 @@ int main(void){
  stop(pid);ub_core_tick();
  /* b changed it last, so b is switched off; a and the unguarded d stay. */
  CHECK(ext_parts[1].tripped);CHECK(!ext_parts[0].tripped);CHECK(!plain_parts[0].tripped);
+ /* The end and the breaker's choice are separate log lines. */
+ {char want[96];snprintf(want,sizeof want,"fake_ui PID%d ended (no longer running)",pid);CHECK(log_has(want));}
+ CHECK(log_has("circuit breaker: part 'b' made the latest guarded change"));
 
  /* Second instance: fresh state for a, nothing for b; a is next in line. */
  pid=child();
@@ -156,6 +180,28 @@ int main(void){
  CHECK(clock_parts[0].target.changed&&!clock_parts[0].tripped);
  clock_finish(pid,finish);ub_core_tick();
  CHECK(!clock_parts[0].target.pid&&!clock_parts[0].tripped);
+
+ /* Already hooked (not stock): one refusal, no prepare, no retries. */
+ {unsigned char *site=mmap((void *)(uintptr_t)SITE,4096,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_ANONYMOUS,-1,0);CHECK(site==(void *)(uintptr_t)SITE);
+  memcpy(site,hooked_site,4);pid=named_child("fake_hooked");
+  for(int i=0;i<4;i++)ub_core_tick();
+  CHECK(site_parts[0].target.pid==pid&&site_parts[0].target.failed);CHECK(!site_parts[0].target.attempts&&!site_parts[0].target.installed);
+  CHECK(!site_prepares);CHECK(log_has("already has changed code (hook-sites: 13000000 is not stock code)"));
+  stop(pid);ub_core_tick();
+  /* Stock code: prepare runs and installation is attempted (this fixture has
+   * no payload image, so the attempt fails and is retried). */
+  memcpy(site,stock_site,4);pid=named_child("fake_hooked");ub_core_tick();
+  CHECK(site_prepares==1);CHECK(site_parts[0].target.attempts==1&&!site_parts[0].target.failed);
+  stop(pid);ub_core_tick();munmap(site,4096);}
+
+ /* The single-instance lock is close-on-exec and exclusive. */
+ {int fd=ub_core_lock(UB_CONFIG_DIR "/test.lock");CHECK(fd>=0);CHECK(fd>=0&&(fcntl(fd,F_GETFD)&FD_CLOEXEC));
+  CHECK(ub_core_lock(UB_CONFIG_DIR "/test.lock")==-1);if(fd>=0)close(fd);
+  fd=ub_core_lock(UB_CONFIG_DIR "/test.lock");CHECK(fd>=0);if(fd>=0)close(fd);}
+ /* Started with stdin closed: fd 0 is filled, the lock lies above 2. */
+ {int saved=dup(0),fd;close(0);fd=ub_core_lock(UB_CONFIG_DIR "/test.lock");
+  CHECK(fd>2&&fcntl(0,F_GETFD)>=0&&!(fcntl(0,F_GETFD)&FD_CLOEXEC));if(fd>=0)close(fd);
+  close(0);dup2(saved,0);close(saved);}
 
  printf("%s (%d failures)\n",failures?"core_test FAILED":"core_test passed",failures);
  return failures!=0;

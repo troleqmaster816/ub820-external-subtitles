@@ -77,28 +77,38 @@ int ub_settled(const char *process){
 }
 
 /* A process instance ended: switch off the guarded part that changed it most
- * recently, then forget the instance for every part that tracked it. */
-static void ended(const char *process,int pid,unsigned long long born){
+ * recently, then forget the instance for every part that tracked it. The end
+ * and the breaker's choice are logged apart: the process may end for reasons
+ * of its own (its parent reaps it, so no exit status is left in /proc), and
+ * the choice is a heuristic by order of first change. */
+static void ended(const char *process,int pid,unsigned long long born,const char *how){
  struct ub_module *m;struct ub_part *p,*newest=0;
  FOR_PARTS(m,p){
   if(!p->process||strcmp(p->process,process)||p->target.pid!=pid||p->target.born!=born)continue;
   if(p->guarded&&!p->tripped&&p->target.changed&&(!newest||p->target.changed>newest->target.changed))newest=p;
  }
- if(newest){newest->tripped=1;ub_log(newest->module,UB_ALWAYS,"%s PID%d ended after part '%s' changed it; that part is off until power cycle",process,pid,newest->name);}
- else ub_log("core",UB_INFO,"%s PID%d ended",process,pid);
+ ub_log("core",newest?UB_ALWAYS:UB_INFO,"%s PID%d ended (%s)",process,pid,how);
+ if(newest){newest->tripped=1;ub_log(newest->module,UB_ALWAYS,"circuit breaker: part '%s' made the latest guarded change (#%u) to %s PID%d; that part is off until power cycle",newest->name,newest->target.changed,process,pid);}
  FOR_PARTS(m,p)if(p->process&&!strcmp(p->process,process)&&p->target.pid==pid&&p->target.born==born){memset(&p->target,0,sizeof p->target);}
 }
 
 static void install(struct ub_part *p,struct ub_target *t){
- int rc;
+ int rc;const char *h;
  if(t->retry){t->retry--;return;}
- if(p->prepare)p->prepare(p,t);
- /* Preparation may still be draining an earlier owner of this process.
-  * Never publish hooks until that handoff is complete. */
- if(t->failed||t->retry)return;
- rc=ub_install_payload(t->pid,p->payload);
- if(rc==0){t->installed=1;ub_changed(p);return;}
- if(rc==-2){t->failed=1;return;}
+ /* Hook sites are read first, without stopping the process. Code that is not
+  * stock (hooks of an earlier helper run, or any other change) is refused once:
+  * no stop, no prepare (which may reset a live backend's files), no adoption. */
+ h=exe_hash(t->pid,t->born);rc=h?ub_hook_sites(t->pid,p->payload,h):-1;
+ if(!rc){
+  if(p->prepare)p->prepare(p,t);
+  /* Preparation may still be draining an earlier owner of this process.
+   * Never publish hooks until that handoff is complete. */
+  if(t->failed||t->retry)return;
+  rc=ub_install_payload(t->pid,p->payload);
+  if(rc==0){t->installed=1;ub_changed(p);return;}
+  if(rc==-2){t->failed=1;return;}
+ }
+ if(rc==1){t->failed=1;ub_log(p->module,UB_ALWAYS,"%s PID%d already has changed code (%s); part '%s' makes no changes in this process",p->process,t->pid,ub_install_stage(),p->name);return;}
  /* Bounded retries; a persistent incompatibility fails closed. */
  t->attempts++;t->retry=1;
  if(t->attempts>=20){t->failed=1;ub_log(p->module,UB_ALWAYS,"giving up installing %s in PID%d (stalled at %s)",p->process,t->pid,ub_install_stage());}
@@ -113,9 +123,9 @@ static void tick(struct ub_part *p){
  if(pid!=t->pid||born!=t->born){
   if(t->pid&&t->born){
    unsigned long long now=birth(t->pid);
-   int gone=(kill(t->pid,0)&&errno==ESRCH)||(now&&now!=t->born);
-   if(!gone)return; /* the tracked instance still runs; a missed scan is not an end */
-   ended(p->process,t->pid,t->born);
+   int missing=kill(t->pid,0)&&errno==ESRCH;
+   if(!missing&&!(now&&now!=t->born))return; /* the tracked instance still runs; a missed scan is not an end */
+   ended(p->process,t->pid,t->born,missing?"no longer running":"its PID belongs to a newer process");
   }
   if(t->pid!=pid||t->born!=born){memset(t,0,sizeof *t);t->pid=pid;t->born=born;}
  }
@@ -153,6 +163,7 @@ void ub_core_start(void){
  struct ub_module *m;struct ub_part *p;
  ub_log("core",UB_ALWAYS,"UB820 QoL helper starting (RAM only)");
  inherited();
+ if(ub_child_wait_init()){ub_log("core",UB_ALWAYS,"cannot initialize child exit handling; startup stopped");exit(1);}
  ub_config_load();
  ub_log_level=UB_ALWAYS; /* raised by the log module when it is enabled */
  FOR_PARTS(m,p){p->module=m->id;if(m->enabled&&p->process)want(p->process);}
@@ -171,6 +182,23 @@ void ub_core_tick(void){
  for(struct ub_module *const *mm=ub_modules;(m=*mm);mm++)
   if(!m->enabled&&m->disabled_step)m->disabled_step(m);
  FOR_PARTS(m,p)if(m->enabled)tick(p);
+}
+
+/* The single-instance lock: the descriptor, or -1 when another helper holds
+ * it. Close-on-exec, so programs the helper starts never inherit it; a child
+ * that does not exec must close it itself. fd 0-2 are made valid first (on
+ * /dev/null when the helper was started with them closed), and the lock never
+ * sits on one of them: the log or a child's setup would reuse or close it. */
+int ub_core_lock(const char *path);
+int ub_core_lock(const char *path){
+ int fd;
+ while((fd=open("/dev/null",O_RDWR|O_CLOEXEC))>=0&&fd<3)fcntl(fd,F_SETFD,0);
+ if(fd>=3)close(fd);
+ fd=open(path,O_CREAT|O_RDWR|O_CLOEXEC,0600);
+ if(fd<0)return -1;
+ if(fd<3){int high=fcntl(fd,F_DUPFD_CLOEXEC,3);close(fd);if(high<0)return -1;fd=high;}
+ if(flock(fd,LOCK_EX|LOCK_NB)){close(fd);return -1;}
+ return fd;
 }
 
 #ifndef UB_HOST_TEST
@@ -200,7 +228,7 @@ int main(int argc,char **argv){
   return ub_poke_command(argc,argv,ub_mem_write,ub_mem_read,stdout,stderr);
  }
  for(struct ub_module *const *mm=ub_modules;(m=*mm);mm++){int rc;if(m->command&&(rc=m->command(argc,argv))>=0)return rc;}
- lock=open(UB_LOCK,O_CREAT|O_RDWR,0600);if(lock<0||flock(lock,LOCK_EX|LOCK_NB))return 0;
+ lock=ub_core_lock(UB_LOCK);if(lock<0)return 0;
  ub_log_open();
  ub_core_start();
  for(;;){ub_core_tick();ub_sleep_ms(1000);}

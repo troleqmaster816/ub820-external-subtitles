@@ -52,34 +52,52 @@ static int marker_state=-1;
 static void sync_marker(void){
  static const char *const said[]={"opens Netflix","does nothing","opens the UB820 Helper overlay"};
  if(netflix_key==marker_state)return;
- if(marker(UB_NETFLIX_OFF,netflix_key==NETFLIX_NOTHING)||marker(UB_NETFLIX_HELPER,netflix_key==NETFLIX_HELPER))return;
+ /* After a partial change neither file is known any more: both are checked
+  * again on the next pass, whatever is chosen by then. */
+ if(marker(UB_NETFLIX_OFF,netflix_key==NETFLIX_NOTHING)||marker(UB_NETFLIX_HELPER,netflix_key==NETFLIX_HELPER)){marker_state=-1;return;}
  marker_state=netflix_key;
  ub_log(ID,UB_INFO,"Netflix button: %s",said[netflix_key]);
 }
 
 /* Status for the menu, rewritten only when it changes. */
 static unsigned menu_seq;
+static struct ub_action_revision menu_revision;
 static char menu_message[96]="";
+/* The USB result of the last choice, and whether its markers still wait for
+ * a retry; the status message follows once they are in place. */
+static int menu_saved_rc,menu_markers_pending;
+static void menu_result(void){
+ if(menu_markers_pending)snprintf(menu_message,sizeof menu_message,"not in effect yet (retrying)%s",menu_saved_rc?"; not saved to USB":"");
+ else if(menu_saved_rc)snprintf(menu_message,sizeof menu_message,"not saved to USB (%s)",ub_stick_error(menu_saved_rc));
+ else snprintf(menu_message,sizeof menu_message,"saved");
+}
+static int menu_line(char *line,size_t cap){
+ int n=snprintf(line,cap,"%u %s %s\n",menu_seq,netflix_names[netflix_key],menu_message);
+ return ub_action_describe(line,cap,n,&menu_revision,menu_saved_rc||menu_markers_pending);
+}
 static void menu_status(void){
- static char last[160];char line[160];int n,fd;
- n=snprintf(line,sizeof line,"%u %s %s\n",menu_seq,netflix_names[netflix_key],menu_message);
+ static char last[192];char line[192];int n=menu_line(line,sizeof line),fd;
  if(n<0||n>=(int)sizeof line||!strcmp(line,last))return;
  fd=open(UB_REMOTE_STATUS ".tmp",O_WRONLY|O_CREAT|O_TRUNC,0600);if(fd<0)return;
  if(write(fd,line,(size_t)n)!=n){close(fd);unlink(UB_REMOTE_STATUS ".tmp");return;}
  if(close(fd)||rename(UB_REMOTE_STATUS ".tmp",UB_REMOTE_STATUS)){unlink(UB_REMOTE_STATUS ".tmp");return;}
  memcpy(last,line,sizeof last);
 }
-/* "set <choice> <seq>" from the menu: apply, save to the stick, answer. */
+/* "set <choice> <seq>" from the menu: apply, set the payload's markers, save
+ * to the stick, then answer with what is actually in effect. */
 static void menu_request(void){
  char buf[64],choice[16],reply[UB_ACTION_PATH],line[160];unsigned seq;int rc,n;
  if(!ub_action_receive(UB_REMOTE_REQUEST,buf,sizeof buf,reply,sizeof reply))return;
  if(sscanf(buf,"set %15s %u",choice,&seq)!=2){ub_log(ID,UB_INFO,"ignored menu request");return;}
+ ub_action_advance(&menu_revision);
  rc=ub_setting_set(ID,"netflix_key",choice);
  menu_seq=seq;
- if(rc<0)snprintf(menu_message,sizeof menu_message,"unknown choice %s",choice);
- else if(rc>0)snprintf(menu_message,sizeof menu_message,"not saved to USB (%s)",ub_stick_error(rc));
- else snprintf(menu_message,sizeof menu_message,"saved");
- n=snprintf(line,sizeof line,"%u %s %s\n",menu_seq,netflix_names[netflix_key],menu_message);
+ if(rc==-1)snprintf(menu_message,sizeof menu_message,"unknown choice %s",choice); /* -1: nothing applied */
+ else{
+  sync_marker(); /* the markers are what the apl_mgr payload acts on */
+  menu_saved_rc=rc;menu_markers_pending=marker_state!=netflix_key;menu_result();
+ }
+ n=menu_line(line,sizeof line);
  if(n>0&&(size_t)n<sizeof line&&ub_action_reply(reply,line,(size_t)n))ub_log(ID,UB_ALWAYS,"cannot acknowledge Netflix button request");
  ub_log(ID,UB_ALWAYS,"Netflix button chosen in the menu: %s (%s)",netflix_names[netflix_key],menu_message);
 }
@@ -88,6 +106,7 @@ static void menu_step(struct ub_part *p,struct ub_target *t){
  if(!keys_ok)return;
  menu_request();
  sync_marker();
+ if(menu_markers_pending&&marker_state==netflix_key){menu_markers_pending=0;menu_result();}
  menu_status();
 }
 

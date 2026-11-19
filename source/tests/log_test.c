@@ -6,6 +6,7 @@
  * thread found by the scan. */
 #define DIAG_BUSY_SECONDS 2
 #define UB_LOG_BOOT_ID "/tmp/ub820-log-test-boot-id"
+#define UB_NATIVE_EV_DEBUG UB_LOG_FILE ".native-events"
 struct ub_dir;
 static const char *isolated_proc_next(struct ub_dir *d);
 #define ub_dir_next isolated_proc_next
@@ -20,6 +21,7 @@ extern const char *ub_dir_next(struct ub_dir *d);
 /* Keep the real /proc scanner and real child lifecycles, but enumerate only
  * this test executable's processes. Unrelated host starts/ends otherwise
  * consume the shared eight-line budget and make exact burst assertions flaky. */
+static const char *extra_proc_entry;
 static const char *isolated_proc_next(struct ub_dir *d){
  struct stat root,here,self,other;const char *entry;char path[80];
  if(stat("/proc",&root)||fstat(d->fd,&here)||root.st_dev!=here.st_dev||root.st_ino!=here.st_ino)return ub_dir_next(d);
@@ -29,11 +31,20 @@ static const char *isolated_proc_next(struct ub_dir *d){
   snprintf(path,sizeof path,"/proc/%d/exe",pid);
   if(!stat(path,&other)&&self.st_dev==other.st_dev&&self.st_ino==other.st_ino)return entry;
  }
- return 0;
+ entry=extra_proc_entry;extra_proc_entry=0;return entry;
 }
 
 static int failures;
 #define CHECK(c) do{if(!(c)){printf("FAIL %s:%d: %s\n",__FILE__,__LINE__,#c);failures++;}}while(0)
+static void test_unreadable_pid(void){
+ const int pid=99999999; /* listed once, with an unreadable stat */
+ struct diag_proc *p=proc_add(procs,pid);
+ CHECK(p);if(!p)return;
+ *p=(struct diag_proc){.pid=pid,.born=123,.ours=1};
+ extra_proc_entry="99999999";diag_scan(1000);
+ p=proc_find(procs,pid);CHECK(p&&p->born==123);
+ diag_scan(1000);CHECK(!proc_find(procs,pid));
+}
 struct ub_module *const ub_modules[]={&ub_module_log,0};
 
 /* Storage stub: records the last copy in each direction. */
@@ -56,11 +67,19 @@ int ub_stick_write(const char *tmp_path,const char *stick_path){
  }
  return stub_result;
 }
+/* A loud failing read prints the tool's line to stderr, which is the RAM log,
+ * as on the player; the quiet variants do not. */
+static int quiet_call,quiet_reads,quiet_writes;
 int ub_stick_read(const char *stick_path,const char *tmp_path){
  reads++;snprintf(read_from,sizeof read_from,"%s",stick_path);
  if(!stub_read_result){FILE *f=fopen(tmp_path,"w");fputs("old run\n",f);fclose(f);}
+ else if(!quiet_call)dprintf(2,"ufs tool: cannot open on stick %s (-10106)\n",stick_path);
  return stub_read_result;
 }
+int ub_stick_read_quiet(const char *stick_path,const char *tmp_path){int rc;quiet_reads++;quiet_call=1;rc=ub_stick_read(stick_path,tmp_path);quiet_call=0;return rc;}
+int ub_stick_load(const char *stick_path,const char *tmp_path,int quiet){return quiet?ub_stick_read_quiet(stick_path,tmp_path):ub_stick_read(stick_path,tmp_path);}
+int ub_stick_write_quiet(const char *tmp_path,const char *stick_path){quiet_writes++;return ub_stick_write(tmp_path,stick_path);}
+int ub_stick_reap(void){return 0;}
 const char *ub_stick_error(int code){return code?"destination cannot be created":"done";}
 
 static size_t slurp(const char *path,char *buf,size_t cap){FILE *f=fopen(path,"r");size_t n=f?fread(buf,1,cap-1,f):0;if(f)fclose(f);buf[n]=0;return n;}
@@ -186,6 +205,65 @@ static void test_continuous(void){
  save=SAVE_MENU;
 }
 
+/* save=always converges: a confirmed absence of the canonical log (code 12)
+ * lets it be written at once; an ambiguous failure is retried quietly, so
+ * retries add nothing to the log and cause no saves of their own. Urgent
+ * saves are at least SAVE_URGENT_GAP apart and coalesce. */
+static void test_policy(void){
+ int before,loud;
+ save=SAVE_ALWAYS;stub_result=stub_archive_result=0;stub_read_result=UB_STICK_ABSENT;
+ reads=quiet_reads=writes=canonical_writes=current_writes=0;
+ start(&ub_module_log);
+ CHECK(!rotation_pending&&reads==1&&canonical_writes==1&&!strcmp(saved_to,UB_STICK_LOG));
+ for(int i=0;i<180;i++)step(0,0);
+ CHECK(reads==1&&canonical_writes==1&&writes==1);
+ /* Ambiguous code 4: per-run file, quiet retries every minute, nothing more. */
+ stub_read_result=4;reads=quiet_reads=writes=current_writes=canonical_writes=0;
+ start(&ub_module_log);loud=reads-quiet_reads;
+ CHECK(rotation_pending&&loud==1&&current_writes==1&&!canonical_writes);
+ before=current_writes;
+ for(int i=0;i<180;i++)step(0,0);
+ CHECK(reads>=3&&reads-quiet_reads==loud);CHECK(current_writes==before);CHECK(!canonical_writes);
+ /* A failing write's retries are quiet too. */
+ stub_result=7;quiet_writes=0;ub_log("t",UB_ALWAYS,"grow");
+ for(int i=0;i<2*SAVE_RETRY+SAVE_PAUSE;i++)step(0,0);
+ CHECK(quiet_writes>=1);stub_result=0;
+ /* Urgency every second: saves at least SAVE_URGENT_GAP apart. */
+ stub_read_result=UB_STICK_ABSENT;start(&ub_module_log);for(int i=0;i<SAVE_PAUSE+1;i++)step(0,0);
+ before=writes;
+ for(int i=0;i<10;i++){ub_log("t",UB_ALWAYS,"urgent %d",i);urgent=1;step(0,0);}
+ CHECK(writes-before<=10/SAVE_URGENT_GAP&&writes-before>=10/SAVE_PAUSE);
+ /* Coalesced: the urgency raised during the gap is saved on the next tick. */
+ before=writes;ub_log("t",UB_ALWAYS,"last");close(open(UB_LOG_URGENT,O_WRONLY|O_CREAT,0600));
+ for(int i=0;i<SAVE_URGENT_GAP;i++)step(0,0);
+ CHECK(writes==before+1&&access(UB_LOG_URGENT,F_OK)!=0&&!urgent);
+ save=SAVE_MENU;stub_read_result=4;
+}
+/* Kernel lines are urgent on whole words only. */
+static void test_urgent_words(void){
+ CHECK(!kernel_urgent("usb 1-1: DEBUG: port reset",6));CHECK(!kernel_urgent("no room left in queue",6));
+ CHECK(!kernel_urgent("boomerang",6));
+ CHECK(kernel_urgent("BUG: scheduling while atomic",6));CHECK(kernel_urgent("apl invoked oom-killer: gfp_mask=0x0",6));
+ CHECK(kernel_urgent("Out of memory: Kill process 12",6));CHECK(kernel_urgent("[ 1.0] Oops: 17 [#1]",6));
+ CHECK(kernel_urgent("anything",3));
+}
+/* A full process table ends a lookup instead of probing forever. */
+static void test_tables(void){
+ static struct diag_proc full[DIAG_PROCS];static struct diag_thread tfull[DIAG_THREADS];
+ alarm(10);
+ for(int i=0;i<DIAG_PROCS;i++)full[i].pid=i+1;
+ for(int i=0;i<DIAG_THREADS;i++)tfull[i].tid=i+1;
+ CHECK(!proc_find(full,DIAG_PROCS+7));CHECK(!proc_add(full,DIAG_PROCS+7));CHECK(proc_find(full,5)==&full[5-1]);
+ CHECK(!thread_find(tfull,DIAG_THREADS+7));CHECK(!thread_add(tfull,DIAG_THREADS+7));
+ alarm(0);
+}
+/* Module off: a mode file left from an earlier run goes. */
+static void test_disabled(void){
+ int fd=open(UB_LOG_MODE,O_WRONLY|O_CREAT|O_TRUNC,0600);if(fd>=0)close(fd);
+ CHECK(ub_module_log.disabled_step!=0);if(ub_module_log.disabled_step)ub_module_log.disabled_step(&ub_module_log);
+ CHECK(access(UB_LOG_MODE,F_OK)!=0);
+}
+
 static void test_trim(void){
  char line[200];size_t n;
  memset(line,'x',sizeof line-1);line[sizeof line-1]=0;
@@ -240,13 +318,15 @@ static void test_crash(void){
 }
 
 static void test_events(void){
- unsigned char buf[256] __attribute__((aligned(8)));struct nlmsghdr *h=(void *)buf;struct cn_msg *cn;struct proc_event *ev;int status;char how[64];
+ unsigned char buf[256] __attribute__((aligned(8)));struct nlmsghdr *h=(void *)buf;struct cn_msg *cn;struct proc_event event={0},*ev=&event;int status;char how[64];
  memset(buf,0,sizeof buf);
  h->nlmsg_len=NLMSG_LENGTH(sizeof *cn+sizeof *ev);h->nlmsg_type=NLMSG_DONE;
  cn=NLMSG_DATA(h);cn->id.idx=CN_IDX_PROC;cn->id.val=CN_VAL_PROC;cn->len=sizeof *ev;
- ev=(void *)cn->data;ev->what=PROC_EVENT_EXIT;ev->event_data.exit.process_pid=777;ev->event_data.exit.process_tgid=777;ev->event_data.exit.exit_code=0x8b;
+ ev->what=PROC_EVENT_EXIT;ev->event_data.exit.process_pid=777;ev->event_data.exit.process_tgid=777;ev->event_data.exit.exit_code=0x8b;
+ memcpy(cn->data,ev,sizeof *ev);
  CHECK(netlink_parse(buf,h->nlmsg_len)==1);
  ev->event_data.exit.process_pid=778; /* a thread, not a process */
+ memcpy(cn->data,ev,sizeof *ev);
  CHECK(netlink_parse(buf,h->nlmsg_len)==0);
  CHECK(netlink_parse(buf,10)==0);
  CHECK(exit_take(777,&status)&&status==0x8b);CHECK(!exit_take(777,&status));
@@ -260,6 +340,7 @@ static void test_stat_and_kernel(void){
  CHECK(!stat_parse("123 (a) b (c)) D 45 1 1 0 -1 4194560 10 0 0 0 7 3 0 0 20 0 5 0 999 1048576 100 4294967295 32768 40000 3200000000 3199999000 717344 0 0 0 0 0 0 0 0 17 1 0 0 0 0 0",&s));
  CHECK(!strcmp(s.comm,"a) b (c)"));CHECK(s.state=='D');CHECK(s.ppid==45);CHECK(s.ticks==10);CHECK(s.born==999);CHECK(s.vsize==1048576);CHECK(s.pc==717344);
  CHECK(stat_parse("garbage",&s));
+ {char truncated[]="123 (name)";CHECK(stat_parse(truncated,&s));}
  CHECK(kernel_level(&line)==3&&!strcmp(line,"[  12.5] mmc0: timeout"));
  {
   static const char boot[]="<6>[    0.0] Booting Linux\n<4>[    1.0] warning at boot\n<6>[    2.0] usb ready\n";
@@ -317,6 +398,8 @@ static void test_chain(void){
 int main(void){
  {FILE *f=fopen(UB_LOG_BOOT_ID,"w");if(!f)return 1;fputs("12345678-1234-1234-1234-123456789abc\n",f);fclose(f);}
  ub_log_open();
+ {char value[8];native_event_request(1);CHECK(slurp(UB_NATIVE_EV_DEBUG,value,sizeof value)==4&&!strcmp(value,"EV1\n"));
+  native_event_request(0);CHECK(access(UB_NATIVE_EV_DEBUG,F_OK)!=0);}
  ub_log_level=UB_ALWAYS;ub_log("t",UB_INFO,"hidden info");ub_log("t",UB_ALWAYS,"kept error");
  start(&ub_module_log); /* level=info, save=menu, diagnostics=0 by default */
  ub_log("t",UB_INFO,"visible info");ub_log("t",UB_DEBUG,"hidden debug");
@@ -328,10 +411,15 @@ int main(void){
  mount_step(0,0);log_text();
  {unsigned listed=count(ram,"log: mount: ");CHECK(listed>0);mount_step(0,0);log_text();CHECK(count(ram,"log: mount: ")==listed);CHECK(!strstr(ram,"mounted: "));}
  test_continuous();
+ test_policy();
+ test_urgent_words();
+ test_tables();
+ test_disabled();
  test_crash();
  test_events();
  test_stat_and_kernel();
  test_busy();
+ test_unreadable_pid();
  test_chain();
  test_trim();
  printf("%s (%d failures)\n",failures?"log_test FAILED":"log_test passed",failures);
