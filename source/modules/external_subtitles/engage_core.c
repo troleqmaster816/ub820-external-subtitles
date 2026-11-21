@@ -255,9 +255,11 @@ static int playdat_byte5(int *out) {
 }
 
 /* lock_op LOCK_EX waits (this program); LOCK_EX|LOCK_NB returns 1 while
- * another holder has the lock, so a periodic caller retries later. Byte 0 is
- * the vertical position (-8 here, the configured one for the helper). */
-static int playdat_write_on(int lock_op, int position) {
+ * another holder has the lock, so a periodic caller retries later. Bytes:
+ * 0 position (-8 here, the configured one for the helper), 2 size (0 Normal,
+ * 1 Small, 2 Large), 3 sync seconds, 4 character code (0 UTF-8, 1 GB2312),
+ * 5 external subtitles on. written: the 8 bytes as stored, when rc is 0. */
+static int playdat_write_on(int lock_op, int position, int size, int sync, int charcode, unsigned char written[8]) {
     int lf, fd, rc = -1;
     unsigned char b[8];
     lf = open(PLAY_LOCK, O_CREAT | O_RDWR, 0666);
@@ -276,21 +278,22 @@ static int playdat_write_on(int lock_op, int position) {
      * subtitle baseline (measured on screen); size index 0 = 52 px scaled
      * by /tmp/ti_font_size=122 to ~63 units (cap ~116 px, native 116).
      * No sync, UTF-8, external on.  Preserve bytes 1, 6, 7. */
-    b[0] = (unsigned char)position;
-    b[2] = 0;
-    b[3] = 0;
-    b[4] = 0;
+    b[0] = (unsigned char)(signed char)position;
+    b[2] = (unsigned char)size;
+    b[3] = (unsigned char)(signed char)sync;
+    b[4] = (unsigned char)charcode;
     b[5] = 1;
     fd = open(PLAY_DAT, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd >= 0) {
         if (write(fd, b, sizeof b) == (ssize_t)sizeof b) rc = 0;
+        if (!rc && written) memcpy(written, b, sizeof b);
         close(fd);
     }
     flock(lf, LOCK_UN);
     close(lf);
     return rc;
 }
-static int playdat_set_on(void) { return playdat_write_on(LOCK_EX, -8) ? -1 : 0; }
+static int playdat_set_on(void) { return playdat_write_on(LOCK_EX, -8, 0, 0, 0, NULL) ? -1 : 0; }
 
 /* Start evtSend without waiting for it. */
 static pid_t evt_start(char *const argv[]) {

@@ -204,14 +204,26 @@ void ub_config_load(void){
  * cycle. 0 saved; -1 invalid (nothing changed); >0 applied but not saved
  * (ub_stick_error code; UB_STICK_UNREAD: the stick's file could not be read,
  * so it is left as it is and the choice waits in RAM for the next save). */
+/* Applies and remembers a choice without writing the stick: several staged
+ * choices are then saved together by one ub_setting_flush (one USB write).
+ * 0 staged; -1 invalid (nothing changed); UB_STICK_UNREAD no room. */
+int ub_setting_stage(const char *module,const char *key,const char *value){
+ int number;
+ if(apply(module,key,value,"menu",0,1,&number))return -1;
+ if(remember(module,key,value,number,1))return UB_STICK_UNREAD; /* no room: the file is left as it is */
+ return 0;
+}
 int ub_setting_set(const char *module,const char *key,const char *value){
+ int rc=ub_setting_stage(module,key,value);
+ return rc?rc:ub_setting_flush();
+}
+/* Saves every remembered choice to sub/ub820_menu.cfg (same results as
+ * ub_setting_set after its value was applied). */
+int ub_setting_flush(void){
  static const char path[]=UB_CONFIG_DIR "/" UB_MENU_FILE;FILE *f;
 #ifndef UB_HOST_TEST
  int rc;
 #endif
- int number;
- if(apply(module,key,value,"menu",0,1,&number))return -1;
- if(remember(module,key,value,number,1))return UB_STICK_UNREAD; /* no room: the file is left as it is */
  mkdir(UB_CONFIG_DIR,0700);
 #ifndef UB_HOST_TEST
  if(!menu_known){

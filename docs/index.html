@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="google-site-verification" content="xNu5kI3UlLOP8v_rIn7TvXHBhCwMYeQf-mlKlXvyiGs" />
   <title>UB820 Helper — Panasonic DP-UB820 external subtitles and tools</title>
-  <meta name="description" content="UB820 Helper: external SRT subtitles, region choices, a configurable Netflix button and diagnostic tools for the Panasonic DP-UB820. Installation, screenshots and documentation.">
+  <meta name="description" content="UB820 Helper: external SRT subtitles with per-disc memory, region choices, a configurable Netflix button and diagnostic tools for the Panasonic DP-UB820. Installation, screenshots and documentation.">
   <link rel="canonical" href="https://troleqmaster816.github.io/ub820-external-subtitles/">
   <meta property="og:type" content="website">
   <meta property="og:title" content="UB820 Helper">
@@ -67,13 +67,14 @@ footer { padding-block: 24px 32px; border-top: 1px solid var(--line); font-size:
   <main id="content"><article>
 <h1 id="ub820-helper">UB820 Helper</h1>
 <p>External <code>.srt</code> subtitles and extra settings for the <strong>Panasonic DP-UB820</strong>,
-with support for firmware <strong>1.82</strong> and <strong>1.85</strong>. The helper runs in RAM;
-saved preferences stay on the USB stick. It does not install custom firmware.</p>
-<p>Choose subtitle files during playback and adjust their size, position, timing
-and brightness. <strong>UB820 Helper</strong> adds disc region choices and other settings.
-The Netflix button opens Helper over the home screen, menus or a film.
-On remotes without that button, use <strong>Player Settings &gt; System &gt; UB820 Helper</strong>.</p>
-<p><a href="https://github.com/troleqmaster816/ub820-external-subtitles/releases/tag/v0.2">Download 0.2 and release notes</a>
+supporting firmware <strong>1.82</strong> and <strong>1.85</strong>. It runs in RAM and leaves your
+player's firmware untouched; your saved preferences stay on the USB stick.</p>
+<p>Choose subtitle files during playback, adjust their size, position, timing and
+brightness, and let each Blu-ray remember its own subtitles automatically.
+<strong>UB820 Helper</strong> also adds disc region switching, auto power-off control, and
+optional diagnostics. Press the <strong>Netflix</strong> button to open Helper over the home
+screen, menus or a film, or open <strong>Player Settings &gt; System &gt; UB820 Helper</strong>.</p>
+<p><a href="https://github.com/troleqmaster816/ub820-external-subtitles/releases/tag/v0.3">Download 0.3 and release notes</a>
 · <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/USB-CONTENTS/sub/modules.cfg">Configuration</a></p>
 <div class="table-scroll"><table>
 <thead>
@@ -94,53 +95,69 @@ On remotes without that button, use <strong>Player Settings &gt; System &gt; UB8
 </tbody>
 </table></div>
 <h2 id="setup">Setup</h2>
-<p>You need a <strong>FAT32 USB stick</strong> and a DP-UB820 running supported firmware.
-The release ZIP contains the loader and <code>sub</code> folder, ready to copy to the stick.</p>
+<p>You need a <strong>FAT32 USB stick</strong> and a DP-UB820 on firmware <strong>1.82</strong> or <strong>1.85</strong>.
+The release ZIP contains everything ready to copy to the stick.</p>
 <ol>
-<li>Extract the release ZIP to the stick's root, or copy the contents of
-   <a href="https://github.com/troleqmaster816/ub820-external-subtitles/tree/main/USB-CONTENTS"><code>USB-CONTENTS/</code></a>.
-   Keep <code>LOADER.MKV</code> beside the <code>sub</code> folder.</li>
-<li>Put your <code>.srt</code> files anywhere on the stick. Subfolders work.</li>
-<li>Start with a fresh player session. If Quick Start is enabled, unplug the
-   player briefly before starting it again.</li>
-<li>Insert the stick, choose <strong>USB &gt; Video</strong>, and launch <code>LOADER.MKV</code>.
-   The player reports that the file cannot be opened; dismiss the message.</li>
-<li>Play a disc and open <strong>OPTIONS &gt; External Subtitles</strong> to choose a file.</li>
+<li>Extract the release ZIP to the root of the USB stick (or copy the contents of
+   <a href="https://github.com/troleqmaster816/ub820-external-subtitles/tree/main/USB-CONTENTS"><code>USB-CONTENTS/</code></a>).
+   Keep <code>LOADER.MKV</code> right next to the <code>sub</code> folder.</li>
+<li>Put your <code>.srt</code> files anywhere on the stick — subfolders work. Save them as
+   <strong>UTF-8</strong> so accented characters display properly.</li>
+<li>Start from a clean player boot. If Quick Start is on, unplug the player for
+   a few seconds first.</li>
+<li>Plug in the stick, open <strong>USB &gt; Video</strong>, and launch <code>LOADER.MKV</code>. The player
+   will say the file cannot be opened — dismiss that message.</li>
+<li>Play a disc and open <strong>OPTIONS &gt; External Subtitles</strong> to pick a subtitle file.</li>
 </ol>
-<p>The helper runs until the player fully restarts; standby with Quick Start
-may keep it running. Leave the stick connected while using external subtitles
-or saving settings.</p>
-<h3 id="updating-an-existing-stick">Updating an existing stick</h3>
-<p>The release ZIP also works for a fresh install. To update an existing stick,
-replace <strong><code>sub/engage</code></strong>, keep your existing configuration and SSH credentials, and
-fully restart the player before launching the helper again. The included
-<code>modules.cfg</code> is a fresh-default example; you do not need to replace your own.</p>
+<p>The helper stays active until the player fully restarts (Quick Start standby
+may keep it running). Leave the USB stick plugged in while using external
+subtitles or saving settings.</p>
+<h3 id="updating-from-an-earlier-version">Updating from an earlier version</h3>
+<p>Replace <strong><code>LOADER.MKV</code></strong> and <strong><code>sub/engage</code></strong> on your stick with the new
+files, then fully restart the player before launching the helper again. Keep
+your existing <code>sub/modules.cfg</code>, saved settings (<code>sub/ub820_menu.cfg</code>,
+<code>sub/ub820_subtitles.cfg</code>), and any SSH files.</p>
 <h2 id="external-subtitles">External subtitles</h2>
-<p>Open <strong>OPTIONS &gt; External Subtitles</strong>, browse to an <code>.srt</code> file and press <strong>OK</strong>.
-The file starts at the current film position. Selecting it again reloads it.
-<strong>Subtitles: Off</strong> hides external subtitles without changing the disc's own track.</p>
-<p>The player's <strong>Subtitle Settings</strong> page also offers size, position,
-synchronization and character-code controls for external subtitles. English
-labels fill in text missing from the firmware's European menu languages.</p>
-<p><strong>Text brightness</strong> is in the <strong>External Subtitles</strong> menu:</p>
+<p>Open <strong>OPTIONS &gt; External Subtitles</strong>, browse to an <code>.srt</code> file, and press
+<strong>OK</strong>. Subtitles start at the current playback position and automatically turn
+on even if you previously turned them off. Selecting the same file again reloads
+it. <strong>Subtitles: Off</strong> hides external subtitles without affecting the disc's own
+subtitle track.</p>
 <ul>
-<li><strong>Left / Right:</strong> change by 1 point. <strong>Up / Down:</strong> change by 10.</li>
-<li>Changes appear immediately, including while paused.</li>
-<li><strong>OK:</strong> save. <strong>Return:</strong> restore the value from before editing.</li>
+<li><strong>Remembers where you left off:</strong> The browser reopens in the folder of the
+  last subtitle file you chose, including after a restart.</li>
+<li><strong>Per-disc subtitle memory:</strong> Each Blu-ray remembers the <code>.srt</code> file you
+  chose for it, along with its synchronization and character code (up to 200
+  discs, stored in <code>sub/ub820_subtitles.cfg</code>). The next time you play that
+  disc, your subtitles load automatically instead of <code>sub/sub.srt</code>. If the file
+  was moved or deleted, it falls back cleanly to <code>sub/sub.srt</code>. Delete
+  <code>sub/ub820_subtitles.cfg</code> to clear saved discs, or set <code>memory=off</code> under
+  <code>[external_subtitles]</code> in <code>modules.cfg</code> to disable it. (Applies to Blu-ray
+  discs, not DVDs.)</li>
+<li><strong>Saved position and size:</strong> Changes you make to subtitle <strong>position</strong> or
+  <strong>size</strong> in the player's <strong>Subtitle Settings</strong> are remembered automatically
+  for future films. English labels fill in missing text on European-language
+  menus.</li>
+<li><strong>Smooth timing:</strong> Fractional subtitle timing is on by default, avoiding the
+  player's built-in whole-second stepping.</li>
+</ul>
+<h3 id="text-brightness">Text brightness</h3>
+<p>Adjust external subtitle brightness from <strong>OPTIONS &gt; External Subtitles</strong>:</p>
+<ul>
+<li><strong>Left / Right:</strong> step by 1%. <strong>Up / Down:</strong> step by 10%.</li>
+<li>Changes preview live, including while paused.</li>
+<li><strong>OK:</strong> save. <strong>Return:</strong> cancel and restore the previous brightness.</li>
 <li><strong>Reset text brightness:</strong> restore and save <strong>Original (100%)</strong>.</li>
 </ul>
-<p>Lower values darken the text and keep its black outline. <strong>0% draws black
-text</strong>; use <strong>Subtitles: Off</strong> to hide it. This control is separate from the
-player's <strong>Subtitle Luminance</strong> setting for disc subtitles.</p>
-<p>Fractional subtitle timing is enabled by default, avoiding the stock engine's
-whole-second timing steps.</p>
+<p>Lower values darken the text while keeping its black outline (<strong>0%</strong> draws
+black text; use <strong>Subtitles: Off</strong> to hide subtitles). This is independent of
+the player's <strong>Subtitle Luminance</strong> setting for disc subtitles.</p>
 <h2 id="ub820-helper_1">UB820 Helper</h2>
 <p>Open Helper from <strong>OPTIONS</strong>, <strong>Player Settings &gt; System</strong>, or the <strong>Netflix</strong>
-button. Press Netflix again or <strong>Return</strong> to close the overlay.</p>
+button. Press <strong>Netflix</strong> again or <strong>Return</strong> to close it.</p>
 <p align="center">
   <img src="images/helper-overlay.jpg" width="640" alt="UB820 Helper over the home screen">
 </p>
-
 <div class="table-scroll"><table>
 <thead>
 <tr>
@@ -151,109 +168,110 @@ button. Press Netflix again or <strong>Return</strong> to close the overlay.</p>
 <tbody>
 <tr>
 <td><strong>Blu-ray region</strong></td>
-<td>Choose <strong>Player default</strong>, <strong>A</strong>, <strong>B</strong>, <strong>C</strong> or <strong>A+B+C</strong>. Applies when the next disc starts; eject and reinsert the current disc to apply it.</td>
+<td>Choose <strong>Player default</strong>, <strong>A</strong>, <strong>B</strong>, <strong>C</strong> or <strong>A+B+C</strong>. Takes effect on the next disc launch (eject and reinsert if a disc is already playing).</td>
 </tr>
 <tr>
 <td><strong>DVD region</strong></td>
-<td>Choose <strong>Player default</strong>, <strong>No region check</strong>, <strong>Auto</strong> or a region from <strong>1</strong> to <strong>8</strong>. The drive may still refuse an encrypted DVD from another region.</td>
+<td>Choose <strong>Player default</strong>, <strong>No region check</strong>, <strong>Auto</strong> or <strong>1–8</strong>. Note that the drive itself may still block encrypted out-of-region DVDs.</td>
 </tr>
 <tr>
 <td><strong>Netflix button</strong></td>
-<td>Open Helper, open Netflix, or do nothing.</td>
+<td>Open Helper, open Netflix as usual, or do nothing.</td>
 </tr>
 <tr>
 <td><strong>Auto power-off</strong></td>
-<td>Keep the player's automatic idle shutdown or turn it off. Manual power-off still works.</td>
+<td>Keep the player's automatic idle shutdown on, or disable it. Manual power-off still works normally.</td>
 </tr>
 <tr>
 <td><strong>CPU optimization</strong></td>
-<td>Optional, experimental reduction of background CPU use. Available only when the <code>cpu</code> module is enabled.</td>
+<td>Experimental option to lower background CPU usage (only shown if enabled in <code>modules.cfg</code>).</td>
 </tr>
 <tr>
 <td><strong>Start SSH / Stop SSH</strong></td>
-<td>Available when the <code>ssh</code> module is enabled.</td>
+<td>Diagnostic shell access (only shown if enabled in <code>modules.cfg</code>).</td>
 </tr>
 <tr>
 <td><strong>Helper log / Save log to USB</strong></td>
-<td>Read recent messages or save them to the stick.</td>
+<td>View recent helper messages or save them to the USB stick.</td>
 </tr>
 </tbody>
 </table></div>
-<p>Menu choices are saved in <strong><code>sub/ub820_menu.cfg</code></strong>. If saving fails, the menu
-says so; the new setting may last only until the player restarts.</p>
+<p>Choices made in the menu are saved to <strong><code>sub/ub820_menu.cfg</code></strong>. If a USB write
+fails, the menu lets you know and you can choose the option again to retry.</p>
 <h2 id="configuration">Configuration</h2>
-<p>Edit <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/USB-CONTENTS/sub/modules.cfg"><code>sub/modules.cfg</code></a> to enable modules or
-change their starting settings. Restart the player and load the helper again
-after editing it. Preferences already saved through the menus take precedence;
-remove <code>sub/ub820_menu.cfg</code> to return all preferences to the file's defaults.</p>
-<p>The supplied defaults enable external subtitles, Helper menus, region controls,
-the Netflix shortcut and the helper log. Regions stay at <strong>Player default</strong>,
-text brightness is <strong>100%</strong>, and automatic idle shutdown stays <strong>On</strong>.
-<strong>The SSH and CPU modules, CPU optimization and detailed diagnostics are off.</strong></p>
-<h3 id="cpu-optimization">CPU optimization</h3>
-<p>To show the control in Helper, set:</p>
+<p>Edit <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/USB-CONTENTS/sub/modules.cfg"><code>sub/modules.cfg</code></a> to enable or disable
+modules or change starting defaults, then restart the player and launch the
+helper again. Settings saved through the on-screen menus (<code>sub/ub820_menu.cfg</code>)
+take priority over <code>modules.cfg</code>; delete <code>sub/ub820_menu.cfg</code> to go back to
+your <code>modules.cfg</code> defaults.</p>
+<p>Out of the box, external subtitles, Helper menus, region controls, the Netflix
+shortcut and logging are enabled; regions stay on <strong>Player default</strong>, text
+brightness is <strong>100%</strong>, and auto power-off stays <strong>On</strong>. <strong>SSH, CPU
+optimization, and detailed diagnostics are off by default.</strong></p>
+<h3 id="cpu-optimization">CPU optimization (experimental)</h3>
+<p>To show the <strong>CPU optimization</strong> toggle in Helper, add or edit in <code>modules.cfg</code>:</p>
 <pre><code class="language-ini">[cpu]
 enabled=1
 optimize=off
 </code></pre>
-<p>Then choose <strong>CPU optimization &gt; On</strong> in Helper. The choice is saved, so it
-will apply the next time you load the helper. <strong>Off</strong> restores the original
-CPU behavior; the inactive kernel component remains in RAM until a full restart.</p>
-<p>This is experimental. Short tests on 1.82 covered menus, the remote, the front-panel
-Eject button, Blu-ray playback, external subtitles, pause, seeking and chapters.
-Long playback, power/standby and CEC still need testing. CPU optimization has
-not been tested on a 1.85 player.</p>
-<h3 id="ssh">SSH</h3>
-<p>Set <code>enabled=1</code> under <code>[ssh]</code> in <code>modules.cfg</code>, put your public key in
-<code>sub/authorized_keys</code>, then restart the player and load the helper.
-Choose <strong>Start SSH</strong> in Helper. It shows the address to use:</p>
+<p>Then switch <strong>CPU optimization</strong> to <strong>On</strong> in Helper. If a saved startup
+activation does not stay healthy, the helper automatically skips auto-enabling
+it on the next boot so you are never stuck in a bad state (you can still turn
+it on manually). Tested in short playback sessions on 1.82; not yet tested on
+1.85. See the <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/source/modules/cpu/README.md">CPU module documentation</a> for
+details.</p>
+<h3 id="ssh">SSH (diagnostic)</h3>
+<p>Set <code>enabled=1</code> under <code>[ssh]</code> in <code>modules.cfg</code>, place your public key in
+<code>sub/authorized_keys</code>, restart the player, and launch the helper. Choose
+<strong>Start SSH</strong> in Helper to see the player's address:</p>
 <pre><code class="language-sh">ssh -p 2222 root@PLAYER_IP
 </code></pre>
-<p>SSH includes a shell, a home folder in RAM, common tools, SFTP and SCP.
-Files in that home folder disappear after a full restart. Optional password
-login and automatic startup are described in
-<a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/USB-CONTENTS/sub/modules.cfg"><code>modules.cfg</code></a>. Automatic startup begins when
-the helper launches, not when the player powers on. Keep SSH on a trusted network.
-See the <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/source/tools/ssh/README.md">SSH documentation</a> for tool paths and builds.</p>
+<p>SSH runs in RAM and disappears on a full restart. Optional password login and
+autostart on helper launch are documented in
+<a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/USB-CONTENTS/sub/modules.cfg"><code>modules.cfg</code></a>. Only enable SSH on a trusted
+network. See the <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/source/tools/ssh/README.md">SSH documentation</a> for
+included tools and details.</p>
 <h3 id="logging">Logging</h3>
-<p>By default, use <strong>Save log to USB</strong> when you need a log. For automatic saving:</p>
+<p>Use <strong>Save log to USB</strong> in Helper whenever you need a log, or enable continuous
+saving in <code>modules.cfg</code>:</p>
 <pre><code class="language-ini">[log]
 save=always
 </code></pre>
-<p>Logs go to <code>sub/ub820_submenu.log</code>; the previous session is kept as
-<code>sub/ub820_submenu.prev.log</code>. If it cannot preserve the previous log there,
-the helper uses a separate filename and reports it. Set <code>diagnostics=1</code> for
-player crashes, stuck threads and kernel messages. Logging begins with the helper.</p>
+<p>Logs are written to <code>sub/ub820_submenu.log</code>, with the previous session kept as
+<code>sub/ub820_submenu.prev.log</code>. Set <code>diagnostics=1</code> to also record crashes, hung
+threads and kernel messages.</p>
 <h2 id="compatibility-and-limits">Compatibility and limits</h2>
 <ul>
-<li><strong>1.82:</strong> used for development and player testing.</li>
-<li><strong>1.85:</strong> a user confirmed external subtitles and menus on a newer <strong>AG</strong>
-  player. That report predates the new 0.2 features; it does not verify every module.</li>
-<li><strong>Other firmware:</strong> patching requires recognized program and library versions.
-  Firmware <strong>1.84 is not supported</strong>.</li>
-<li>The new brightness control and latest changes to reduce CPU use while subtitles
-  are off or playback is paused have passed local tests; their player tests are
-  still pending.</li>
-<li>Experimental automatic Blu-ray region selection is off by default and does
-  not handle region checks written in BD-J. Choose a region letter for those discs.</li>
-<li>The file browser shows up to <strong>64 entries per folder</strong> and supports full paths
-  up to <strong>250 bytes</strong>. The selected subtitle file is remembered for that playback.</li>
+<li><strong>Firmware 1.82:</strong> primary development and hardware-testing target.</li>
+<li><strong>Firmware 1.85:</strong> supported, though not every feature has been tested on
+  1.85 hardware yet.</li>
+<li><strong>Firmware 1.84:</strong> not supported.</li>
+<li><strong>Subtitle files:</strong> must be UTF-8 (BOM optional); up to <strong>64 entries per
+  folder</strong> and <strong>250 bytes</strong> per full path.</li>
+<li><strong>Automatic Blu-ray region (<code>bd_auto=1</code>):</strong> experimental and HDMV-only — for
+  Java (BD-J) discs, pick a specific region letter instead.</li>
 </ul>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <ul>
-<li><strong>Helper is missing from Player Settings.</strong> Close Settings and open it once
-  more. If it is still missing, fully restart the player and load the helper again.</li>
-<li><strong>Changes in <code>modules.cfg</code> are ignored.</strong> Saved choices in <code>sub/ub820_menu.cfg</code> override
-  <code>modules.cfg</code>. Both files are read when the helper starts.</li>
-<li><strong>No log appears on the stick.</strong> Choose <strong>Save log to USB</strong>, or enable
-  <code>save=always</code>. Check the on-screen helper log for a save error or alternate filename.</li>
-<li><strong>Something freezes or behaves incorrectly.</strong> Save the log if possible.
-  Fully restart the player without loading the helper to return to normal firmware.</li>
+<li><strong>Player gets stuck on "Reading" or won't open USB files:</strong> make sure you
+  updated <strong><code>LOADER.MKV</code></strong> to the 0.3 version as well as <code>sub/engage</code>, then
+  power-cycle the player.</li>
+<li><strong>Accented letters are missing or cut off the rest of the line:</strong> convert the
+  <code>.srt</code> file from ANSI / Windows-1250 / Latin-1 to <strong>UTF-8</strong>.</li>
+<li><strong>Helper is missing from Player Settings:</strong> exit Player Settings and open it
+  once more. If it still doesn't appear, power-cycle the player and relaunch
+  <code>LOADER.MKV</code>.</li>
+<li><strong>Edits to <code>modules.cfg</code> don't take effect:</strong> saved menu settings in
+  <code>sub/ub820_menu.cfg</code> override <code>modules.cfg</code>. Both files are read when the
+  helper starts.</li>
+<li><strong>Something freezes or misbehaves:</strong> save the log if you can, then unplug the
+  player for a few seconds and power it back on without launching <code>LOADER.MKV</code>
+  to return to completely stock firmware.</li>
 </ul>
 <h2 id="source-and-license">Source and license</h2>
-<p>See <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> for building and module development.
-The prebuilt helper is <code>USB-CONTENTS/sub/engage</code>.</p>
-<p>The helper is <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/LICENSE">MIT-licensed</a>. Bundled components retain their own
+<p>See <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> for building from source and module
+development. The prebuilt helper is <code>USB-CONTENTS/sub/engage</code> (release 0.3).</p>
+<p>UB820 Helper is <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/LICENSE">MIT-licensed</a>. Bundled components keep their own
 licenses: <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/source/tools/ssh/README.md">SSH tools and BusyBox</a>,
 <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/source/modules/cpu/kernel/README.md">CPU kernel component</a>, and
 <a href="https://github.com/troleqmaster816/ub820-external-subtitles/blob/main/source/licenses/README.md">GNU C Library</a>.

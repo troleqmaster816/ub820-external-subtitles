@@ -1,6 +1,10 @@
 /* Include the real supervisor step, with only its OS/device transport mocked. */
 #define _GNU_SOURCE
 #define UB_HOST_TEST 1
+/* The helper's private RAM records go through the real file system here. */
+#define UB_SUB_TEST_PREFIX "/tmp/ub820-startup-test."
+#define UB_SUB_HINT_FILE UB_SUB_TEST_PREFIX "hint"
+#define UB_SUB_SELECTION_FILE UB_SUB_TEST_PREFIX "selection"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,7 +21,10 @@
 static int loaded_value,status_present=1,status_active,style_result,style_calls,on_writes,gate_writes,load_events,maps_done;
 static int preference_writes,font_fail,font_publications,lock_busy,child_running,child_status,killed,marker_created,marker_removed;
 static int dat_open_error;
+static unsigned char last_dat[8];
+static int is_record(const char *path){return !strncmp(path,UB_SUB_TEST_PREFIX,strlen(UB_SUB_TEST_PREFIX));}
 static int test_open(const char *path,int flags,...){
+ if(is_record(path)){va_list a;va_start(a,flags);int mode=(flags&O_CREAT)?va_arg(a,int):0;va_end(a);return open(path,flags,mode);}
  if(!strcmp(path,UB_STATUS_FILE))return status_present?100:-1;
  if(!strcmp(path,"/proc/42/mem"))return 101;
  if(!strcmp(path,"/proc/42/maps")){maps_done=0;return 102;}
@@ -28,6 +35,7 @@ static int test_open(const char *path,int flags,...){
  return -1;
 }
 static ssize_t test_read(int fd,void *buf,size_t size){
+ if(fd<100)return read(fd,buf,size); /* a real record file */
  if(fd==100){struct ub_status status={0};status.magic=UB_MAGIC;status.version=UB_VERSION;status.active=status_active;assert(size==sizeof status);memcpy(buf,&status,size);return size;}
  if(fd==102){const char *maps="293a0000-293d8000 r-xp 00000000 00:01 1 /known/libtiwin.so.0.0.0\n";if(maps_done)return 0;maps_done=1;assert(size>strlen(maps));memcpy(buf,maps,strlen(maps));return strlen(maps);}
  if(fd==105){memset(buf,0,size);return size;}
@@ -35,11 +43,12 @@ static ssize_t test_read(int fd,void *buf,size_t size){
 }
 static ssize_t test_pread(int fd,void *buf,size_t size,off_t offset){assert(fd==101 && offset==0x434e8 && size==1);*(unsigned char *)buf=loaded_value;return 1;}
 static ssize_t test_write(int fd,const void *buf,size_t size){
- if(fd==105){on_writes++;return size;}
+ if(fd<100)return write(fd,buf,size);
+ if(fd==105){on_writes++;if(size==8)memcpy(last_dat,buf,8);return size;}
  assert(fd==103&&size==4&&!memcmp(buf,"122\n",4));return size;
 }
 static ssize_t test_pwrite(int fd,const void *buf,size_t size,off_t offset){(void)buf;assert(fd==101 && size==4 && offset==0x43504);gate_writes++;return size;}
-static int test_close(int fd){(void)fd;return 0;}
+static int test_close(int fd){return fd<100?close(fd):0;}
 /* The 1 Hz supervisor must never wait for the play-data lock. */
 static int test_flock(int fd,int flags){
  assert(fd==104);if(flags&LOCK_UN)return 0;
@@ -47,9 +56,10 @@ static int test_flock(int fd,int flags){
  if(lock_busy){errno=EWOULDBLOCK;return -1;}return 0;
 }
 static int test_rename(const char *from,const char *to){
+ if(is_record(from)&&is_record(to))return rename(from,to);
  assert(!strcmp(from,"/tmp/ti_font_size.tmp")&&!strcmp(to,"/tmp/ti_font_size"));font_publications++;return 0;
 }
-static int test_unlink(const char *path){if(!strcmp(path,"/tmp/ub820_srt_precision.off"))marker_removed++;return 0;}
+static int test_unlink(const char *path){if(is_record(path))return unlink(path);if(!strcmp(path,"/tmp/ub820_srt_precision.off"))marker_removed++;return 0;}
 static int fork_failed;
 static pid_t test_fork(void){load_events++;return fork_failed?-1:123;}
 /* ...and never wait for evtSend: only nonblocking reaping. */
@@ -87,6 +97,16 @@ int ub_patch_code(int pid,const struct ub_code_patch *patches,unsigned count){(v
 const char *ub_patch_stage(void){return "test";}
 void ub_log(const char *module,int level,const char *format,...){(void)module;(void)level;(void)format;}
 int ub_setting_set(const char *module,const char *key,const char *value){(void)module;(void)key;(void)value;preference_writes++;return 0;}
+/* Subtitle memory: startup never saves a preference or touches the stick. */
+int ub_setting_stage(const char *module,const char *key,const char *value){(void)module;(void)key;(void)value;preference_writes++;return 0;}
+int ub_setting_flush(void){preference_writes++;return 0;}
+int ub_stick_load(const char *from,const char *to,int quiet){(void)from;(void)to;(void)quiet;abort();}
+int ub_stick_write(const char *from,const char *to){(void)from;(void)to;abort();}
+const char *ub_stick_error(int code){(void)code;return "test";}
+/* Most cases have no disc, so the disc memory stays inactive. */
+static const char *disc_stub;static int disc_lookups;
+int ub_disc_root(char *out,size_t size){disc_lookups++;if(!disc_stub)return 0;snprintf(out,size,"/mnt/odd");return 1;}
+int ub_disc_id(const char *root,char id[33]){assert(disc_stub&&!strcmp(root,"/mnt/odd"));memcpy(id,disc_stub,33);return 0;}
 /* Retain the actual parts descriptor for its lifecycle-policy assertion.
  * Its unrelated row/translation callbacks must not run in this fixture. */
 const struct ub_payload ub_payload_external_subtitles_precision_source={0};
@@ -176,6 +196,44 @@ int main(void){
  t=target();t.born=10;engine_step(&part,&t);assert(evt_child);
  child_status=1<<8;status_active=1;engine_step(&part,&t);
  assert(!evt_child&&t.state[0]==15&&load_events==events+4);cases++;
+ /* Disc memory: a known disc hands its file to the payload and starts with
+  * its sync/charcode; an unknown disc or memory=off starts at 0/UTF-8. */
+ {static const char A[]="0123456789abcdef0123456789abcdef",B[]="fedcba9876543210fedcba9876543210";
+  struct ub_sub_hint h;
+  unlink(UB_SUB_HINT_FILE);memset(&memory,0,sizeof memory);
+  snprintf(memory.last_dir,sizeof memory.last_dir,"/mnt/usb/Filmy");
+  assert(sub_memory_put(&memory,B,"/mnt/usb/b.srt",0,0)==1&&sub_memory_put(&memory,A,"/mnt/usb/Filmy/a.srt",1,-5)==1);
+  assert(sub_memory_front(&memory,1)&&!strcmp(memory.disc[0].id,B));
+  disc_stub=A;child_status=0;status_present=0;status_active=0;loaded_value=0;
+  t=target();t.born=77;engine_prepare(&part,&t);
+  assert(!ub_br_private_read(UB_SUB_HINT_FILE,&h,sizeof h)&&ub_sub_hint_valid(&h,42,77));
+  assert(h.flags==(UB_SUB_HINT_START_DIR|UB_SUB_HINT_AUTOLOAD)&&!strcmp(h.start_dir,"/mnt/usb/Filmy"));
+  assert(!strcmp(h.autoload,"/mnt/usb/Filmy/a.srt")&&h.sync==-5&&h.charcode==1);
+  assert(!strcmp(disc_cur,A)&&!strcmp(memory.disc[0].id,A)); /* most recent in RAM */
+  t.state[2]=t.state[3]=1;memset(last_dat,0,8);engine_step(&part,&t);
+  assert(t.state[0]==1&&(signed char)last_dat[3]==-5&&last_dat[4]==1&&last_dat[5]==1&&(signed char)last_dat[0]==disc_style.position);
+  assert(prefs.armed&&prefs.base[3]==last_dat[3]);cases++;
+  /* the poll learns a file chosen for this disc, with play_dat's current
+   * sync/charcode (the fixture reads zeros), and schedules one save */
+  {struct ub_sub_selection sel;memset(&sel,0,sizeof sel);
+   sel.magic=UB_SUB_SELECTION_MAGIC;sel.version=UB_SUB_RECORD_VERSION;sel.pid=42;sel.birth_lo=77;sel.seq=1;sel.kind=UB_SUB_KIND_CHOSEN;
+   strcpy(sel.path,"/mnt/usb/Nowe/new.srt");assert(!ub_br_private_write(UB_SUB_SELECTION_FILE,&sel,sizeof sel));
+   memset(&memory_save,0,sizeof memory_save);subtitle_memory_poll(&t);
+   assert(!strcmp(memory.disc[0].id,A)&&!strcmp(memory.disc[0].path,"/mnt/usb/Nowe/new.srt")&&!memory.disc[0].sync&&!memory.disc[0].charcode);
+   assert(!strcmp(memory.last_dir,"/mnt/usb/Nowe")&&memory_save.dirty&&last_kind==UB_SUB_KIND_CHOSEN&&!learn_pending);
+   /* the same record again teaches nothing */
+   memset(&memory_save,0,sizeof memory_save);subtitle_memory_poll(&t);assert(!memory_save.dirty);
+   unlink(UB_SUB_SELECTION_FILE);snprintf(memory.last_dir,sizeof memory.last_dir,"/mnt/usb/Filmy");cases++;}
+  /* unknown disc: folder only, stock sync/charcode */
+  disc_stub="00000000000000000000000000000001";t=target();t.born=78;engine_prepare(&part,&t);
+  assert(!ub_br_private_read(UB_SUB_HINT_FILE,&h,sizeof h)&&h.flags==UB_SUB_HINT_START_DIR&&!h.autoload[0]);
+  t.state[2]=t.state[3]=1;memset(last_dat,0xee,8);engine_step(&part,&t);assert(!last_dat[3]&&!last_dat[4]&&last_dat[5]==1);
+  /* memory=off: the disc is not even looked up */
+  disc_memory=0;disc_stub=A;{int n=disc_lookups;t=target();t.born=79;engine_prepare(&part,&t);assert(disc_lookups==n&&!disc_cur[0]);}
+  assert(!ub_br_private_read(UB_SUB_HINT_FILE,&h,sizeof h)&&h.flags==UB_SUB_HINT_START_DIR);
+  /* nothing to hand over: no hint file at all */
+  memory.last_dir[0]=0;t=target();t.born=80;engine_prepare(&part,&t);assert(access(UB_SUB_HINT_FILE,F_OK));
+  disc_memory=1;disc_stub=0;cases++;}
  printf("subtitle_startup_test passed: %u cases; early status cannot skip style; loaded/user-Off preserved; retry/quarantine handled; no preference save; calibration retried alone; nonblocking lock and evtSend; precision marker\n",cases);
  return 0;
 }

@@ -8,8 +8,9 @@
 #endif
 /* Values come from the module options (sub/modules.cfg [external_subtitles],
  * or the older sub/disc_style.cfg keys). */
-struct ub_disc_style { int font_percent, position, bottom_align; };
-static struct ub_disc_style disc_style = {122,-8,1};
+/* size: play_dat byte 2 (0 Normal, 1 Small, 2 Large). */
+struct ub_disc_style { int font_percent, position, bottom_align, size; };
+static struct ub_disc_style disc_style = {122,-8,1,0};
 
 /* Publish the complete value by rename: a reader never sees a truncated or
  * partial file. 0 written; -1 failed and the caller retries this write alone. */
@@ -45,9 +46,13 @@ static int style_patch(int pid) {
   disc_rows_stock,disc_rows_aligned,want};
  return ub_patch_code(pid,patches,6);
 }
-/* One locked write with the configured position. Never waits for the lock:
- * 0 written, 1 busy (retry on a later tick), -1 failed. */
-static int playdat_set_on(void) {
- return playdat_write_on(LOCK_EX|LOCK_NB,disc_style.position);
+/* One locked write with the configured position and size; sync and
+ * character code come from the disc memory, else 0 (per film, not global).
+ * Never waits for the lock: 0 written (written[] holds the stored bytes),
+ * 1 busy (retry on a later tick), -1 failed. */
+static int playdat_set_on_disc(int sync,int charcode,unsigned char written[8]) {
+ return playdat_write_on(LOCK_EX|LOCK_NB,disc_style.position,disc_style.size,sync,charcode,written);
 }
+static int playdat_set_on_bytes(unsigned char written[8]) {return playdat_set_on_disc(0,0,written);}
+static int playdat_set_on(void) {return playdat_set_on_bytes(0);}
 #endif

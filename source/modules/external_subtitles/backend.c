@@ -18,6 +18,7 @@
 #include "precision_wake.h"
 #include "luminance.h"
 #include "brightness_io.h"
+#include "sub_memory_protocol.h"
 extern int UFS_OpenDir(const char *, uint32_t *);
 extern int UFS_ReadDir(uint32_t, void *, uint32_t *);
 extern int UFS_CloseDir(uint32_t);
@@ -89,6 +90,16 @@ static struct {
 } brightness;
 static char current_path[1024]; /* Always readable1024 bytes for native memcpy. */
 static char candidate_path[1024], rollback_path[1024];
+/* First folder of the browser in this process (helper hint), else /mnt/usb/sub. */
+static char hint_start_dir[UB_SUB_PATH_BYTES];
+/* Disc memory (helper hint): the file remembered for this disc replaces the
+ * player's own sub.srt Open; its sync/charcode are already in play_dat.
+ * Cleared after the first failed Open, so a missing file costs one try. */
+static char hint_autoload[UB_SUB_PATH_BYTES];
+static int8_t hint_sync,hint_code;
+static uint32_t hint_applied;
+static uint32_t selection_seq,selection_pending;
+static struct ub_sub_selection selection_out;
 /* All clock snapshots and generation changes are protected by gate. A separate
  * clock worker does no catalogue/status I/O and never holds gate while querying
  * the other process. Fractions belong only to its synchronous native Draw call;
@@ -332,10 +343,39 @@ static void initialize(void) {
    brightness.seed=seed;brightness.seed_ok=1;brightness.seed_pending=1;
    text_level=ub_brightness_level(seed.percent);memcpy(state.brightness_token,seed.token,16);
   }
+  /* Read once, under gate: Draw or Open may start the worker first. */
+  struct ub_sub_hint hint;
+  if(!ub_br_private_read(UB_SUB_HINT_FILE,&hint,sizeof hint)&&
+     ub_sub_hint_valid(&hint,state.brightness_pid,brightness.born)){
+   if(hint.flags&UB_SUB_HINT_START_DIR)copy(hint_start_dir,hint.start_dir,sizeof(hint_start_dir));
+   if((hint.flags&UB_SUB_HINT_AUTOLOAD)&&valid_path(hint.autoload)&&srt_name(hint.autoload)){
+    copy(hint_autoload,hint.autoload,sizeof(hint_autoload));hint_sync=hint.sync;hint_code=hint.charcode;
+   }
+  }
  }
  copy(state.dir,"/mnt/usb/sub",sizeof(state.dir));
  copy(state.message,"Choose a subtitle file",sizeof(state.message));
  initialized=1;
+}
+/* gate held. Tells the helper which file this process opened and how: the
+ * last folder and the disc memory learn only from what really opened here.
+ * Only staged: the worker writes it after releasing the gate, so the native
+ * Open path does no file I/O and ub_br_private_write (static counter) stays
+ * on the worker thread. A newer selection replaces an unwritten one. */
+static void selection_publish(uint32_t kind) {
+ struct ub_sub_selection *r=&selection_out;
+ if(!brightness.born||!valid_path(current_path))return;
+ zero(r,sizeof *r);r->magic=UB_SUB_SELECTION_MAGIC;r->version=UB_SUB_RECORD_VERSION;
+ r->pid=state.brightness_pid;r->birth_lo=(uint32_t)brightness.born;r->birth_hi=(uint32_t)(brightness.born>>32);
+ if(!++selection_seq)selection_seq=1;
+ r->seq=selection_seq;r->kind=kind;copy(r->path,current_path,sizeof r->path);
+ selection_pending=1;
+}
+/* Worker only, gate released. A failed write is retried on the next tick
+ * unless a newer selection was staged meanwhile. */
+static void selection_flush(const struct ub_sub_selection *record) {
+ if(!ub_br_private_write(UB_SUB_SELECTION_FILE,record,sizeof *record))return;
+ gate_lock();if(!selection_pending){selection_out=*record;selection_pending=1;}gate_unlock();
 }
 static void brightness_snapshot_locked(void);
 static void snapshot(void) {
@@ -633,8 +673,13 @@ static int restore_style(void) {
  if(api.set_display(preferred_enabled?0:1)!=0)return -1;
  restore_pending=0;return 0;
 }
+static int playdat_set_byte5(unsigned char value);
+/* require_listed: a file chosen in the browser (SELECT). Choosing a file is a
+ * request to see it: it turns the subtitles on, but only once it opened; a
+ * failed choice rolls back to the previous file and display. RELOAD keeps
+ * the current display. */
 static int replace_file(const char *path,int require_listed) {
- uint32_t epoch=atomic_read(&lifecycle),display,i,time;int rc,rollback_rc;
+ uint32_t epoch=atomic_read(&lifecycle),display,i,time,turn_on=0;int rc,rollback_rc,saved_on=1;
  if(!valid_path(path) || !srt_name(path) || (require_listed && !listed_file(path)))return finish(UB_BAD_PATH,"Choose a listed SRT file");
  if(!atomic_read(&session) || atomic_read(&closing))return finish(UB_NO_ENGINE,"Playback subtitle session is closed");
  precision_invalidate();
@@ -658,6 +703,7 @@ static int replace_file(const char *path,int require_listed) {
    if(pr==-2)return finish(UB_BUSY,"Subtitle settings are busy; try again");
    if(!pr){attributes=stock;display=stock_display;}
   }
+  if(require_listed)display=1; /* no rollback in this branch: Open failure changes nothing */
   brightness_before_open();
   rc=ub_original_open(candidate_path);
   if(rc)return finish(UB_PARSE_ERROR,"Cannot load selected subtitle");
@@ -702,6 +748,7 @@ static int replace_file(const char *path,int require_listed) {
    engine_unlock();
    return finish(UB_PARSE_ERROR,rollback_rc==0?"Load failed; previous subtitle restored":"Load failed; choose another subtitle");
   }
+  if(require_listed&&!display){display=1;preferred_enabled=1;turn_on=1;}
  }
  if(!atomic_read(&session) || atomic_read(&closing) || epoch!=atomic_read(&lifecycle)){engine_unlock();return finish(UB_STALE,"Playback changed; subtitle not published");}
  /* Parsing has committed the new native file even if graphics subsequently
@@ -714,7 +761,16 @@ static int replace_file(const char *path,int require_listed) {
  if(rc>1){engine_unlock();return finish(UB_PARSE_ERROR,"Subtitle loaded; display update failed");}
  if(!atomic_read(&session) || atomic_read(&closing) || epoch!=atomic_read(&lifecycle)){engine_unlock();return finish(UB_STALE,"Playback changed; try again");}
  engine_unlock();
+ /* esl_tst_Update stores the display flag only after a successful render:
+  * switch the display mode on explicitly, outside the engine mutex. */
+ if(turn_on && !restore_pending && api.set_display(0))return finish(UB_PARSE_ERROR,"Subtitle loaded; display could not be turned on");
  if(restore_pending && restore_style())return finish(UB_PARSE_ERROR,"Subtitle loaded; style restore failed");
+ if(require_listed){
+  /* The native OPTIONS toggle (0x8eb5) reads only play_dat byte5. */
+  saved_on=!playdat_set_byte5(1);
+  selection_publish(UB_SUB_KIND_CHOSEN);
+  return finish(UB_OK,saved_on?"Subtitle selected":"Subtitle selected; settings busy");
+ }
  return finish(UB_OK,display?"Subtitle selected":"Subtitle selected; display remains off");
 }
 /* The vendor also stores the external-caption toggle in byte5 of this
@@ -738,6 +794,33 @@ static int playdat_begin(int *lock_fd,int *data_fd,unsigned char record[8]) {
 static void playdat_end(int lock_fd,int data_fd) {
  if(data_fd>=0)close(data_fd);
  if(lock_fd>=0){flock(lock_fd,8);close(lock_fd);}
+}
+/* One byte of play_dat under its lock, briefly retrying a held lock (worker
+ * or hook context, never a native caller). 0 written, -2 busy, -1 failed. */
+static int playdat_set_byte5(unsigned char value) {
+ for(unsigned attempt=0;attempt<3;attempt++){
+  unsigned char record[8];int lf,fd,rc=playdat_begin(&lf,&fd,record);
+  if(!rc){rc=pwrite(fd,&value,1,5)==1?0:-1;playdat_end(lf,fd);return rc;}
+  if(rc!=-2)return -1;
+  if(attempt<2)usleep(10000);
+ }
+ return -2;
+}
+/* play_dat b3 (sync) and b4 (charcode) around a disc-memory Open, written
+ * only when they differ. Native Open path, but the stock sub.srt thread runs
+ * in the background: at most 5 short retries of a held lock. 0, -2, -1. */
+static int playdat_set_sync_code(int8_t sync,int8_t code) {
+ unsigned char want[2]={(unsigned char)sync,(unsigned char)code};
+ for(unsigned attempt=0;attempt<5;attempt++){
+  unsigned char record[8];int lf,fd,rc=playdat_begin(&lf,&fd,record);
+  if(!rc){
+   rc=record[3]==want[0]&&record[4]==want[1]?0:pwrite(fd,want,2,3)==2?0:-1;
+   playdat_end(lf,fd);return rc;
+  }
+  if(rc!=-2)return -1;
+  if(attempt<4)usleep(10000);
+ }
+ return -2;
 }
 /* Stock FUN_0001894c after its own Open: {id 0, charcode b4, position -b0,
  * font b2, sync b3}, each byte sign-extended (ldrsb); byte5==1 means On. */
@@ -841,12 +924,13 @@ static int request_read(struct ub_request *r) {
  return done==sizeof(*r) && n==0;
 }
 static void *worker(void *unused) {
- struct ub_request request,seen;struct ub_status published;
- uint32_t tick=0;unsigned long old_signature;int publish,have_request;(void)unused;
+ struct ub_request request,seen;struct ub_status published;struct ub_sub_selection selected;
+ uint32_t tick=0;unsigned long old_signature;int publish,have_request,select_now;(void)unused;
  zero(&seen,sizeof seen);
  gate_lock();initialize();
  if(brightness.seed_pending)(void)text_level_restore(1);
- if(catalogue("/mnt/usb/sub")==UB_IO_ERROR)catalogue("/mnt/usb");
+ {int first=hint_start_dir[0]?catalogue(hint_start_dir):UB_IO_ERROR;
+  if(first!=UB_OK&&first!=UB_LIMIT&&catalogue("/mnt/usb/sub")==UB_IO_ERROR)catalogue("/mnt/usb");}
  snapshot();published=state;status_dirty=0;gate_unlock();
  if(write_status(&published)){gate_lock();status_dirty=1;gate_unlock();}
  for(;;) {
@@ -866,8 +950,11 @@ static void *worker(void *unused) {
    if(old_signature!=state.active*2+state.enabled)publish=1;
   }
   if(publish)published=state;
+  select_now=selection_pending;
+  if(select_now){selected=selection_out;selection_pending=0;}
   gate_unlock();
   if(publish && write_status(&published)){gate_lock();status_dirty=1;gate_unlock();}
+  if(select_now)selection_flush(&selected);
  }
  return (void *)0;
 }
@@ -886,7 +973,7 @@ static void bootstrap(void) {
 }
 
 int ub_hook_open(const char *path) {
- int rc;const char *chosen;
+ int rc,remembered;const char *chosen;
  if(!ub_original_open)return 3;
  gate_lock();initialize();
  if(atomic_read(&closing)){gate_unlock();return 3;}
@@ -895,7 +982,25 @@ int ub_hook_open(const char *path) {
  if(++state.epoch==0)state.epoch=1;
  status_dirty=1;
  chosen=explicit_selection && valid_path(current_path)?current_path:path;
+ /* A choice made in this process wins over the disc memory, which wins over
+  * the player's own sub.srt (the only path its autostart opens). */
+ remembered=!explicit_selection && hint_autoload[0] && equal(path,UB_DEFAULT_SRT);
+ if(remembered)chosen=hint_autoload;
  rc=ub_original_open(chosen);
+ if(remembered && !rc && !hint_applied){
+  /* Normally already written by the helper before its load event; also
+   * right when the engine started without that write. First Open only: a
+   * later natural Open keeps what the viewer changed since. */
+  hint_applied=1;(void)playdat_set_sync_code(hint_sync,hint_code);
+ }
+ if(remembered && rc){
+  /* Missing or unreadable: the stock file with the stock timing/charset (a
+   * failed ESL_Open has cleaned up completely). Tried once per process. */
+  zero(hint_autoload,sizeof(hint_autoload));remembered=0;
+  (void)playdat_set_sync_code(0,0);
+  copy(state.message,"Remembered subtitle file could not be opened",sizeof state.message);
+  chosen=path;rc=ub_original_open(chosen);
+ }
  /* A failed Open keeps session=1 with no engine, deliberately: the menu can
   * still open a chosen file during this playback. ub_hook_session_end, not
   * Close (loaded stays 0), ends that window. */
@@ -909,6 +1014,7 @@ int ub_hook_open(const char *path) {
  if(rc==0 && chosen!=current_path && length(chosen,1024)<=UB_PATH_LIMIT && valid_path(chosen)) {
   zero(current_path,sizeof(current_path));copy(current_path,chosen,sizeof(current_path));
  }
+ if(rc==0)selection_publish(explicit_selection?UB_SUB_KIND_CHOSEN:remembered?UB_SUB_KIND_REMEMBERED:UB_SUB_KIND_DEFAULT);
  gate_unlock();bootstrap();return rc;
 }
 int ub_hook_draw(uint32_t time) {
@@ -981,6 +1087,7 @@ void ub_test_bind(const struct ub_api *a) {api=*a;}
 void ub_test_reset(void) {
  zero(&state,sizeof(state));zero(current_path,sizeof(current_path));
  zero(candidate_path,sizeof(candidate_path));zero(rollback_path,sizeof(rollback_path));
+ zero(hint_start_dir,sizeof(hint_start_dir));zero(hint_autoload,sizeof(hint_autoload));hint_sync=hint_code=0;hint_applied=0;selection_seq=selection_pending=0;zero(&selection_out,sizeof selection_out);
  gate=started=closing=lifecycle=session=session_ended=initialized=last_seq=preferred_enabled=saved_attrs_valid=status_dirty=explicit_selection=restore_pending=0;
  text_level=UB_TEXT_LEVEL_DEFAULT;
  zero(&brightness,sizeof brightness);

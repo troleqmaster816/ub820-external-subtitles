@@ -101,6 +101,11 @@ int ub_menu_known_at_start(void);
  *       with it, merged, by a later call once it reads (see core/storage.h).
  * A caller must treat >0 as "applied", e.g. publish the new value. */
 int ub_setting_set(const char *module,const char *key,const char *value);
+/* ub_setting_set in two steps: stage several choices, then save them with one
+ * USB write. stage returns 0 or ub_setting_set's -1/UB_STICK_UNREAD; flush
+ * returns ub_setting_set's save result. */
+int ub_setting_stage(const char *module,const char *key,const char *value);
+int ub_setting_flush(void);
 /* Prerequisite setting: failure restores RAM and the later-save set. A USB
  * timeout remains an unknown disk outcome; no disk rollback is promised. */
 int ub_setting_set_saved(const char *module,const char *key,const char *value);
