@@ -16,13 +16,14 @@
 #include "../modules/external_subtitles/protocol.h"
 static int loaded_value,status_present=1,status_active,style_result,style_calls,on_writes,gate_writes,load_events,maps_done;
 static int preference_writes,font_fail,font_publications,lock_busy,child_running,child_status,killed,marker_created,marker_removed;
+static int dat_open_error;
 static int test_open(const char *path,int flags,...){
  if(!strcmp(path,UB_STATUS_FILE))return status_present?100:-1;
  if(!strcmp(path,"/proc/42/mem"))return 101;
  if(!strcmp(path,"/proc/42/maps")){maps_done=0;return 102;}
  if(!strcmp(path,"/tmp/ti_font_size.tmp"))return font_fail?-1:103;
  if(!strcmp(path,"/tmp/apl_play3dlib_3ddynamic_lock"))return 104;
- if(!strcmp(path,"/tmp/apl_play3dlib_play_dat.dat"))return 105;
+ if(!strcmp(path,"/tmp/apl_play3dlib_play_dat.dat")){if(dat_open_error&&!(flags&(O_WRONLY|O_RDWR))){errno=dat_open_error;return -1;}return 105;}
  if(!strcmp(path,"/tmp/ub820_srt_precision.off")){assert(flags&O_CREAT);marker_created++;return 106;}
  return -1;
 }
@@ -115,6 +116,12 @@ int main(void){
  style_result=0;engine_step(&part,&t);assert(t.state[2]==1 && on_writes==2 && load_events==2);
  t=target();style_result=-2;engine_step(&part,&t);assert(t.failed && t.state[0]==15 && on_writes==2 && load_events==2);cases++;
  assert(!preference_writes); /* Startup is not a confirmed menu choice. */
+ /* An unreadable (not missing) play-data file is never rewritten with zeros;
+  * a missing one is created from zero as before. */
+ {int writes=on_writes,events=load_events;t=target();t.state[2]=t.state[3]=1;dat_open_error=EIO;
+  engine_step(&part,&t);assert(on_writes==writes&&load_events==events&&!t.state[0]&&t.state[7]==1);
+  dat_open_error=ENOENT;engine_step(&part,&t);assert(on_writes==writes+1&&load_events==events+1);
+  dat_open_error=0;on_writes=writes;load_events=events;cases++;}
  /* Font calibration: a failed write defers startup and is retried alone,
   * without repeating the code transaction; it is published by rename. */
  status_present=0;style_result=0;t=target();font_fail=1;int styled=style_calls,published=font_publications;

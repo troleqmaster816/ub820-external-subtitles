@@ -6,12 +6,56 @@
 #include "payloads.h"
 #include "native_wait.h"
 #include "../region/bd_launch.h"
+#include <signal.h>
 #include <sys/stat.h>
 
 extern struct ub_module ub_module_native_events;
 static int native_ready,native_policy,native_failed;
+/* Every protected child leaves <pid>.ready in RAM (tmpfs, one page each).
+ * Nothing else removes them, so a long uptime would keep growing the set.
+ * A stale receipt never authorizes a stop (PID, birth and the live
+ * descriptor are checked), so this is housekeeping only. A receipt is
+ * removed when its process is gone or its PID belongs to a newer process;
+ * the inode is compared again right before unlink, so a receipt that a
+ * newer process just renamed into place is kept. */
+static int native_stale(const char *path,unsigned long long pid,int temporary){
+ char text[128],stat[4096],proc[48];unsigned long long live=0,owner,born;const char *c;
+ snprintf(proc,sizeof proc,"/proc/%llu/stat",pid);
+ if(ub_native_wait_read(proc,stat,sizeof stat)>=0)live=ub_native_wait_birth(stat);
+ if(!live)return kill((pid_t)pid,0)&&errno==ESRCH; /* unreadable but alive: keep */
+ if(temporary)return 0;                             /* still being published */
+ if(ub_native_wait_read(path,text,sizeof text)<0||strncmp(text,"EVW2 ",5))return 0;
+ c=text+5;
+ if(ub_native_wait_number(&c,10,&owner)||*c++!=' '||ub_native_wait_number(&c,10,&born))return 0;
+ return owner==pid&&born!=live;
+}
+unsigned ub_native_wait_sweep(void){
+ struct ub_dir d;const char *name;unsigned removed=0;
+ if(ub_dir_open(&d,UB_NATIVE_WAIT_DIR))return 0;
+ while((name=ub_dir_next(&d))){
+  char path[256];const char *c=name;unsigned long long pid;int temporary;struct ub_stat before,now;int fd;
+  if(ub_native_wait_number(&c,10,&pid)||!pid||pid>INT_MAX)continue;
+  if(!strcmp(c,".ready"))temporary=0;else if(!strcmp(c,".ready.tmp"))temporary=1;else continue;
+  if(snprintf(path,sizeof path,UB_NATIVE_WAIT_DIR "/%s",name)>=(int)sizeof path)continue;
+  fd=open(path,O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);if(fd<0)continue;
+  if(ub_fstat(fd,&before)){close(fd);continue;}
+  close(fd);
+  if(!S_ISREG(before.mode)||!native_stale(path,pid,temporary))continue;
+  if(ub_stat(path,&now)||now.ino!=before.ino||now.dev!=before.dev)continue;
+  if(!unlink(path))removed++;
+ }
+ ub_dir_close(&d);
+ return removed;
+}
+static void native_sweep(void){
+ static unsigned wait;unsigned removed;
+ if(wait){wait--;return;}
+ wait=59; /* about once a minute */
+ if((removed=ub_native_wait_sweep()))ub_log("native_events",UB_INFO,"removed %u stale EV wait receipt(s)",removed);
+}
 static void native_disabled(struct ub_module *m){
  static int reported;(void)m;native_ready=0;
+ native_sweep(); /* receipts of a previous enabled run are still cleaned up */
  /* An already resident launcher must not keep using a previous helper's
   * policy when this service is disabled on a same-boot helper restart. */
  if(unlink(UB_BD_LAUNCH_CONFIG)&&errno!=ENOENT){
@@ -59,6 +103,7 @@ static void native_launch_step(struct ub_part *p,struct ub_target *t){
 }
 static void native_retry(struct ub_part *p,struct ub_target *t){
  static unsigned retry;(void)p;(void)t;
+ native_sweep();
  if(native_ready)return;
  if(!retry){ub_native_bd_publish(native_policy);retry=9;}else retry--;
 }

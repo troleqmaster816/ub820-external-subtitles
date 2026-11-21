@@ -31,8 +31,12 @@ static unsigned char token[16];static char token_hex[33];static uint32_t serial;
 static unsigned menu_seq;static char menu_message[96]="";
 static struct {
  int active,unknown,mode,producer_done,producer_status;uint32_t serial,expires;
- unsigned menu_seq;pid_t producer;char reply[UB_ACTION_PATH];
+ unsigned menu_seq;char reply[UB_ACTION_PATH];
 } pending;
+/* The EV producer of the latest request. Kept apart from pending, which is
+ * cleared on a new manager instance: the child must still be reaped, and no
+ * new packet is written while an older producer can still read one. */
+static struct { pid_t pid; uint32_t serial; int killed; } producer;
 static struct ub_part parts[];
 static uint32_t now_seconds(void){return (uint32_t)(ub_now_ms()/1000u);}
 static const char *mode_name(int mode){return mode?"on":"off";}
@@ -79,8 +83,8 @@ static void clean_producer(void){
  execl(UB_POWER_TOOL,"events",UB_POWER_PACKET,(char *)0);_exit(127);
 }
 static int begin(int mode,unsigned sequence,const char *reply,uint32_t expires){
- struct ub_power_packet packet;pid_t producer;
- if(pending.active||blocked||!available||mode<0||mode>1)return -1;
+ struct ub_power_packet packet;pid_t child;
+ if(pending.active||blocked||!available||producer.pid>0||mode<0||mode>1)return -1;
  if(!expires)expires=now_seconds()+15u;
  if((int32_t)(now_seconds()-expires)>=0)return -1;
  if(serial==UINT32_MAX){unknown("control sequence exhausted");return -1;}
@@ -89,17 +93,27 @@ static int begin(int mode,unsigned sequence,const char *reply,uint32_t expires){
  if(ram_file(UB_POWER_PACKET,&packet,sizeof packet,0600))return -1;
  memset(&pending,0,sizeof pending);pending.active=1;pending.mode=mode;pending.serial=serial;pending.expires=expires;pending.menu_seq=sequence;
  if(reply)snprintf(pending.reply,sizeof pending.reply,"%s",reply);
- producer=fork();if(!producer)clean_producer();
- if(producer<0){memset(&pending,0,sizeof pending);return -1;}
- pending.producer=producer;
+ child=fork();if(!child)clean_producer();
+ if(child<0){memset(&pending,0,sizeof pending);return -1;}
+ producer.pid=child;producer.serial=serial;producer.killed=0;
  ub_log(ID,UB_INFO,"queued native policy request %u: %s (owner PID%d)",serial,mode_name(mode),owner_pid);return 0;
 }
 static void producer_poll(void){
- int status;pid_t rc;if(pending.producer<=0)return;
- do{rc=waitpid(pending.producer,&status,WNOHANG);}while(rc<0&&errno==EINTR);
- if(rc==pending.producer){pending.producer=0;pending.producer_done=1;pending.producer_status=WIFEXITED(status)?WEXITSTATUS(status):128+WTERMSIG(status);
-  if(pending.producer_status)ub_log(ID,UB_ALWAYS,"EV producer ended with status %d; native acknowledgement remains authoritative",pending.producer_status);
- }else if(rc<0&&errno==ECHILD){pending.producer=0;pending.producer_done=1;pending.producer_status=-1;}
+ int status,code;pid_t rc;if(producer.pid<=0)return;
+ do{rc=waitpid(producer.pid,&status,WNOHANG);}while(rc<0&&errno==EINTR);
+ if(rc==producer.pid)code=WIFEXITED(status)?WEXITSTATUS(status):128+WTERMSIG(status);
+ else if(rc<0&&errno==ECHILD)code=-1;
+ else return;
+ if(pending.active&&pending.serial==producer.serial){pending.producer_done=1;pending.producer_status=code;}
+ if(code&&!producer.killed)ub_log(ID,UB_ALWAYS,"EV producer ended with status %d; native acknowledgement remains authoritative",code);
+ producer.pid=0;
+}
+/* A producer past its request's deadline, or of a request already given up,
+ * cannot help any more: end it so the next request is not held back. */
+static void producer_expire(void){
+ if(producer.pid<=0||producer.killed)return;
+ if(pending.active&&pending.serial==producer.serial&&(int32_t)(now_seconds()-pending.expires)<0)return;
+ if(!kill(producer.pid,SIGKILL)||errno==ESRCH){producer.killed=1;ub_log(ID,UB_ALWAYS,"EV producer PID%d for request %u stopped: its request is settled or past its deadline",(int)producer.pid,producer.serial);}
 }
 static void finish_native(void){
  char text[256],received_token[33],tail;unsigned sequence,mode;int result,eep_seen,eep_rc,fpc_seen,fpc_rc,n;
@@ -174,12 +188,16 @@ static void control_step(struct ub_part *part,struct ub_target *unused){
   return;
  }
  if(owner_pid!=target->pid||owner_born!=target->born){
-  if(pending.active){unknown("manager instance changed during request");return;}
+  /* The request belonged to the previous manager. Its outcome stays unknown,
+   * but it must not block the new instance: that one starts from its stock
+   * policy and receives the configured one like any new manager. */
+  if(pending.active){unknown("manager instance changed during request");memset(&pending,0,sizeof pending);}
   owner_pid=target->pid;owner_born=target->born;effective=-1;initial_sent=0;blocked=0;publish_status();
  }
- if(!initial_sent){initial_sent=1;if(begin(auto_off,0,0,now_seconds()+15u))unknown("initial policy request could not be sent");}
+ if(!initial_sent&&producer.pid<=0){initial_sent=1;if(begin(auto_off,0,0,now_seconds()+15u))unknown("initial policy request could not be sent");}
  finish_native();
  if(pending.active&&(int32_t)(now_seconds()-pending.expires)>=0&&!pending.unknown)unknown("native acknowledgement deadline elapsed");
+ producer_expire();
  menu_request();
 }
 static void start(struct ub_module *module){

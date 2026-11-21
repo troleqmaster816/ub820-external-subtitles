@@ -82,6 +82,80 @@ static void test_bd_launch_ownership(void){
  launch_step(&part,&part.target);CHECK(bd_launch_armed&&!watcher_pid);
  bd_launch_part=0;bd_launch_armed=bd_launch_ready=0;bdv_file.ok=(int)saved_ok;bd_region=saved;
 }
+/* Receipts of ended processes (or of a PID now owned by a newer process) are
+ * removed; a live process's own receipt, its in-flight temporary and
+ * unrelated files are kept. */
+static void receipt_write(const char *name,unsigned long long pid,unsigned long long born){
+ char path[300],line[96];snprintf(path,sizeof path,"%s/%s",UB_NATIVE_WAIT_DIR,name);
+ snprintf(line,sizeof line,"EVW2 %llu %llu 3\n",pid,born);put(path,(const unsigned char *)line,strlen(line));
+}
+static int receipt_exists(const char *name){char path[300];snprintf(path,sizeof path,"%s/%s",UB_NATIVE_WAIT_DIR,name);return !access(path,F_OK);}
+static void test_receipt_sweep(void){
+ char stat[4096],name[64],dead_name[64],dead_tmp[64],newer_name[64],self_tmp[64];unsigned long long self_born,parent_born;pid_t dead;int status;
+ mkdir(UB_NATIVE_WAIT_DIR,0700);
+ (void)ub_native_wait_sweep(); /* receipts left by the fake players of earlier tests */
+ CHECK(ub_native_wait_read("/proc/self/stat",stat,sizeof stat)>0&&(self_born=ub_native_wait_birth(stat)));
+ snprintf(name,sizeof name,"/proc/%d/stat",(int)getppid());
+ CHECK(ub_native_wait_read(name,stat,sizeof stat)>0&&(parent_born=ub_native_wait_birth(stat)));
+ dead=fork();if(!dead)_exit(0);CHECK(dead>0&&waitpid(dead,&status,0)==dead);
+ snprintf(name,sizeof name,"%d.ready",(int)getpid());receipt_write(name,(unsigned long long)getpid(),self_born);
+ snprintf(dead_name,sizeof dead_name,"%d.ready",(int)dead);receipt_write(dead_name,(unsigned long long)dead,self_born+1);
+ snprintf(dead_tmp,sizeof dead_tmp,"%d.ready.tmp",(int)dead);receipt_write(dead_tmp,(unsigned long long)dead,self_born+1);
+ snprintf(newer_name,sizeof newer_name,"%d.ready",(int)getppid());receipt_write(newer_name,(unsigned long long)getppid(),parent_born-1);
+ snprintf(self_tmp,sizeof self_tmp,"%d.ready.tmp",(int)getpid());receipt_write(self_tmp,(unsigned long long)getpid(),self_born);
+ receipt_write("notes",1,1);
+ CHECK(ub_native_wait_sweep()==3);
+ CHECK(receipt_exists(name)&&receipt_exists(self_tmp)&&receipt_exists("notes"));
+ CHECK(!receipt_exists(dead_name)&&!receipt_exists(dead_tmp)&&!receipt_exists(newer_name));
+ CHECK(ub_native_wait_sweep()==0);
+ {char path[300];snprintf(path,sizeof path,"%s/%s",UB_NATIVE_WAIT_DIR,name);unlink(path);
+  snprintf(path,sizeof path,"%s/%s",UB_NATIVE_WAIT_DIR,self_tmp);unlink(path);
+  snprintf(path,sizeof path,"%s/notes",UB_NATIVE_WAIT_DIR);unlink(path);}
+}
+/* Same-boot helper restart: apl_medm still holds the previous run's launcher
+ * (its hook sites are already changed). That hook may still start apl_bdv
+ * with the pre-main loader, so the source watcher must stay off. */
+static void test_resident_launcher(void){
+ struct ub_part part={0};int saved=bd_region;unsigned saved_ok=bdv_file.ok;
+ bd_region=BD_A;bdv_file.ok=1;bd_launch_armed=0;bd_launch_part=&part;
+ part.target.verified=1;part.target.pid=getpid();part.target.failed=1;part.target.changed_code=1;
+ watcher_start();CHECK(!watcher_pid);
+ CHECK(strstr(log_text(),"already has changed launcher code; BD source watcher not started"));
+ /* A genuine verification/installation failure keeps the best-effort watcher. */
+ part.target.changed_code=0;watcher_start();CHECK(watcher_pid>0);watcher_stop();CHECK(!watcher_pid);
+ bd_launch_part=0;bdv_file.ok=(int)saved_ok;bd_region=saved;
+}
+/* A new apl_meda_dvdv maps libnavi_api.so before its pre-main constructor
+ * publishes the EV wait receipt. The guard's first stops are refused; it must
+ * keep polling within its window instead of leaving the region to the 1 s loop. */
+static void test_dvd_guard_waits_for_receipt(void){
+ const size_t size=0x80000;char navi[256];struct stat st;int status,saved=dvd_region;pid_t child,guard;
+ __typeof__(dvdv_file) saved_dvdv=dvdv_file,saved_navi=navi_file;
+ snprintf(navi,sizeof navi,"%s",UB_TEST_DIR "/libnavi_api.so");
+ {unsigned char *image=calloc(1,size);CHECK(image!=0);if(!image)return;
+  memcpy(image+(NAVI_GATE-NAVI_LINK_BASE),gate_stock,2);memcpy(image+(NAVI_REGION_SOURCE-NAVI_LINK_BASE),source_stock,4);
+  put(navi,image,size);free(image);}
+ CHECK(!stat(navi,&st));navi_file.dev=st.st_dev;navi_file.ino=st.st_ino;navi_file.size=st.st_size;navi_file.mtime=st.st_mtime;navi_file.ok=1;
+ CHECK(!stat("/proc/self/exe",&st));dvdv_file.dev=st.st_dev;dvdv_file.ino=st.st_ino;dvdv_file.size=st.st_size;dvdv_file.mtime=st.st_mtime;dvdv_file.ok=1;
+ CHECK(!access(UB_BD_PRELOAD,F_OK));
+ child=fork();CHECK(child>=0);if(child<0)return;
+ if(!child){
+  int fd=open(navi,O_RDONLY);if(fd<0)_exit(110);
+  volatile unsigned char *m=mmap(0,size,PROT_READ|PROT_EXEC,MAP_PRIVATE|MAP_32BIT,fd,0);if(m==MAP_FAILED)_exit(111);close(fd);
+  prctl(PR_SET_PTRACER,PR_SET_PTRACER_ANY);prctl(PR_SET_NAME,"apl_meda_dvdv");
+  usleep(200000);   /* the constructor is still verifying its providers */
+  protect_fake_bd();
+  for(unsigned i=0;i<300;i++){if(m[NAVI_GATE-NAVI_LINK_BASE]!=gate_stock[0]||m[NAVI_GATE-NAVI_LINK_BASE+1]!=gate_stock[1])_exit(0);usleep(10000);}
+  _exit(1);
+ }
+ dvd_region=DVD_FREE;
+ guard=fork();CHECK(guard>=0);
+ if(!guard){dvd_guard_cancel=0;dvd_guard_run();_exit(120);}
+ if(guard>0){CHECK(waitpid(guard,&status,0)==guard&&WIFEXITED(status)&&!WEXITSTATUS(status));}
+ CHECK(waitpid(child,&status,0)==child&&WIFEXITED(status)&&!WEXITSTATUS(status));
+ {char *t=log_text();CHECK(strstr(t,"has no current pre-main EV wait handler"));CHECK(strstr(t,"ms after it appeared"));}
+ unlink(navi);dvdv_file=saved_dvdv;navi_file=saved_navi;dvd_region=saved;
+}
 /* The UB820 Helper menu: status for the menu, a choice applied and saved to
  * sub/ub820_menu.cfg (read back over modules.cfg), invalid choices refused. */
 static void test_menu(void){
@@ -465,6 +539,9 @@ int main(void){
  test_menu();
  test_dvd();
  test_bd_launch_ownership();
+ test_resident_launcher();
+ test_dvd_guard_waits_for_receipt();
+ test_receipt_sweep();
  watcher_stop();
  {struct stat st;CHECK(!stat("/proc/self/exe",&st));bdv_file.dev=st.st_dev;bdv_file.ino=st.st_ino;bdv_file.size=st.st_size;bdv_file.mtime=st.st_mtime;}
  test_watcher_owner();

@@ -273,6 +273,14 @@ static void test_trim(void){
  CHECK(strstr(ram,"log trimmed to the newest 128 KB"));CHECK(strstr(ram,"1599 xxx"));CHECK(!strstr(ram,"t: 0000 "));
  /* the kept part starts at a line */
  {const char *p=strstr(ram,"128 KB\n");CHECK(p&&strchr("0123456789 ",p[7]));}
+ /* A forked child (BD watcher, DVD guard) appends past the limit but never
+  * trims; the owner trims on its next line and keeps the child's lines. */
+ {pid_t child=fork();int status;CHECK(child>=0);
+  if(!child){for(int i=0;i<1100;i++)ub_log("c",UB_ALWAYS,"%04d %s",i,line);_exit(0);}
+  CHECK(waitpid(child,&status,0)==child&&WIFEXITED(status)&&!WEXITSTATUS(status));
+  n=strlen(log_text());CHECK(n>256*1024);CHECK(strstr(ram,"c: 0000 "));
+  ub_log("t",UB_ALWAYS,"after child");n=strlen(log_text());
+  CHECK(n<=256*1024);CHECK(strstr(ram,"c: 1099 xxx"));CHECK(strstr(ram,"after child"));}
 }
 
 static void test_crash(void){

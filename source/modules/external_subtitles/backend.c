@@ -284,7 +284,7 @@ static void *precision_worker(void *unused) {
  /* Module option precision=0: the supervisor leaves this marker before the
   * payload is installed. No clock client or loop for this process; native
   * Draw keeps the stock whole-second path (precision_valid stays 0). */
- disabled=open(UB_PC_DISABLED_FILE,0x800|0x20000);
+ disabled=open(UB_PC_DISABLED_FILE,O_RDONLY|O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC);
  if(disabled>=0){close(disabled);return 0;}
  ub_pc_client_init(&client);ub_precision_wake_init(&precision_wake);
  for(;;){
@@ -534,7 +534,7 @@ static void brightness_tick(void){
   struct ub_brightness_save_ack ack;
   if(!ub_br_private_read(UB_BRIGHTNESS_SAVE_ACK,&ack,sizeof ack)&&brightness_save_matches(&ack)){
    brightness_edit_end();
-   copy(state.message,ack.result==UB_BRIGHTNESS_SAVED?"Brightness saved":"Brightness applied; not saved to USB",sizeof state.message);
+   copy(state.message,ack.result==UB_BRIGHTNESS_SAVED?"Brightness saved":ack.result==UB_BRIGHTNESS_SAVE_UNKNOWN?"Brightness applied; USB save result is unconfirmed":"Brightness applied; not saved to USB",sizeof state.message);
   }
  }
 }
@@ -723,10 +723,10 @@ static int replace_file(const char *path,int require_listed) {
 static int playdat_begin(int *lock_fd,int *data_fd,unsigned char record[8]) {
  unsigned long done=0;long n;int lf,fd;
  *lock_fd=*data_fd=-1;
- lf=open(UB_PLAY_LOCK,2|0x40|0x800|0x20000,0666);
+ lf=open(UB_PLAY_LOCK,O_RDWR|O_CREAT|O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC,0666);
  if(lf<0)return -1;
  if(flock(lf,2|4)!=0){close(lf);return -2;} /* held right now */
- fd=open(UB_PLAY_DAT,2|0x800|0x20000);
+ fd=open(UB_PLAY_DAT,O_RDWR|O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC);
  if(fd<0){flock(lf,8);close(lf);return -1;}
  while(done<8) {
   n=read(fd,record+done,8-done);
@@ -819,7 +819,7 @@ static int write_status(const struct ub_status *published) {
  char tmp[192];int fd;unsigned long done=0;long n;
  int length=snprintf(tmp,sizeof tmp,"%s.tmp",UB_STATUS_FILE);
  if(length<0||(size_t)length>=sizeof tmp)return -1;
- fd=open(tmp,1|0x40|0x200|0x800|0x20000,0600);
+ fd=open(tmp,O_WRONLY|O_CREAT|O_TRUNC|O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC,0600);
  if(fd<0)return -1;
  while(done<sizeof(*published)) {
   n=write(fd,(const char *)published+done,sizeof(*published)-done);
@@ -830,7 +830,7 @@ static int write_status(const struct ub_status *published) {
 }
 static int request_read(struct ub_request *r) {
  int fd;unsigned long done=0;long n;unsigned char extra;
- fd=open(UB_REQUEST_FILE,0x800|0x20000);
+ fd=open(UB_REQUEST_FILE,O_RDONLY|O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC);
  if(fd<0)return 0;
  while(done<sizeof(*r)) {
   n=read(fd,(char *)r+done,sizeof(*r)-done);

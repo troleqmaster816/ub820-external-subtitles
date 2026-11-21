@@ -108,7 +108,7 @@ static void install(struct ub_part *p,struct ub_target *t){
   if(rc==0){t->installed=1;ub_changed(p);return;}
   if(rc==-2){t->failed=1;return;}
  }
- if(rc==1){t->failed=1;ub_log(p->module,UB_ALWAYS,"%s PID%d already has changed code (%s); part '%s' makes no changes in this process",p->process,t->pid,ub_install_stage(),p->name);return;}
+ if(rc==1){t->failed=1;t->changed_code=1;ub_log(p->module,UB_ALWAYS,"%s PID%d already has changed code (%s); part '%s' makes no changes in this process",p->process,t->pid,ub_install_stage(),p->name);return;}
  /* Bounded retries; a persistent incompatibility fails closed. */
  t->attempts++;t->retry=1;
  if(t->attempts>=20){t->failed=1;ub_log(p->module,UB_ALWAYS,"giving up installing %s in PID%d (stalled at %s)",p->process,t->pid,ub_install_stage());}

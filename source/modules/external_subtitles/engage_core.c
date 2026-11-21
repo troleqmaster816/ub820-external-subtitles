@@ -265,6 +265,9 @@ static int playdat_write_on(int lock_op, int position) {
     if (flock(lf, lock_op) != 0) { int busy = errno == EWOULDBLOCK; close(lf); return busy ? 1 : -1; }
     memset(b, 0, sizeof b);
     fd = open(PLAY_DAT, O_RDONLY);
+    /* Only a missing file starts from zero. Any other open failure would
+     * rewrite the player's bytes 1, 6 and 7 with zeros (O_TRUNC below). */
+    if (fd < 0 && errno != ENOENT) { flock(lf, LOCK_UN); close(lf); return -1; }
     if (fd >= 0) {
         if (read(fd, b, sizeof b) != (ssize_t)sizeof b) { close(fd); flock(lf, LOCK_UN); close(lf); return -1; }
         close(fd);

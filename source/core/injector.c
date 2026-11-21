@@ -281,7 +281,10 @@ static int stop_threads(int pid,struct stopped *s){
   * have the public-API handler already resident. Never attempt a first stop
   * to install the very handler needed to survive that stop. */
  if((ub_native_wait_process(comm)||ub_native_wait_process(name))&&!ub_native_wait_ready(pid)){
-  ub_log("injector",UB_ALWAYS,"%s PID%d has no current pre-main EV wait handler; no threads stopped (a protected native launch is required)\n",name,pid);
+  /* Callers retry (1 s loops, the 20 ms DVD guard): report each process once. */
+  static int refused_pid;
+  ub_log("injector",refused_pid==pid?UB_INFO:UB_ALWAYS,"%s PID%d has no current pre-main EV wait handler; no threads stopped (a protected native launch is required)\n",name,pid);
+  refused_pid=pid;
   errno=EAGAIN;return -1;
  }
  unsigned long long until=ub_now_ms()+UB_PTRACE_PAUSE_MS;
@@ -315,6 +318,8 @@ static int stop_threads(int pid,struct stopped *s){
  errno=ETIMEDOUT;
  fail:{int saved=errno;detach_all(s);errno=saved;}return -1;
 }
+/* Target addresses reach 0xffffffff: a 32-bit off_t would turn them negative. */
+_Static_assert(sizeof(off_t)>=8,"build with _FILE_OFFSET_BITS=64");
 static int memio(int fd,uint32_t a,void *buf,size_t n,int writing){
  size_t done=0;
  while(done<n){

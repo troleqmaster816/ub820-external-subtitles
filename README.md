@@ -133,6 +133,12 @@ off in `sub/modules.cfg`:
 enabled=0
 ```
 
+With it off, the helper does not pause the Blu-ray, DVD playback or Player
+Settings processes at all. Features that change those processes while they run
+then stay inactive: external subtitles and their precise clock, the Player
+Settings additions of the Helper menu, and the DVD region. The Blu-ray region
+falls back to correcting the player's region setting while a disc plays.
+
 ### CPU optimization
 
 To show the control in Helper, set:

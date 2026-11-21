@@ -189,7 +189,12 @@ static void dvd_guard_run(void){
   if(kill(pid,0))break;
   base=ub_map_base(pid,"/libnavi_api.so",path,sizeof path);
   if(!base||!same_file(path,navi_file.dev,navi_file.ino,navi_file.size,navi_file.mtime)){ub_sleep_ms(GUARD_POLL_MS);continue;}
-  if(dvd_apply(pid,base,0)>=0){dvd_describe(text,sizeof text);ub_log(ID,UB_ALWAYS,"DVD region in apl_meda_dvdv PID%d: %s (%ld ms after it appeared)",pid,text,since_ms(&seen));}
+  int rc=dvd_apply(pid,base,0);
+  /* -2: the process could not be stopped yet. A new playback child publishes
+   * its pre-main EV wait receipt only after libnavi_api.so is mapped, so keep
+   * polling within the guard window instead of leaving it to the 1 s loop. */
+  if(rc==-2){ub_sleep_ms(GUARD_POLL_MS);continue;}
+  if(rc>=0){dvd_describe(text,sizeof text);ub_log(ID,UB_ALWAYS,"DVD region in apl_meda_dvdv PID%d: %s (%ld ms after it appeared)",pid,text,since_ms(&seen));}
   _exit(0);
  }
  if(!pid)ub_log(ID,UB_INFO,"DVD region guard: no apl_meda_dvdv appeared within %d s",GUARD_SECONDS);
@@ -663,6 +668,7 @@ static int watcher_stop(void){
  watcher_pid=0;return 1;
 }
 static void watcher_start(void){
+ static int resident_logged;
  pid_t pid,owner;sigset_t term,old;
  if(!watcher_stop())return;
  /* Never race a pending/installed native launcher. Even unavailable assets
@@ -670,6 +676,14 @@ static void watcher_start(void){
   * retained solely when exact verification or installation failed, or the
   * long-lived launcher process ended and its part tripped. */
  if(bd_launch_part&&!bd_launch_part->tripped&&bd_launch_part->target.verified!=-1&&!bd_launch_part->target.failed)return;
+ /* Already changed media-manager code (normally the launcher of an earlier
+  * helper run this boot) may still launch apl_bdv with the pre-main loader,
+  * which reads the policy published here. A hook might exist: PSR20 only. */
+ if(bd_launch_part&&!bd_launch_part->tripped&&bd_launch_part->target.changed_code){
+  if(!resident_logged){resident_logged=1;ub_log(ID,UB_ALWAYS,"apl_medm PID%d already has changed launcher code; BD source watcher not started (PSR20 fallback only)",bd_launch_part->target.pid);}
+  return;
+ }
+ resident_logged=0;
  if(bd_region==BD_STOCK||!bdv_file.ok)return;
  sigemptyset(&term);sigaddset(&term,SIGTERM);
  if(sigprocmask(SIG_BLOCK,&term,&old))return;

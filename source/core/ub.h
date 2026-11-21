@@ -30,6 +30,9 @@ struct ub_target {
  unsigned long long born;     /* start time, tells a reused PID apart */
  int verified;                /* 1 exact hash, -1 mismatch, 0 not checked */
  int installed,failed,attempts;
+ /* Install refused because the hook sites already held changed code (for
+  * example a previous helper run's hooks, still resident this boot). */
+ int changed_code;
  unsigned retry;
  unsigned changed;            /* order of this part's first change, 0 = none */
  int state[8];                /* part-private, zeroed for every new process */

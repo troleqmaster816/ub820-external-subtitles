@@ -59,6 +59,12 @@ int main(void){
  ub_dir_test_dents=0;fail_after=0;
  /* open failure is reported in err as well */
  CHECK(ub_dir_open(&d,"/nonexistent-ub820-dir")==-1&&d.err==ENOENT);
+ /* ub_read_file: a failed read is an error, never an empty (or shortened) file. */
+ {char text[64];ssize_t got;
+  memset(text,'x',sizeof text);errno=0;got=ub_read_file("/proc/self",text,sizeof text);
+  CHECK(got==-1&&errno==EISDIR&&!text[0]);
+  got=ub_read_file("/proc/self/comm",text,sizeof text);CHECK(got>0&&text[got-1]=='\n'&&!text[got]);
+  CHECK(ub_read_file("/nonexistent-ub820-file",text,sizeof text)==-1);}
  /* Ignored/blocked SIGCHLD must not auto-reap children after helper init. */
  struct sigaction ignored={0},after;sigset_t block,mask;
  ignored.sa_handler=SIG_IGN;ignored.sa_flags=SA_NOCLDWAIT;sigemptyset(&ignored.sa_mask);

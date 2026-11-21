@@ -139,5 +139,10 @@ static int native_wait_enable_kind(int kind){
  }else if(kind!=NATIVE_WAIT_DB)return -8;
  native_wait_debug=getenv("EV_DEBUG")!=0;
  __atomic_store_n(&native_wait_enabled,kind,__ATOMIC_RELEASE);
- return native_wait_publish()?-6:0;
+ return 0;
+}
+/* The receipt authorizes live helper stops of this process. The caller
+ * publishes it last, after its own pre-main /proc/self/mem changes. */
+static int native_wait_attest(void){
+ return __atomic_load_n(&native_wait_enabled,__ATOMIC_ACQUIRE)&&!native_wait_publish()?0:-6;
 }

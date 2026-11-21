@@ -42,10 +42,16 @@ done:
 /* Atomic private-record writer. Ownership is fixed: backend COMMIT notice;
  * supervisor seed/claim/ACK. UI never writes either party's records. */
 static inline int ub_br_private_write(const char *path,const void *input,size_t size){
- char temp[192];int fd,rc=0;size_t used=0;ssize_t n;
- int length=snprintf(temp,sizeof temp,"%s.tmp-XXXXXX",path);
- if(length<0||(size_t)length>=sizeof temp)return -1;
- fd=mkstemp(temp);if(fd<0)return -1;
+ static unsigned serial;char temp[192];int fd=-1,rc=0;size_t used=0;ssize_t n;
+ /* Not mkstemp: the static helper's glibc 2.39 seeds it with clock_gettime64,
+  * which the player's Linux 4.4 lacks (core/sys.h). Unique per process. */
+ for(unsigned attempt=0;attempt<16&&fd<0;attempt++){
+  int length=snprintf(temp,sizeof temp,"%s.tmp-%ld-%u",path,(long)getpid(),++serial);
+  if(length<0||(size_t)length>=sizeof temp)return -1;
+  fd=open(temp,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
+  if(fd<0&&errno!=EEXIST)return -1;
+ }
+ if(fd<0)return -1;
  while(used<size){n=write(fd,(const char *)input+used,size-used);if(n<0&&errno==EINTR)continue;if(n<=0){rc=-1;break;}used+=(size_t)n;}
  if(close(fd))rc=-1;
  if(!rc&&rename(temp,path))rc=-1;

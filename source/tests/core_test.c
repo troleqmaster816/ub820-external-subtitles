@@ -118,7 +118,11 @@ int main(void){
  if(ub_hash_file("/proc/self/exe",self_sha)){puts("cannot hash self");return 1;}
  /* Config: legacy keys first, modules.cfg wins; names, ranges, unknown keys. */
  write_file(UB_CONFIG_DIR "/disc_style.cfg","font_percent=130\nposition=-5 # comment\nusb_log=0\nnative_options=1\n");
- write_file(UB_CONFIG_DIR "/modules.cfg","# test\n[external_subtitles]\nposition=-3\nfont_percent=500\n[log]\nlevel=debug\ncount=7\nbogus=1\n[other]\nenabled=0\n[missing]\nenabled=1\n");
+ /* A 255-character comment line fills the parser's buffer; its remainder
+  * "count=9" must not be read as a setting of its own. */
+ {char cfg[1024],comment[256];memset(comment,'x',sizeof comment);comment[0]='#';comment[1]=' ';comment[255]=0;
+  snprintf(cfg,sizeof cfg,"# test\n[external_subtitles]\nposition=-3\nfont_percent=500\n[log]\nlevel=debug\ncount=7\n%scount=9\nbogus=1\n[other]\nenabled=0\n[missing]\nenabled=1\n",comment);
+  write_file(UB_CONFIG_DIR "/modules.cfg",cfg);}
  ub_log_open();
  signal(SIGCHLD,SIG_IGN);sigset_t blocked;sigemptyset(&blocked);sigaddset(&blocked,SIGCHLD);sigprocmask(SIG_BLOCK,&blocked,0);
  ub_core_start();

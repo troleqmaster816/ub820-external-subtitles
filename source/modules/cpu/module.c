@@ -184,9 +184,14 @@ out:close(fd);return rc;
 }
 /* The resident module is ours: receipt, module base/size, boot, artifact and
  * the two worker pids with their start times, references matching the pin. */
+static int identity_busy;
 static int identity(const struct cpu_receipt *r,const struct cpu_instance *m,const struct cpu_native *s,const char *boot){
  if(r->magic!=UB_CPU_MAGIC||r->version!=UB_CPU_VERSION||r->base!=m->base||r->size!=m->size||memcmp(r->boot,boot,40)||memcmp(r->sha,UB_CPU_ARTIFACT_SHA256,65))return 0;
  for(unsigned i=0;i<2;i++)if(r->pid[i]!=s->pid[i]||!r->born[i]||birth(r->pid[i])!=r->born[i])return 0;
+ /* Each open of the control device holds a module reference (fops owner).
+  * Ours in every other respect, pinned, but opened elsewhere right now (for
+  * example read over SSH): busy, not an unknown module. */
+ if(s->pinned&&m->references>1){identity_busy=1;return 0;}
  return !((!s->pinned&&m->references)||(s->pinned&&m->references!=1));
 }
 static int write_receipt(const char *boot,const struct cpu_instance *m,const struct cpu_native *s,struct cpu_receipt *r){
@@ -275,7 +280,9 @@ static int worker(const char *nonce){
  if(flock(lock,LOCK_EX|(cleanup?0:LOCK_NB))){result_set(&out,-1,CPU_BUSY,"a previous CPU operation still owns the device");goto done;}
  if(current_owner(&latest,boot)||(!cleanup&&(!cpu_owner_equal(&latest,&j.owner)||ub_now_ms()>=j.deadline))){result_set(&out,-1,CPU_STALE,"expired or superseded CPU request");goto done;}
  int latched=latch_state(boot),mode;out.suppress_auto_on=latched!=LATCH_NONE;
- state=examine(boot,&m,&s,&receipt,&mode);if(state<0){result_set(&out,-1,CPU_INVALID,"native identity/state unavailable; restart player required");goto done;}
+ identity_busy=0;state=examine(boot,&m,&s,&receipt,&mode);
+ if(state<0&&identity_busy){result_set(&out,-1,CPU_BUSY,"the CPU control device is open in another process; try again");goto done;}
+ if(state<0){result_set(&out,-1,CPU_INVALID,"native identity/state unavailable; restart player required");goto done;}
  if(cleanup&&latest.enabled&&latest.desired){result_set(&out,mode,CPU_OK,"Off cleanup superseded by the latest On policy");goto done;}
  /* Identity verified but the kernel reports an anomaly (unknown mode,
   * PARTIAL, fault, rejection): only an explicit Off may act on it. */
@@ -397,7 +404,9 @@ static void poll_worker(void){
  /* A manual Off arriving during an older operation gets one follow-up only
   * when a valid result proves that older worker never attempted Off. An
   * uncertain attempted Off, or a lost result, cannot authorize a resend. */
- if(pending.deferred_off&&valid&&!result.off_attempted&&!(result.code==CPU_OK&&result.mode==0)&&ub_now_ms()<pending.deadline){
+ /* A verified Off with an unresolved activation record still runs the Off:
+  * only the Off worker clears that record (a QUERY merely reports it). */
+ if(pending.deferred_off&&valid&&!result.off_attempted&&!(result.code==CPU_OK&&result.mode==0&&!result.suppress_auto_on)&&ub_now_ms()<pending.deadline){
   char reply[UB_ACTION_PATH];unsigned seq=pending.seq;uint64_t expiry=pending.deadline;
   snprintf(reply,sizeof reply,"%s",pending.reply);unlink(pending.job);unlink(pending.result);memset(&pending,0,sizeof pending);
   if(!begin_until(CPU_OFF,1,seq,reply,expiry))return;

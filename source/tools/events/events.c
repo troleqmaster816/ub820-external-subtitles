@@ -20,7 +20,12 @@ extern int *__errno_location(void);
 extern int EV_send_message(uint32_t,unsigned,const void *,uint32_t);
 struct time32 {int sec,nsec;};
 extern long syscall(long,...);
-#define READ_FLAGS (0x80000|0x20000|0x800) /* CLOEXEC, NOFOLLOW, NONBLOCK */
+#ifndef __arm__
+#error "events.c hard-codes 32-bit ARM Linux open flags"
+#endif
+/* Freestanding: 32-bit ARM values (O_NOFOLLOW is 0100000 there; 0400000,
+ * the generic O_NOFOLLOW, is O_LARGEFILE on ARM). */
+#define READ_FLAGS (0x80000|0x8000|0x800) /* CLOEXEC, NOFOLLOW, NONBLOCK */
 static int packet_read(struct ub_power_packet *packet){
  int fd=open(UB_POWER_PACKET,READ_FLAGS),n,rc=0;unsigned used=0;unsigned char extra;
  if(fd<0)return -1;

@@ -12,12 +12,17 @@
 #define UB_LOG_LIMIT (256*1024)
 int ub_log_level=UB_INFO;
 
+/* Only the process that opened the log as its owner trims it. Forked helper
+ * children (BD watcher, DVD guard) and the crash reporter only append, so two
+ * trims can never interleave and wipe or duplicate each other's lines. */
+static pid_t trim_owner;
 /* stderr becomes the RAM log so stray library messages land there too. */
-void ub_log_open(void){
+void ub_log_attach(void){
  int fd=open(UB_LOG_FILE,O_WRONLY|O_CREAT|O_APPEND,0600);
- if(fd>=0){dup2(fd,2);close(fd);}
+ if(fd>=0){if(fd!=2){dup2(fd,2);close(fd);}}
  setvbuf(stderr,0,_IONBF,0);
 }
+void ub_log_open(void){ub_log_attach();trim_owner=getpid();}
 /* Over the RAM budget: keep the newest half (from a line start), so a log
  * saved continuously still shows what led up to the present. */
 static void trim(off_t size){
@@ -42,6 +47,6 @@ void ub_log(const char *module,int level,const char *format,...){
  while(n>0&&line[n-1]=='\n')n--;
  line[n++]='\n';
  size=lseek(2,0,SEEK_END); /* fd 2 appends; no fstat (see sys.h) */
- if(size>UB_LOG_LIMIT)trim(size);
+ if(size>UB_LOG_LIMIT&&trim_owner&&getpid()==trim_owner)trim(size);
  if(write(2,line,(size_t)n)<0){}
 }

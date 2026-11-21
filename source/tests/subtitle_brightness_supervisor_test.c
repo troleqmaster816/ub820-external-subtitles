@@ -90,6 +90,8 @@ int main(void){
  assert(save_calls==1&&read_ack().epoch==10);cases++;
  fresh();close_during_save=1;brightness_save_tick(&target);assert(save_calls==1&&native.epoch==11&&read_ack().epoch==10);cases++;
  fresh();save_result=5;brightness_save_tick(&target);assert(save_calls==1&&read_ack().result==UB_BRIGHTNESS_SAVE_ERROR);brightness_save_tick(&target);assert(save_calls==1);cases++;
+ /* A timed-out stick write may still complete: unknown, not "not saved". */
+ fresh();save_result=UB_STICK_TIMEOUT;brightness_save_tick(&target);assert(save_calls==1&&read_ack().result==UB_BRIGHTNESS_SAVE_UNKNOWN);brightness_save_tick(&target);assert(save_calls==1);cases++;
  fresh();claim=receipt(-1);assert(!ub_br_private_write(claim_path,&claim,sizeof claim));brightness_save_tick(&target);
  assert(!save_calls&&read_ack().result==UB_BRIGHTNESS_SAVE_UNKNOWN);cases++;
  fresh();assert(!ub_br_private_write(claim_path,"bad",3));brightness_save_tick(&target);

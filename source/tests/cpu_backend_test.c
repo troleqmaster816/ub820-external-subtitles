@@ -64,6 +64,7 @@ static int fixture_flock(int,int);
 #undef flock
 
 static const char fixture_boot[]="00000000-0000-4000-8000-000000000001";
+static unsigned foreign_opens; /* other processes holding the control device open */
 static int module_present,native_mode,node_fd[4096],loads,ons,offs,short_on,short_off,partial_on,stale_on,bad_state,save_calls,save_rc,forks,wait_ready;
 static int off_no_effect,manual_off_during_on,disable_during_on,wait_echild,rejected_flag;
 static int lease_signal_fd=-1,blocking_locks,cleanup_advance_time;
@@ -118,7 +119,7 @@ void ub_hash_bytes(const void *p,size_t n,char out[65]){assert(p==ub_tool_cpu_wa
 ssize_t ub_read_file(const char *path,char *out,size_t cap){
  char text[4096];int n;
  if(!strcmp(path,"/proc/sys/kernel/random/boot_id"))n=snprintf(text,sizeof text,"%s\n",fixture_boot);
- else if(!strcmp(path,UB_CPU_MODULES)){n=module_present?snprintf(text,sizeof text,"%s %u %u - Live 0xffffffbffc0d0000 (O)\n",UB_CPU_MODULE_NAME,CPU_RESIDENT_BYTES,native_mode?1:0):0;text[n]=0;}
+ else if(!strcmp(path,UB_CPU_MODULES)){n=module_present?snprintf(text,sizeof text,"%s %u %u - Live 0xffffffbffc0d0000 (O)\n",UB_CPU_MODULE_NAME,CPU_RESIDENT_BYTES,(native_mode?1u:0u)+foreign_opens):0;text[n]=0;}
  else if(!strncmp(path,"/proc/",6)&&strstr(path,"/stat")){
   unsigned pid;assert(sscanf(path,"/proc/%u/stat",&pid)==1);n=snprintf(text,sizeof text,"%u (fixture worker) S",pid);
   for(unsigned field=4;field<22;field++)n+=snprintf(text+n,sizeof text-(size_t)n," 0");
@@ -147,7 +148,7 @@ static void reset_fixture(void){
  if(pending.job[0])unlink(pending.job);
  if(pending.result[0])unlink(pending.result);
  memset(&pending,0,sizeof pending);
- unlink(OWNER);unlink(RECEIPT);unlink(LATCH);unlink(LOCK);module_present=native_mode=loads=ons=offs=short_on=short_off=partial_on=stale_on=bad_state=save_calls=save_rc=forks=wait_ready=blocking_locks=cleanup_advance_time=0;lease_signal_fd=-1;
+ unlink(OWNER);unlink(RECEIPT);unlink(LATCH);unlink(LOCK);foreign_opens=0;module_present=native_mode=loads=ons=offs=short_on=short_off=partial_on=stale_on=bad_state=save_calls=save_rc=forks=wait_ready=blocking_locks=cleanup_advance_time=0;lease_signal_fd=-1;
  off_no_effect=manual_off_during_on=disable_during_on=wait_echild=rejected_flag=0;
  armed=armed_here=arm_calls=arm_rc=marker_clear_pending=0;healthy_at=busy_retry_at=marker_retry_at=0;busy_retries=0;menu_known_at_boot=1;
  module_enabled=started=1;effective=-1;optimize=automatic_pending=automatic_blocked=cleanup_pending=0;now_ms=100000;
@@ -294,6 +295,15 @@ static void busy_retry_test(void){
  assert(pending.deferred_off);completed(1,CPU_OK,0);poll_worker();assert(pending.active&&pending.operation==CPU_OFF);
  completed(-1,CPU_BUSY,0);poll_worker();assert(!pending.active);
  now_ms+=5000;step(0,0);assert(!pending.active&&forks==3);unlink("./menu.1");unlink("./menu.2");
+ /* Off during a GET that reports Off with an unresolved activation record:
+  * the deferred Off still runs (it alone clears the record); without the
+  * record a verified Off needs no second worker. */
+ reset_fixture();assert(!begin(CPU_QUERY,1,1,"./menu.3",(uint32_t)(now_ms/1000)+30));handle_request(CPU_OFF,4,"./menu.4",(uint32_t)(now_ms/1000)+30);
+ assert(pending.deferred_off);completed(0,CPU_OK,1);poll_worker();assert(pending.active&&pending.operation==CPU_OFF&&pending.manual&&forks==2);
+ completed(0,CPU_OK,0);poll_worker();assert(!pending.active&&effective==0&&save_calls==1);
+ reset_fixture();assert(!begin(CPU_QUERY,1,5,"./menu.5",(uint32_t)(now_ms/1000)+30));handle_request(CPU_OFF,6,"./menu.6",(uint32_t)(now_ms/1000)+30);
+ assert(pending.deferred_off);completed(0,CPU_OK,0);poll_worker();assert(!pending.active&&effective==0&&forks==1&&save_calls==1);
+ unlink("./menu.3");unlink("./menu.4");unlink("./menu.5");unlink("./menu.6");
  unlink(UB_CPU_ENABLED);unlink(UB_CPU_STATUS);puts("PASS busy startup is retried from a fresh query, a bounded number of times; a page-open GET does not cancel it");
 }
 /* Disabled (default): no worker and no /proc/kcore read when nothing is resident. */
@@ -364,6 +374,12 @@ int main(int argc,char **argv){
  owner.desired=0;assert(!atomic_file(OWNER,&owner,sizeof owner,1));r=trial(CPU_OFF);assert(r.mode==0&&!r.code&&offs==1&&native_mode==3);puts("PASS existing Off restores without unload/reinit");
  reset_fixture();short_on=1;r=trial(CPU_ON);assert(r.mode==-1&&r.code==CPU_UNCERTAIN&&ons==1&&latch_pending(owner.boot));r=trial(CPU_ON);assert(r.mode==-1&&ons==1&&loads==1);owner.desired=0;assert(!atomic_file(OWNER,&owner,sizeof owner,1));r=trial(CPU_OFF);assert(!r.code&&r.mode==0&&offs==1&&!latch_pending(owner.boot));puts("PASS short On latches uncertainty/no resend; explicit verified Off recovers");
  anomaly_off_test();
+ /* Ours and pinned, but the control device is also open elsewhere (e.g. read
+  * over SSH): busy and retryable, never "restart player required". */
+ reset_fixture();r=trial(CPU_ON);assert(r.mode==1&&!r.code);foreign_opens=1;
+ r=trial(CPU_QUERY);assert(r.code==CPU_BUSY&&r.mode==-1&&strstr(r.message,"open in another process"));
+ owner.desired=0;assert(!atomic_file(OWNER,&owner,sizeof owner,1));r=trial(CPU_OFF);assert(r.code==CPU_BUSY&&!offs&&!r.off_attempted);
+ foreign_opens=0;r=trial(CPU_OFF);assert(!r.code&&r.mode==0&&offs==1);puts("PASS a foreign open of the control device reports busy, then Off works");
  reset_fixture();r=trial(CPU_ON);assert(r.mode==1);short_off=1;owner.desired=0;assert(!atomic_file(OWNER,&owner,sizeof owner,1));r=trial(CPU_OFF);assert(r.mode==-1&&r.code==CPU_UNCERTAIN&&r.off_attempted==1&&offs==1&&latch_pending(owner.boot));short_off=0;r=trial(CPU_RECONCILE);assert(r.mode==0&&!r.code&&!r.off_attempted&&offs==1&&!latch_pending(owner.boot));puts("PASS short Off remains unknown and latched; recovery confirms stock words without resend");
  reset_fixture();stale_on=1;r=trial(CPU_ON);assert(!r.code&&r.mode==0&&ons==1&&offs==1&&native_mode==3&&!latch_pending(owner.boot));puts("PASS stale-generation On completion performs Off under same lease");
  reset_fixture();owned_inert();r=trial(CPU_ON);assert(r.mode==1&&ons==1);owner.enabled=0;owner.desired=0;assert(!atomic_file(OWNER,&owner,sizeof owner,1));r=trial(CPU_QUERY);assert(r.mode==1&&offs==0);r=trial(CPU_OFF);assert(r.mode==0&&!r.code&&offs==1);puts("PASS disabled QUERY never mutates; explicit reconciliation Off works");

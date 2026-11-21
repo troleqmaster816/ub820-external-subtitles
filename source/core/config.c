@@ -111,8 +111,16 @@ static int parse_file(const char *path,int legacy_keys,int menu){
  if(menu)keep_run_choices();
  setvbuf(f,stream,_IOFBF,sizeof stream); /* else the first read fstats (statx, see sys.h) */
  while(line<UB_CONFIG_LINES&&fgets(buf,sizeof buf,f)){
-  char *p,*eq,*key,*value,*hash;
+  char *p,*eq,*key,*value,*hash;size_t length=strlen(buf);
   line++;
+  /* A line longer than the buffer is ignored as a whole: its remainder must
+   * never be read as a line of its own (it could look like key=value). */
+  if(length&&buf[length-1]!='\n'&&!feof(f)){
+   int c;while((c=getc(f))!=EOF&&c!='\n'){}
+   ub_log("config",UB_ALWAYS,"%s:%u: line longer than %u characters ignored",path,line,(unsigned)sizeof buf-2);
+   if(menu)whole=0;
+   continue;
+  }
   if((hash=strchr(buf,'#')))*hash=0;
   p=trim(buf);if(!*p)continue;
   if(*p=='['){
@@ -227,7 +235,9 @@ int ub_setting_set(const char *module,const char *key,const char *value){
   fprintf(f,"\n[%s]\n",chosen[i].module);
   for(j=i;j<chosen_count;j++)if(!strcmp(chosen[j].module,chosen[i].module))fprintf(f,"%s=%s\n",chosen[j].key,chosen[j].value);
  }
- if(fclose(f))return 5;
+ /* A failed flush during fprintf discards that buffer and is not reported
+  * by fclose: never hand a truncated file to the stick. */
+ {int failed=ferror(f);if(fclose(f)||failed)return 5;}
 #ifndef UB_HOST_TEST
  rc=ub_stick_write(path,UB_STICK_DIR "/" UB_MENU_FILE);
  return rc<0?UB_STICK_NO_TOOL:rc; /* never negative: the value is applied */

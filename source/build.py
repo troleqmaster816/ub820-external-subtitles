@@ -91,7 +91,9 @@ def check_embedded_elf_alignment(binary,generated):
 
 def build_helper():
  out=BUILD/'engage'
- args=['arm-linux-gnueabihf-gcc','-std=gnu11','-static','-s',*CFLAGS,'-fno-strict-aliasing','-ffunction-sections','-fdata-sections','-Wl,--gc-sections','-Wno-unused-function',
+ # 64-bit off_t is required (/proc/<pid>/mem offsets >= 0x80000000); do not
+ # depend on the cross compiler's default (Ubuntu's armhf gcc predefines it).
+ args=['arm-linux-gnueabihf-gcc','-std=gnu11','-static','-s',*CFLAGS,'-D_FILE_OFFSET_BITS=64','-D_TIME_BITS=64','-fno-strict-aliasing','-ffunction-sections','-fdata-sections','-Wl,--gc-sections','-Wno-unused-function',
        '-I'+linux(CORE),'-I'+linux(GEN),*[linux(s) for s in helper_sources()],'-o',linux(out)]
  run(args,'helper-compile.log')
  checked=check_embedded_elf_alignment(out.read_bytes(),(GEN/'payloads.c').read_text())

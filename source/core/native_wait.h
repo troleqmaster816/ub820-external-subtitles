@@ -106,4 +106,7 @@ struct ub_part;
 /* One shared native-loader service, independent of region settings. */
 int ub_native_bd_publish(int policy);
 struct ub_part *ub_native_bd_part(void);
+/* Remove receipts (and unfinished temporaries) of processes that ended or
+ * whose PID now belongs to a newer process. Returns how many were removed. */
+unsigned ub_native_wait_sweep(void);
 #endif

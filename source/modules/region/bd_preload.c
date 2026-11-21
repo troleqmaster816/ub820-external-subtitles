@@ -147,11 +147,21 @@ static int preload_policy(const char *s){
  if(!strcmp(s,"v1:7"))return 7;
  return 0;
 }
+/* Region policy at the source, apl_bdv only. Never returns on an unverified
+ * rollback: native code must not run half-patched. */
+static void preload_region(int policy){
+ int rc;unsigned mask=0;
+ if(policy==-1){mask=preload_auto_mask();if(!mask){preload_log("auto found no current HDMV mask; stock source retained");return;}}
+ rc=preload_patch(policy,mask);
+ if(rc==-2){preload_log("rollback could not be verified; refusing to enter native main");_exit(125);}
+ if(rc){preload_log("source preflight/write failed; stock instructions retained");return;}
+ preload_log(policy==-1?"current-disc HDMV policy installed before native main":"selected region installed before native main");
+}
 #ifndef UB_BD_PRELOAD_TEST
 __attribute__((constructor))
 #endif
 static void ub_bd_preload_init(void){
- int policy=preload_policy(getenv("UB820_BD_POLICY")),rc,waits=0,kind;unsigned mask=0;const char *old=getenv("UB820_BD_PRELOAD_OLD"),*wait=getenv(UB_NATIVE_WAIT_ENV);
+ int policy=preload_policy(getenv("UB820_BD_POLICY")),rc,waits=0,kind,handler=0;const char *old=getenv("UB820_BD_PRELOAD_OLD"),*wait=getenv(UB_NATIVE_WAIT_ENV);
  waits=wait&&!strcmp(wait,UB_NATIVE_WAIT_VALUE);
  if(!old)return; /* Not launched by our verified media-manager hook. */
  /* Only this child's environment changes. Never propagate our initializer
@@ -161,16 +171,17 @@ static void ub_bd_preload_init(void){
  unsetenv("UB820_BD_POLICY");unsetenv("UB820_BD_PRELOAD_OLD");unsetenv(UB_NATIVE_WAIT_ENV);
  if(!policy&&!waits)return;
  kind=preload_identity();
- if(!kind){preload_log("unrecognized executable; source unchanged");return;}
+ if(kind<=0){preload_log("unrecognized executable; source unchanged");return;}
  if(waits){
   rc=native_wait_enable_kind(kind);
   if(rc){char why[160];snprintf(why,sizeof why,"native wait readiness refused (%d: resolve/shadow/provider/read/hash/publication); no live stop is authorized",rc);preload_log(why);}
+  else handler=1;
+ }
+ if(policy&&kind==NATIVE_WAIT_DB)preload_region(policy);
+ /* Publish the stop receipt only now: a helper stop is never authorized
+  * while this constructor is still changing its own code. */
+ if(handler){
+  if(native_wait_attest()){preload_log("native wait readiness refused (-6: resolve/shadow/provider/read/hash/publication); no live stop is authorized");}
   else preload_log(kind==NATIVE_WAIT_DB?"setting-DB EV_wait_message EINTR handling ready before native main":kind==NATIVE_WAIT_SETTINGS?"Easy Setting EV_wait_flag EINTR handling ready before native main":"scoped UFS EV_wait_message EINTR handling ready before native main");
  }
- if(!policy||kind!=NATIVE_WAIT_DB)return;
- if(policy==-1){mask=preload_auto_mask();if(!mask){preload_log("auto found no current HDMV mask; stock source retained");return;}}
- rc=preload_patch(policy,mask);
- if(rc==-2){preload_log("rollback could not be verified; refusing to enter native main");_exit(125);}
- if(rc){preload_log("source preflight/write failed; stock instructions retained");return;}
- preload_log(policy==-1?"current-disc HDMV policy installed before native main":"selected region installed before native main");
 }

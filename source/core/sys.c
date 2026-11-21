@@ -87,7 +87,15 @@ void ub_dir_close(struct ub_dir *d){if(d->fd>=0)close(d->fd);d->fd=-1;}
 ssize_t ub_read_file(const char *path,char *buf,size_t size){
  int fd=open(path,O_RDONLY|O_CLOEXEC);ssize_t n,got=0;
  if(fd<0||!size){if(fd>=0)close(fd);return -1;}
- while((size_t)got<size-1&&(n=read(fd,buf+got,size-1-(size_t)got))>0)got+=n;
+ /* A failed read is not the end of the file: a truncated /proc/modules or
+  * maps would read as "absent". Interrupted reads are repeated. */
+ while((size_t)got<size-1){
+  n=read(fd,buf+got,size-1-(size_t)got);
+  if(n<0&&errno==EINTR)continue;
+  if(n<0){int saved=errno;close(fd);buf[0]=0;errno=saved;return -1;}
+  if(!n)break;
+  got+=n;
+ }
  close(fd);buf[got]=0;return got;
 }
 
