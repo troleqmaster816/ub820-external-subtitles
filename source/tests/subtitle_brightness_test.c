@@ -127,6 +127,18 @@ int main(void){
  reset_fixture(100);native_open_fixture();r=br_request(UB_OP_BRIGHTNESS_BEGIN,0,0,(unsigned)getpid(),self_birth);r.brightness.token[0]^=1;
  assert(ub_test_process(&r,&out)==UB_BAD_PATH&&!brightness.phase);cases++;
  r=br_request(UB_OP_BRIGHTNESS_BEGIN,0,0,(unsigned)getpid(),self_birth+1);assert(ub_test_process(&r,&out)==UB_STALE&&!brightness.phase);cases++;
+ /* Two explicit renderer errors end the edit with a fault, retain the
+  * original intent, and permit LIST without an automatic recovery writer. */
+ reset_fixture(100);native_open_fixture();
+ assert(!br_send(UB_OP_BRIGHTNESS_BEGIN,0,0,&out));edit=out.brightness_edit;
+ assert(!br_send(UB_OP_BRIGHTNESS_PREVIEW,edit,20,&out));fg_failure=1;
+ assert(br_send(UB_OP_BRIGHTNESS_CANCEL,edit,0,&out)==UB_PARSE_ERROR&&brightness.phase==UB_BRIGHTNESS_PREVIEW);
+ assert(br_send(UB_OP_BRIGHTNESS_CANCEL,edit,0,&out)==UB_PARSE_ERROR&&!brightness.phase&&brightness.fault&&text_level==255);
+ assert(strstr(out.message,"next subtitle load"));before=fg_calls;
+ for(unsigned i=0;i<5;i++)tick();
+ assert(fg_calls==before);fg_failure=0;
+ assert(!ub_hook_close()&&!ub_hook_open("/mnt/usb/sub/recovered.srt"));
+ assert(!brightness.fault&&gc.foreground==0xffffffff);cases++;
  unlink(br_seed_path);unlink(br_ack_path);unlink(br_claim_path);unlink(br_notice_path);unlink(br_status_path);unlink(br_request_path);unlink(play_path);unlink(lock_path);assert(!rmdir(directory));
  printf("subtitle_brightness_test passed: %u cases; preview/ARGBcancel, immutablecommit, ownerzombie, seed/liveattach and epoch safety\n",cases);return 0;
 }

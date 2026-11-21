@@ -76,6 +76,12 @@ static const struct ub_option options[]={
  {0,0,0,0,0}
 };
 
+static int is_our_dropbear(pid_t pid);
+static void wipe_plain(void *data,size_t size){volatile unsigned char *p=data;while(size--)*p++=0;}
+/* Closes every descriptor above stderr in a forked child, such as the
+ * helper's single-instance lock; -1 when that cannot be done. */
+static int close_inherited(void){return ub_close_inherited();}
+
 #include "session_guard.h"
 
 /* Child side of every program started here. The helper is started from inside
@@ -83,23 +89,8 @@ static const struct ub_option options[]={
  * survive exec, and it holds files such as its single-instance lock. None of
  * that may reach dropbear and, through it, every ssh session. */
 __attribute__((noreturn)) static void clean_exec(char *const argv[],int keep_stderr){
- static struct ub_dir d;const char *e;int nul;sigset_t none;
- for(int sig=1;sig<65;sig++)signal(sig,SIG_DFL); /* SIGKILL/SIGSTOP and libc's own just fail */
- sigemptyset(&none);sigprocmask(SIG_SETMASK,&none,0);
- umask(022); /* Normal session default; never inherit the player's umask 000. */
- if(!ub_dir_open(&d,"/proc/self/fd")){
-  while((e=ub_dir_next(&d)))if(e[0]>='0'&&e[0]<='9'){
-   int fd=atoi(e);if(fd>2&&fd!=d.fd)close(fd);
-  }
-  ub_dir_close(&d);
- }else{
-  struct rlimit lim;
-  if(getrlimit(RLIMIT_NOFILE,&lim)||lim.rlim_max==RLIM_INFINITY)_exit(126);
-  for(rlim_t fd=3;fd<lim.rlim_max;fd++)close((int)fd);
- }
- nul=open("/dev/null",O_RDWR);
- if(nul<0||dup2(nul,0)<0||dup2(nul,1)<0||(!keep_stderr&&dup2(nul,2)<0))_exit(126);
- if(nul>2)close(nul);
+ if(ub_child_sanitize(keep_stderr?4u:0u))_exit(126);
+ umask(022); /* Normal session default. */
  execv(argv[0],argv);_exit(127);
 }
 
@@ -108,7 +99,9 @@ static void guard_start(pid_t master){
  pid_t pid;
  if(guard_pid>0||master<=0)return;
  pid=fork();
- if(!pid)guard_loop(master);
+ /* No exec follows: without this the guard would keep the helper's
+  * single-instance lock while it outlives the helper with dropbear. */
+ if(!pid){if(close_inherited())_exit(126);guard_loop(master);}
  if(pid>0)guard_pid=pid;
 }
 static void guard_stop(void){
@@ -182,13 +175,24 @@ static pid_t running_pid(void){
 
 /* status for the menu: "<running> <code> <text>" */
 static char action_reply[UB_ACTION_PATH];
+static int status_running; /* what the status file says, or will once written */
+static char status_line[200];static int status_length,status_pending;
+/* The status file is written again on later ticks until it holds the
+ * latest line; the SSH operation itself is never repeated for that. */
+static void publish_status(void){
+ int fd=open(UB_SSH_STATUS ".tmp",O_WRONLY|O_CREAT|O_TRUNC,0600);
+ if(fd<0)return;
+ if(write(fd,status_line,(size_t)status_length)!=status_length){close(fd);unlink(UB_SSH_STATUS ".tmp");return;}
+ if(close(fd)||rename(UB_SSH_STATUS ".tmp",UB_SSH_STATUS)){unlink(UB_SSH_STATUS ".tmp");return;}
+ status_pending=0;
+}
 static void answer(int running,int code,const char *text){
- char line[200];int n=snprintf(line,sizeof line,"%d %d %s\n",running,code,text),fd;
+ char line[200];int n=snprintf(line,sizeof line,"%d %d %s\n",running,code,text);
  if(n<0||n>=(int)sizeof line)return;
- if(ub_action_reply(action_reply,line,(size_t)n))ub_log(ID,UB_ALWAYS,"cannot acknowledge SSH request");
- fd=open(UB_SSH_STATUS ".tmp",O_WRONLY|O_CREAT|O_TRUNC,0600);if(fd<0)return;
- if(write(fd,line,(size_t)n)!=n){close(fd);unlink(UB_SSH_STATUS ".tmp");return;}
- if(close(fd)||rename(UB_SSH_STATUS ".tmp",UB_SSH_STATUS))unlink(UB_SSH_STATUS ".tmp");
+ if(action_reply[0]&&ub_action_reply(action_reply,line,(size_t)n))ub_log(ID,UB_ALWAYS,"cannot acknowledge SSH request");
+ action_reply[0]=0; /* one acknowledgement per request; later status is status only */
+ status_running=running;memcpy(status_line,line,(size_t)n);status_length=n;status_pending=1;
+ publish_status();
 }
 
 static int prepare_secret(char *err,size_t errn){
@@ -199,10 +203,15 @@ static int prepare_secret(char *err,size_t errn){
   chmod(AUTHKEYS,0600);
   return 0;
  }
- /* password: copy plaintext, hash it, keep only the hash */
+ /* password: copy plaintext, hash it, keep only the hash. The copy and the
+  * storage tool's partial <target>.ufs are removed whatever the tool returned:
+  * a tool killed at its time limit can leave either one in RAM. */
  snprintf(tmp,sizeof tmp,"%s/pw.plain",DIR);
- rc=ub_stick_read(STICK_PASSWORD,tmp);
- if(rc){snprintf(err,errn,"no sub/ssh_password on the stick (%s)",ub_stick_error(rc));return -1;}
+ {char partial[72];snprintf(partial,sizeof partial,"%s.ufs",tmp);
+  unlink(tmp);unlink(partial);
+  rc=ub_stick_read(STICK_PASSWORD,tmp);
+  if(rc){unlink(tmp);unlink(partial);snprintf(err,errn,"no sub/ssh_password on the stick (%s)",ub_stick_error(rc));return -1;}
+  unlink(partial);}
  {
   char plain[128],hash[128],salt[17];int fd=open(tmp,O_RDONLY);ssize_t n;unsigned i;
   n=fd>=0?read(fd,plain,sizeof plain-1):-1;if(fd>=0)close(fd);unlink(tmp);
@@ -212,11 +221,11 @@ static int prepare_secret(char *err,size_t errn){
   {
    static const char set[]="./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
    unsigned char r[16];int rf=open("/dev/urandom",O_RDONLY);
-   if(rf<0||read(rf,r,16)!=16){if(rf>=0)close(rf);snprintf(err,errn,"no randomness for the salt");return -1;}
+   if(rf<0||read(rf,r,16)!=16){if(rf>=0)close(rf);wipe_plain(plain,sizeof plain);snprintf(err,errn,"no randomness for the salt");return -1;}
    close(rf);for(i=0;i<16;i++)salt[i]=set[r[i]&63];salt[16]=0;
   }
   ub_sha512_crypt(plain,salt,hash);
-  memset(plain,0,sizeof plain);
+  wipe_plain(plain,sizeof plain);
   if(write_blob(PWHASH,(unsigned char *)hash,strlen(hash),0600)){snprintf(err,errn,"cannot write the password hash");return -1;}
  }
  return 0;
@@ -281,7 +290,10 @@ static void step(struct ub_part *p,struct ub_target *t){
  char buf[64],msg[200];int want_stop;
  (void)p;(void)t;
  if(guard_pid>0&&waitpid(guard_pid,0,WNOHANG)==guard_pid)guard_pid=0;
- if(guard&&!guard_pid&&running_pid())guard_start(running_pid()); /* the server outlived its guard */
+ if(status_pending)publish_status();
+ {pid_t live=running_pid(); /* every tick: reaps and logs a dropbear that ended by itself */
+  if(status_running&&!live)answer(0,-1,"dropbear ended; see the log");
+  if(guard&&!guard_pid&&live)guard_start(live);} /* the server outlived its guard */
  if(!ub_action_receive(UB_SSH_REQUEST,buf,sizeof buf,action_reply,sizeof action_reply))return;
  if(!strncmp(buf,"stop",4))want_stop=1;
  else if(!strncmp(buf,"start",5))want_stop=0;

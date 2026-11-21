@@ -8,12 +8,13 @@
 #define UB_SHA256_APL_MEDM "c092d29f3a16df117ae36d9ac915dd2dad87d1ea1fb9ca29bfcc7bb48d9971a4"
 #define UB_SHA256_APL_MGR "5ba307fa43e18ee0aa72576ff4e5a49b316f7f239794fb84579f638ec00ba6a9"
 #define UB_SHA256_APL_SETTING "6529f72a9c01770980be7335142ba481e75799c4b5f1a31a5ead8b60a064a006"
+extern const struct ub_payload ub_payload_native_events_launch;
+extern const struct ub_payload ub_payload_native_events_mgr_launch;
 extern const struct ub_payload ub_payload_ui_menu;
 extern const struct ub_payload ub_payload_ui_settings;
 extern const struct ub_payload ub_payload_external_subtitles_precision_source;
 extern const struct ub_payload ub_payload_external_subtitles_engine;
 extern const struct ub_payload ub_payload_external_subtitles_native_text;
 extern const struct ub_payload ub_payload_power_policy;
-extern const struct ub_payload ub_payload_region_launch;
 extern const struct ub_payload ub_payload_remote_keys;
 #endif

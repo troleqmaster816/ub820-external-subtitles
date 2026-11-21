@@ -32,7 +32,7 @@ int main(void){
  put(cpu_enabled_path,"");assert(ha_cpu_poll(&a)&&a.cpu_enabled&&!a.cpu_known);
  hs.cpu_enabled=1;assert(helper_rows(ids)==8&&ids[4]==H_CPU&&ids[5]==H_SSH&&ids[7]==H_SAVE&&HELPER_ROWS<=VIEW_ROWS);cases++;
  put(cpu_status_path,"0 unknown module not ready\n");ha_cpu_poll(&a);assert(!a.cpu_known&&!a.cpu_wait);
- hs=a;open_drop(DROP_CPU);assert(m.drop_kind==DROP_NONE&&strstr(hs.notice,"module not ready"));cases++;
+ hs=a;open_drop(DROP_CPU);assert(m.drop_kind==DROP_CPU&&m.drop_sel==1);m.drop_kind=DROP_NONE;ha_cpu_set(&hs,1);assert(!hs.cpu_wait&&strstr(hs.notice,"module not ready"));cases++;
  put(cpu_status_path,"0 off no instance\n");assert(ha_cpu_poll(&a)&&a.cpu_known&&!a.cpu_choice);
  ha_cpu_set(&a,2);assert(!a.cpu_wait&&!a.cpu_counter);cases++;
  /* Live Off can coexist with a suppressed saved On preference. An explicit
@@ -62,7 +62,8 @@ int main(void){
  ha_cpu_set(&a,0);assert(a.cpu_wait&&a.cpu_choice);
  assert(ub_action_receive(UB_CPU_REQUEST,text,sizeof text,reply,sizeof reply)&&!strcmp(text,"set off 2\n"));
  cpu_reply(&a,a.cpu_seq,"2 unknown native state unhealthy; restart player required\n");assert(ha_cpu_poll(&a)&&!a.cpu_wait&&!a.cpu_known&&a.cpu_choice&&a.cpu_uncertain&&strstr(a.notice,"restart player required"));cases++;
- hs=a;open_drop(DROP_CPU);assert(m.drop_kind==DROP_NONE&&!strcmp(ha_cpu_value(&hs),"unavailable")&&strstr(hs.notice,"restart player required"));cases++;
+ hs=a;open_drop(DROP_CPU);assert(m.drop_kind==DROP_CPU&&m.drop_sel==1&&!strcmp(drop_text(1),"Off")&&!strcmp(ha_cpu_value(&hs),"unknown"));m.drop_kind=DROP_NONE;
+ ha_cpu_set(&a,1);assert(!a.cpu_wait&&strstr(a.notice,"choose Off")&&strstr(a.notice,"restart player required"));cases++;
  put(cpu_status_path,"2 off verified\n");ha_cpu_poll(&a);assert(!a.cpu_known&&a.cpu_uncertain);
  ha_load(&a);assert(a.cpu_query&&a.cpu_wait&&!a.cpu_known&&!a.cpu_uncertain);
  assert(ub_action_receive(UB_CPU_REQUEST,text,sizeof text,reply,sizeof reply)&&!strcmp(text,"get 3\n"));
@@ -76,7 +77,9 @@ int main(void){
  m.kind=PAGE_HELPER;m.active=1;m.window=(Widget)(uintptr_t)1;m.list=(Widget)(uintptr_t)2;m.list_fixed=(Widget)(uintptr_t)3;m.drop_kind=DROP_CPU;m.selected=7;
  render();assert(m.drop_kind==DROP_NONE&&!m.list&&m.selected==6);cases++;
  hs.cpu_enabled=1;hs.cpu_known=0;m.list=(Widget)(uintptr_t)2;m.list_fixed=(Widget)(uintptr_t)3;m.drop_kind=DROP_CPU;
- render();assert(m.drop_kind==DROP_NONE&&!m.list&&helper_rows(ids)==8&&!strcmp(ha_cpu_value(&hs),"unavailable"));m.active=0;m.window=0;cases++;
+ m.active=0;m.window=0;m.drop_kind=DROP_NONE;open_drop(DROP_CPU);assert(m.drop_kind==DROP_CPU&&m.drop_sel==1&&helper_rows(ids)==8&&!strcmp(ha_cpu_value(&hs),"unknown"));m.drop_kind=DROP_NONE;
+ ha_cpu_set(&hs,1);assert(!hs.cpu_wait);ha_cpu_set(&hs,0);assert(hs.cpu_wait&&!hs.cpu_query);
+ assert(ub_action_receive(UB_CPU_REQUEST,text,sizeof text,reply,sizeof reply)&&!strncmp(text,"set off ",8));ha_action_cancel(&hs,UB_CPU_REQUEST,hs.cpu_seq);cases++;
  assert(!ha_cpu_status("4294967295 unknown state missing",&seq,&choice,&known,&message)&&seq==UINT32_MAX&&!known);
  assert(ha_cpu_status("4294967296 off saved",&seq,&choice,&known,&message));assert(ha_cpu_status("-1 on saved",&seq,&choice,&known,&message));assert(ha_cpu_status("1 unknownish error",&seq,&choice,&known,&message));assert(ha_cpu_status("1 on",&seq,&choice,&known,&message));cases++;
  ha_action_cancel(&a,UB_CPU_REQUEST,a.cpu_seq);ha_action_cancel(&b,UB_CPU_REQUEST,b.cpu_seq);seconds+=100;while(ub_action_receive(UB_CPU_REQUEST,text,sizeof text,reply,sizeof reply)){}

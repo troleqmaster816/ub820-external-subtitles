@@ -5,6 +5,7 @@
  */
 #define _GNU_SOURCE
 #include "injector.h"
+#include "native_wait.h"
 #include "log.h"
 #include "sys.h"
 #include <elf.h>
@@ -96,22 +97,63 @@ struct elf {unsigned char *raw;size_t n;Elf32_Ehdr *eh;Elf32_Shdr *sh;};
 static int range(size_t n,size_t a,size_t z){return a<=n&&z<=n-a;}
 static int view(struct elf *e,const void *raw,size_t n){
  unsigned i;e->raw=(unsigned char *)raw;e->n=n;e->eh=(Elf32_Ehdr *)raw;
+ /* ELF structures require word alignment. Embedded byte arrays need it too:
+  * ARM LDRD faults even where ordinary unaligned word loads are tolerated. */
+ if((uintptr_t)raw%_Alignof(Elf32_Ehdr))return -1;
  if(n<sizeof(Elf32_Ehdr)||memcmp(raw,ELFMAG,4)||e->eh->e_ident[EI_CLASS]!=ELFCLASS32||e->eh->e_ident[EI_DATA]!=ELFDATA2LSB||e->eh->e_machine!=EM_ARM||e->eh->e_shentsize!=sizeof(Elf32_Shdr)||!range(n,e->eh->e_shoff,(size_t)e->eh->e_shnum*sizeof(Elf32_Shdr)))return -1;
+ if(e->eh->e_shoff%_Alignof(Elf32_Shdr))return -1;
+ if(e->eh->e_phnum&&(e->eh->e_phentsize!=sizeof(Elf32_Phdr)||
+    e->eh->e_phoff%_Alignof(Elf32_Phdr)||!range(n,e->eh->e_phoff,(size_t)e->eh->e_phnum*sizeof(Elf32_Phdr))))return -1;
  e->sh=(Elf32_Shdr *)(e->raw+e->eh->e_shoff);
  for(i=0;i<e->eh->e_shnum;i++)if(e->sh[i].sh_type!=SHT_NOBITS&&!range(n,e->sh[i].sh_offset,e->sh[i].sh_size))return -1;
+ for(i=0;i<e->eh->e_shnum;i++){
+  Elf32_Shdr *s=&e->sh[i];size_t entry=0;
+  switch(s->sh_type){
+  case SHT_SYMTAB:case SHT_DYNSYM:
+   entry=sizeof(Elf32_Sym);
+   if(s->sh_link>=e->eh->e_shnum||e->sh[s->sh_link].sh_type!=SHT_STRTAB)return -1;
+   break;
+  case SHT_REL:entry=sizeof(Elf32_Rel);break;
+  case SHT_RELA:entry=sizeof(Elf32_Rela);break;
+  case SHT_DYNAMIC:entry=sizeof(Elf32_Dyn);break;
+  case SHT_HASH:entry=sizeof(Elf32_Word);break;
+  }
+  if(entry&&(s->sh_offset%4||s->sh_size%entry||s->sh_entsize!=entry))return -1;
+ }
+ if(e->eh->e_shstrndx!=SHN_UNDEF){
+  if(e->eh->e_shstrndx>=e->eh->e_shnum)return -1;
+  Elf32_Shdr *strings=&e->sh[e->eh->e_shstrndx];
+  if(strings->sh_type!=SHT_STRTAB)return -1;
+  for(i=0;i<e->eh->e_shnum;i++)if(e->sh[i].sh_name>=strings->sh_size||
+   !memchr(e->raw+strings->sh_offset+e->sh[i].sh_name,0,strings->sh_size-e->sh[i].sh_name))return -1;
+ }
  return 0;
 }
+/* A mapped file as a read-only private mapping (unload_file), not a copy. */
 static int load_file(const char *p,struct elf *e){
  const char *name=strrchr(p,'/');
- /* Media containers are never symbol providers. Exclude them before open,
-  * including any capitalization, even if they appear in a process's maps. */
+ /* Media containers are never symbol providers. Exclude them before stat or
+  * open, including any capitalization, even if they appear in a process's maps. */
  name=name?name+1:p;size_t length=strlen(name);
  if(length>=4&&!strcasecmp(name+length-4,".mkv")){errno=EINVAL;return -1;}
- int fd=open(p,O_RDONLY);struct ub_stat st;unsigned char *b;size_t got=0;ssize_t n;if(fd<0)return -1;if(ub_fstat(fd,&st)||st.size<52||st.size>64*1024*1024){close(fd);return -1;}b=malloc((size_t)st.size);if(!b){close(fd);return -1;}while(got<(size_t)st.size&&(n=read(fd,b+got,(size_t)st.size-got))>0)got+=(size_t)n;close(fd);if(got!=(size_t)st.size||view(e,b,got)){free(b);return -1;}return 0;
+ /* Only regular files are opened: never device nodes such as /dev/mali0 or
+  * /dev/mem, whose drivers run open/release. A non-ELF file (a font,
+  * apl_lang.dat) is rejected from its header, never read whole. */
+ struct ub_stat st,now;Elf32_Ehdr h;int fd;void *m;
+ if(ub_stat(p,&st)||!S_ISREG(st.mode)||st.size<(long long)sizeof h||st.size>64*1024*1024){errno=EINVAL;return -1;}
+ fd=open(p,O_RDONLY|O_CLOEXEC|O_NONBLOCK);if(fd<0)return -1;
+ if(ub_fstat(fd,&now)||!S_ISREG(now.mode)||now.dev!=st.dev||now.ino!=st.ino||now.size!=st.size||pread(fd,&h,sizeof h,0)!=(ssize_t)sizeof h||
+    memcmp(h.e_ident,ELFMAG,4)||h.e_ident[EI_CLASS]!=ELFCLASS32||h.e_ident[EI_DATA]!=ELFDATA2LSB||h.e_machine!=EM_ARM){close(fd);errno=ENOEXEC;return -1;}
+ m=mmap(0,(size_t)st.size,PROT_READ,MAP_PRIVATE,fd,0);close(fd);if(m==MAP_FAILED)return -1;
+ if(view(e,m,(size_t)st.size)){munmap(m,(size_t)st.size);errno=ENOEXEC;return -1;}
+ return 0;
 }
+static void unload_file(struct elf *e){if(e->raw)munmap(e->raw,e->n);e->raw=0;}
 static const char *symname(struct elf *e,Elf32_Shdr *syms,Elf32_Sym *s){Elf32_Shdr *str;if(syms->sh_link>=e->eh->e_shnum)return 0;str=&e->sh[syms->sh_link];if(s->st_name>=str->sh_size)return 0;const char *p=(char *)e->raw+str->sh_offset+s->st_name;return memchr(p,0,str->sh_size-s->st_name)?p:0;}
 static Elf32_Sym *findsym(struct elf *e,const char *name){unsigned i,j;for(i=0;i<e->eh->e_shnum;i++){Elf32_Shdr *s=&e->sh[i];if(s->sh_type!=SHT_DYNSYM||s->sh_entsize!=sizeof(Elf32_Sym))continue;Elf32_Sym *a=(Elf32_Sym *)(e->raw+s->sh_offset);for(j=0;j<s->sh_size/sizeof *a;j++){const char *n=symname(e,s,a+j);if(n&&!strcmp(n,name)&&a[j].st_shndx!=SHN_UNDEF)return a+j;}}return 0;}
-struct module {char path[512];uint32_t start,offset,bias;};
+/* Each mapped ELF is loaded and parsed once per installation (module_list),
+ * then shared by every import lookup; module_free unmaps them all. */
+struct module {char path[512];uint32_t start,offset,bias;struct elf e;};
 struct modules {struct module m[160];unsigned n;int pid,mem;};
 static uint32_t arm_immediate(uint32_t instruction){unsigned n=((instruction>>8)&15)*2;uint32_t v=instruction&255;return n?(v>>n|v<<(32-n)):v;}
 static uint32_t plt_for_got(struct elf *e,Elf32_Shdr *plt,uint32_t bias,uint32_t got){
@@ -122,22 +164,30 @@ static uint32_t plt_for_got(struct elf *e,Elf32_Shdr *plt,uint32_t bias,uint32_t
  }
  return 0;
 }
-static int module_list(int pid,struct modules *ms){static char text[256*1024];char p[64],*line,*save,name[600],perm[8];unsigned long start,end,off;memset(ms,0,sizeof *ms);ms->pid=pid;snprintf(p,sizeof p,"/proc/%d/mem",pid);ms->mem=open(p,O_RDWR);if(ms->mem<0)return -1;snprintf(p,sizeof p,"/proc/%d/maps",pid);if(ub_read_file(p,text,sizeof text)<0){close(ms->mem);return -1;}for(line=strtok_r(text,"\n",&save);line;line=strtok_r(0,"\n",&save)){name[0]=0;if(sscanf(line,"%lx-%lx %7s %lx %*s %*s %599[^\n]",&start,&end,perm,&off,name)!=5||name[0]!='/'||strstr(name,"(deleted)"))continue;unsigned i;for(i=0;i<ms->n;i++)if(!strcmp(ms->m[i].path,name))break;if(i<ms->n||ms->n==160)continue;struct elf e;if(load_file(name,&e))continue;uint32_t bias=0;unsigned j;int matched=0;if(e.eh->e_phentsize==sizeof(Elf32_Phdr)&&range(e.n,e.eh->e_phoff,(size_t)e.eh->e_phnum*sizeof(Elf32_Phdr))){Elf32_Phdr *ph=(Elf32_Phdr *)(e.raw+e.eh->e_phoff);for(j=0;j<e.eh->e_phnum;j++)if(ph[j].p_type==PT_LOAD&&(ph[j].p_offset&~4095u)==off){bias=(uint32_t)start-(ph[j].p_vaddr&~4095u);matched=1;break;}}free(e.raw);if(!matched)continue;struct module *m=&ms->m[ms->n++];if(strlen(name)>=sizeof m->path){ms->n--;continue;}memcpy(m->path,name,strlen(name)+1);m->start=(uint32_t)start;m->offset=(uint32_t)off;m->bias=bias;}return ms->n?0:-1;}
+static void module_free(struct modules *ms){for(unsigned i=0;i<ms->n;i++)unload_file(&ms->m[i].e);ms->n=0;if(ms->mem>=0)close(ms->mem);ms->mem=-1;}
+static int module_list(int pid,struct modules *ms){static char text[256*1024];char p[64],*line,*save,name[600],perm[8];unsigned long start,end,off;memset(ms,0,sizeof *ms);ms->pid=pid;snprintf(p,sizeof p,"/proc/%d/mem",pid);ms->mem=open(p,O_RDONLY|O_CLOEXEC);if(ms->mem<0)return -1;snprintf(p,sizeof p,"/proc/%d/maps",pid);if(ub_read_file(p,text,sizeof text)<0){module_free(ms);return -1;}for(line=strtok_r(text,"\n",&save);line;line=strtok_r(0,"\n",&save)){name[0]=0;if(sscanf(line,"%lx-%lx %7s %lx %*s %*s %599[^\n]",&start,&end,perm,&off,name)!=5||name[0]!='/'||strstr(name,"(deleted)"))continue;unsigned i;for(i=0;i<ms->n;i++)if(!strcmp(ms->m[i].path,name))break;if(i<ms->n||ms->n==160||strlen(name)>=sizeof ms->m[0].path)continue;struct elf e;if(load_file(name,&e))continue;uint32_t bias=0;unsigned j;int matched=0;if(e.eh->e_phentsize==sizeof(Elf32_Phdr)&&range(e.n,e.eh->e_phoff,(size_t)e.eh->e_phnum*sizeof(Elf32_Phdr))){Elf32_Phdr *ph=(Elf32_Phdr *)(e.raw+e.eh->e_phoff);for(j=0;j<e.eh->e_phnum;j++)if(ph[j].p_type==PT_LOAD&&(ph[j].p_offset&~4095u)==off){bias=(uint32_t)start-(ph[j].p_vaddr&~4095u);matched=1;break;}}if(!matched){unload_file(&e);continue;}struct module *m=&ms->m[ms->n++];memcpy(m->path,name,strlen(name)+1);m->start=(uint32_t)start;m->offset=(uint32_t)off;m->bias=bias;m->e=e;}if(!ms->n){module_free(ms);return -1;}return 0;}
 /* IFUNCs are resolved through an existing target PLT entry/GOT, not by calling
  * an IFUNC resolver as a normal function. Plain exported functions retain their
  * ARM/Thumb symbol bit. */
-static uint32_t plt_symbol(struct modules *ms,const char *name){unsigned i,j,k;for(i=0;i<ms->n;i++){struct elf e;if(load_file(ms->m[i].path,&e))continue;Elf32_Shdr *plt=0;if(e.eh->e_shstrndx<e.eh->e_shnum){Elf32_Shdr *s=&e.sh[e.eh->e_shstrndx];for(j=0;j<e.eh->e_shnum;j++)if(e.sh[j].sh_name<s->sh_size&&!strcmp((char *)e.raw+s->sh_offset+e.sh[j].sh_name,".plt")){plt=&e.sh[j];break;}}for(j=0;j<e.eh->e_shnum&&plt;j++){Elf32_Shdr *r=&e.sh[j];if(r->sh_type!=SHT_REL||r->sh_link>=e.eh->e_shnum||r->sh_entsize!=sizeof(Elf32_Rel))continue;Elf32_Shdr *s=&e.sh[r->sh_link];if(s->sh_type!=SHT_DYNSYM)continue;Elf32_Rel *a=(Elf32_Rel *)(e.raw+r->sh_offset);Elf32_Sym *sy=(Elf32_Sym *)(e.raw+s->sh_offset);for(k=0;k<r->sh_size/sizeof *a;k++){if(ELF32_R_TYPE(a[k].r_info)!=R_ARM_JUMP_SLOT)continue;unsigned ix=ELF32_R_SYM(a[k].r_info);if(ix>=s->sh_size/sizeof *sy)continue;const char *n=symname(&e,s,sy+ix);if(n&&!strcmp(n,name)){uint32_t result=0;if(pread(ms->mem,&result,4,(off_t)(ms->m[i].bias+a[k].r_offset))!=4)result=0;uint32_t first=ms->m[i].bias+plt->sh_addr,last=first+plt->sh_size;if(result&&!(result>=first&&result<last)){free(e.raw);return result;}result=plt_for_got(&e,plt,ms->m[i].bias,ms->m[i].bias+a[k].r_offset);if(result){free(e.raw);return result;}}}}free(e.raw);}return 0;}
+static uint32_t plt_symbol(struct modules *ms,const char *name){unsigned i,j,k;for(i=0;i<ms->n;i++){struct elf e=ms->m[i].e;Elf32_Shdr *plt=0;if(e.eh->e_shstrndx<e.eh->e_shnum){Elf32_Shdr *s=&e.sh[e.eh->e_shstrndx];for(j=0;j<e.eh->e_shnum;j++)if(e.sh[j].sh_name<s->sh_size&&!strcmp((char *)e.raw+s->sh_offset+e.sh[j].sh_name,".plt")){plt=&e.sh[j];break;}}for(j=0;j<e.eh->e_shnum&&plt;j++){Elf32_Shdr *r=&e.sh[j];if(r->sh_type!=SHT_REL||r->sh_link>=e.eh->e_shnum||r->sh_entsize!=sizeof(Elf32_Rel))continue;Elf32_Shdr *s=&e.sh[r->sh_link];if(s->sh_type!=SHT_DYNSYM)continue;Elf32_Rel *a=(Elf32_Rel *)(e.raw+r->sh_offset);Elf32_Sym *sy=(Elf32_Sym *)(e.raw+s->sh_offset);for(k=0;k<r->sh_size/sizeof *a;k++){if(ELF32_R_TYPE(a[k].r_info)!=R_ARM_JUMP_SLOT)continue;unsigned ix=ELF32_R_SYM(a[k].r_info);if(ix>=s->sh_size/sizeof *sy)continue;const char *n=symname(&e,s,sy+ix);if(n&&!strcmp(n,name)){uint32_t result=0;if(pread(ms->mem,&result,4,(off_t)(ms->m[i].bias+a[k].r_offset))!=4)result=0;uint32_t first=ms->m[i].bias+plt->sh_addr,last=first+plt->sh_size;if(result&&!(result>=first&&result<last))return result;result=plt_for_got(&e,plt,ms->m[i].bias,ms->m[i].bias+a[k].r_offset);if(result)return result;}}}}return 0;}
+static int dynamic_linker(const char *path){const char *b=strrchr(path,'/');b=b?b+1:path;return !strncmp(b,"ld-",3)&&strstr(b,".so")!=0;}
 static uint32_t resolve(struct modules *ms,const char *name){
  /* /proc/maps is address order, not the dynamic linker's global scope order.
   * glibc2.20 also exports pthread mutex stubs. Bind pthread APIs to the real
-  * loaded libpthread before considering libc's compatibility definitions. */
- unsigned i,pass,passes=!strncmp(name,"pthread_",8)?2:1;
- for(pass=0;pass<passes;pass++)for(i=0;i<ms->n;i++){
-  if(passes==2&&pass==0&&!strstr(ms->m[i].path,"libpthread"))continue;
-  struct elf e;if(load_file(ms->m[i].path,&e))continue;
-  Elf32_Sym *s=findsym(&e,name);uint32_t v=s?ms->m[i].bias+s->st_value:0;
-  unsigned type=s?ELF32_ST_TYPE(s->st_info):0;free(e.raw);
-  if(v){if(type==STT_GNU_IFUNC)return plt_symbol(ms,name);return v;}
+  * loaded libpthread before considering libc's compatibility definitions.
+  * The dynamic linker (ld-2.20, mapped below libc) is consulted last, as in
+  * its own global scope after libc: its minimal malloc/free must never stand
+  * in for libc's (that free only rewinds its own last block). */
+ unsigned i,pass;
+ for(pass=0;pass<3;pass++){
+  if(!pass&&strncmp(name,"pthread_",8))continue;
+  for(i=0;i<ms->n;i++){
+   int ld=dynamic_linker(ms->m[i].path);
+   if(pass==0?!strstr(ms->m[i].path,"libpthread"):pass==1?ld:!ld)continue;
+   Elf32_Sym *s=findsym(&ms->m[i].e,name);uint32_t v=s?ms->m[i].bias+s->st_value:0;
+   unsigned type=s?ELF32_ST_TYPE(s->st_info):0;
+   if(v){if(type==STT_GNU_IFUNC)return plt_symbol(ms,name);return v;}
+  }
  }
  return 0;
 }
@@ -162,11 +212,13 @@ struct stopped {
  * as its stop arrives; never pretend a running tracee was successfully detached.
  * One batch at a time bounds storage and blocks further injections meanwhile. */
 static struct stopped deferred;
+static void observe_interrupted_call(int tid);
 static int trace_index(struct stopped *s,int tid){for(unsigned i=0;i<s->n;i++)if(s->tids[i]==tid)return (int)i;return -1;}
 static void record_stop(struct stopped *s,unsigned i,int status){
  s->waiting[i]=0;
  if((unsigned)status>>16==PTRACE_EVENT_STOP){
   if(WSTOPSIG(status)!=SIGTRAP)s->group_stop[i]=1;
+  else observe_interrupted_call(s->tids[i]);
  }else {
   int sig=WSTOPSIG(status);
   if(s->signal[i]&&s->signal[i]!=sig)syscall(SYS_tgkill,s->pid,s->tids[i],s->signal[i]);
@@ -212,16 +264,36 @@ static void detach_all(struct stopped *s){
  s->n=0;deferred=remaining;
 }
 void ub_injector_poll(void){if(deferred.n){struct stopped pending=deferred;deferred.n=0;detach_all(&pending);}}
+static int repeat_semop(int tid,int mem);
 /* SEIZE never manufactures SIGSTOP. INTERRUPT gives an identifiable event-stop,
  * while a real signal arriving first is retained and reinjected on detach. */
 static int stop_threads(int pid,struct stopped *s){
+ char comm_path[64],comm[64],exe[600];const char *name;ssize_t exe_length;
+ memset(s,0,sizeof *s);s->pid=pid;s->mem=-1;ub_injector_poll();
+ snprintf(comm_path,sizeof comm_path,"/proc/%d/comm",pid);
+ if(ub_native_wait_read(comm_path,comm,sizeof comm)<0)return -1;
+ comm[strcspn(comm,"\r\n")]=0;
+ snprintf(comm_path,sizeof comm_path,"/proc/%d/exe",pid);exe_length=readlink(comm_path,exe,sizeof exe-1);
+ if(exe_length<0)return -1;
+ if(exe_length==(ssize_t)sizeof exe-1){errno=ENAMETOOLONG;return -1;}
+ exe[exe_length]=0;name=strrchr(exe,'/');name=name?name+1:exe;
+ /* Every protected child stop path, including code/region transactions and probes, must
+  * have the public-API handler already resident. Never attempt a first stop
+  * to install the very handler needed to survive that stop. */
+ if((ub_native_wait_process(comm)||ub_native_wait_process(name))&&!ub_native_wait_ready(pid)){
+  /* Callers retry (1 s loops, the 20 ms DVD guard): report each process once. */
+  static int refused_pid;
+  ub_log("injector",refused_pid==pid?UB_INFO:UB_ALWAYS,"%s PID%d has no current pre-main EV wait handler; no threads stopped (a protected native launch is required)\n",name,pid);
+  refused_pid=pid;
+  errno=EAGAIN;return -1;
+ }
  unsigned long long until=ub_now_ms()+UB_PTRACE_PAUSE_MS;
- memset(s,0,sizeof *s);s->pid=pid;s->mem=-1;s->until=until+1500;ub_injector_poll();
+ s->until=until+1500;
  if(deferred.n){errno=EBUSY;return -1;}
  for(unsigned pass=0;pass<64;pass++){
-  char path[64];struct ub_dir dir;const char *de;unsigned added=0;
+  char path[64];struct ub_dir dir;const char *de;unsigned added=0;int more;
   snprintf(path,sizeof path,"/proc/%d/task",pid);if(ub_dir_open(&dir,path))goto fail;
-  while((de=ub_dir_next(&dir))){
+  while((more=ub_dir_read(&dir,&de))>0){
    int tid=atoi(de);if(tid<=0||trace_index(s,tid)>=0)continue;
    if(s->n==256||ub_now_ms()>=until){ub_dir_close(&dir);errno=ETIMEDOUT;goto fail;}
    if(ptrace(PTRACE_SEIZE,tid,0,0)){if(errno==ESRCH)continue;ub_dir_close(&dir);goto fail;}
@@ -230,11 +302,24 @@ static int stop_threads(int pid,struct stopped *s){
    int rc=wait_stop(s,i,until,0);if(rc<0){ub_dir_close(&dir);goto fail;}if(!rc)added++;
   }
   ub_dir_close(&dir);
-  if(!added&&s->n){snprintf(path,sizeof path,"/proc/%d/mem",pid);s->mem=open(path,O_RDWR);if(s->mem<0)goto fail;return 0;}
+  /* A listing cut short by a read error is not a complete thread set, even if
+   * it added nothing new: defer the whole transaction (caller retries later). */
+  if(more<0){errno=dir.err;goto fail;}
+  if(!added&&s->n){
+   unsigned repeated=0;
+   snprintf(path,sizeof path,"/proc/%d/mem",pid);s->mem=open(path,O_RDWR);if(s->mem<0)goto fail;
+   /* Only event-stops of our own INTERRUPT: a group-stop or a foreign signal
+    * keeps its EINTR semantics. */
+   for(unsigned i=0;i<s->n;i++)if(s->tids[i]&&!s->waiting[i]&&!s->signal[i]&&!s->group_stop[i])repeated+=(unsigned)repeat_semop(s->tids[i],s->mem);
+   if(repeated)ub_log("injector",UB_ALWAYS,"PID%d: our stop interrupted semop in %u thread(s); they repeat the call when resumed\n",pid,repeated);
+   return 0;
+  }
  }
  errno=ETIMEDOUT;
  fail:{int saved=errno;detach_all(s);errno=saved;}return -1;
 }
+/* Target addresses reach 0xffffffff: a 32-bit off_t would turn them negative. */
+_Static_assert(sizeof(off_t)>=8,"build with _FILE_OFFSET_BITS=64");
 static int memio(int fd,uint32_t a,void *buf,size_t n,int writing){
  size_t done=0;
  while(done<n){
@@ -247,6 +332,8 @@ static int memio(int fd,uint32_t a,void *buf,size_t n,int writing){
 static int restore_memory(struct stopped *s,int tid,uint32_t a,const void *bytes,size_t n){
  unsigned char verify[32];if(!n||n>sizeof verify)return -1;
  for(unsigned i=0;i<s->n;i++)if(s->tids[i]&&s->waiting[i])return -1;
+ /* Original bytes already satisfy rollback even when writes are refused. */
+ if(!memio(s->mem,a,verify,n,0)&&!memcmp(bytes,verify,n))return 0;
  if(memio(s->mem,a,(void *)bytes,n,1)){
   /* POKETEXT fallback also supports byte/string patch sites. Preserve the
    * untouched bytes in the native ptrace word on both ARM and host tests. */
@@ -262,6 +349,81 @@ static int restore_memory(struct stopped *s,int tid,uint32_t a,const void *bytes
 }
 static int getregs(int tid,struct regs *r){return ptrace(PTRACE_GETREGS,tid,0,r);}
 static int setregs(int tid,struct regs *r){return ptrace(PTRACE_SETREGS,tid,0,r);}
+/* Audit every shared stop path, including partial/deferred detach. Observation
+ * only: no syscall, register or user packet is replayed by this diagnostic. */
+static void observe_interrupted_call(int tid){
+ int saved_errno=errno;
+ do {
+#if defined(__arm__)
+ struct regs r;unsigned thumb,offset;uint32_t at;long word;unsigned char bytes[sizeof word];
+ if(getregs(tid,&r)||(int32_t)r.r[0]!=-EINTR)break;
+ thumb=(r.r[16]&0x20u)!=0;at=r.r[15]-(thumb?2u:4u);offset=at&(sizeof word-1);
+ errno=0;word=ptrace(PTRACE_PEEKTEXT,tid,(void *)(uintptr_t)(at&~(uint32_t)(sizeof word-1)),0);
+ if(word==-1&&errno)break;
+ memcpy(bytes,&word,sizeof word);
+ if(thumb?memcmp(bytes+offset,"\x00\xdf",2):memcmp(bytes,"\x00\x00\x00\xef",4))break;
+ ub_log("injector",UB_ALWAYS,"TID%d at our event-stop: post-svc EINTR, syscall=%u (trigger attribution requires native evidence)\n",tid,r.r[7]);
+#elif defined(__x86_64__)
+ struct user_regs_struct r;long word;unsigned char bytes[sizeof word];uintptr_t at;
+ if(ptrace(PTRACE_GETREGS,tid,0,&r)||(long)r.rax!=-EINTR||(long)r.orig_rax<0)break;
+ at=r.rip-2;errno=0;
+ word=ptrace(PTRACE_PEEKTEXT,tid,(void *)at,0);
+ if(word==-1&&errno)break;
+ memcpy(bytes,&word,sizeof word);if(memcmp(bytes,"\x0f\x05",2))break;
+ ub_log("injector",UB_ALWAYS,"TID%d at our event-stop: post-syscall EINTR, syscall=%lld (trigger attribution requires native evidence)\n",tid,(long long)r.orig_rax);
+#else
+ (void)tid;
+#endif
+ }while(0);
+ errno=saved_errno;
+}
+/* PTRACE_INTERRUPT wakes a thread sleeping in SysV semop/semtimedop, and Linux
+ * returns -EINTR from it, never restarted (ipc/sem.c; the -ERESTART* waits,
+ * e.g. select and poll, the kernel rewinds itself before our stop). libufs
+ * reports that as an I/O error, libavd enters its section without the lock
+ * and later raises a system-wide count. A thread stopped by our own INTERRUPT
+ * right after such a return is rewound onto its svc with its first argument
+ * back, as the kernel does for restartable calls, so it repeats the call on
+ * resume. Restrict this historical workaround to indefinite semop (298).
+ * semtimedop (312) has a relative timeout that the kernel does not update:
+ * repeating it would extend the caller's deadline. Leave its EINTR intact. */
+#if defined(__x86_64__)
+#define NR_SEMOP SYS_semop
+#define NR_SEMTIMEDOP SYS_semtimedop
+#else
+#define NR_SEMOP 298
+#define NR_SEMTIMEDOP 312
+#endif
+static int repeat_call(long number,long result,int after_svc){return after_svc&&result==-EINTR&&number==NR_SEMOP;}
+#ifndef PTRACE_PEEKSIGINFO
+#define PTRACE_PEEKSIGINFO 0x4209
+#endif
+/* A signal queued for the thread or its process may be what interrupted the
+ * call; then it keeps its EINTR. Unknown counts as queued. */
+static int signal_queued(int tid){
+ struct {uint64_t off;uint32_t flags;int32_t nr;} a={0,0,1};unsigned char info[128];
+ if(ptrace(PTRACE_PEEKSIGINFO,tid,&a,info))return 1;
+ a.flags=1;return ptrace(PTRACE_PEEKSIGINFO,tid,&a,info)!=0; /* PTRACE_PEEKSIGINFO_SHARED */
+}
+/* 1 when the stopped thread was rewound. Registers change once, before any
+ * remote_syscall saves them, so its restore and the detach keep the rewind. */
+static int repeat_semop(int tid,int mem){
+#if defined(__arm__)
+ struct regs r;unsigned char b[4];int thumb;uint32_t at;
+ if(getregs(tid,&r))return 0;
+ thumb=(r.r[16]&0x20u)!=0;at=r.r[15]-(thumb?2u:4u);
+ if(memio(mem,at,b,thumb?2:4,0)||!repeat_call((int32_t)r.r[7],(int32_t)r.r[0],thumb?!memcmp(b,"\x00\xdf",2):!memcmp(b,"\x00\x00\x00\xef",4))||signal_queued(tid))return 0;
+ r.r[0]=r.r[17];r.r[15]=at;return !setregs(tid,&r);
+#elif defined(__x86_64__)
+ /* Host tests: the same decision on x86-64 (syscall 0f 05, orig_rax). */
+ struct user_regs_struct r;unsigned char b[2];
+ if(ptrace(PTRACE_GETREGS,tid,0,&r)||pread(mem,b,2,(off_t)(r.rip-2))!=2)return 0;
+ if(!repeat_call((long)r.orig_rax,(long)r.rax,!memcmp(b,"\x0f\x05",2))||signal_queued(tid))return 0;
+ r.rax=r.orig_rax;r.rip-=2;return !ptrace(PTRACE_SETREGS,tid,0,&r);
+#else
+ (void)tid;(void)mem;return 0;
+#endif
+}
 /* Diagnostics for ub_probe: the injected thread's state and the trap outcome of
  * the most recent remote_syscall. Not used by normal operation. */
 static struct { uint32_t pc,trap_pc,old_pc,old_r7,old_orig,old_cpsr; unsigned stops; int lastsig; } rsdbg;
@@ -509,11 +671,42 @@ const char *ub_overlay_error(int rc){
 static const char *install_stage="";
 static char stage_buf[200];
 const char *ub_install_stage(void){return install_stage;}
+/* 0 every hook site holds its stock bytes, 1 one holds anything else, -1 one
+ * cannot be read (e.g. its library is not mapped yet). */
+static int hook_sites(int mem,const struct ub_payload_variant *v){
+ for(unsigned i=0;i<v->hook_count;i++){
+  const struct ub_hook_spec *h=v->hooks+i;unsigned char b[32];
+  if(h->length>sizeof b||memio(mem,h->target,b,h->length,0)){snprintf(stage_buf,sizeof stage_buf,"hook-sites: %08x unreadable",h->target);install_stage=stage_buf;return -1;}
+  if(memcmp(b,h->expected,h->length)){snprintf(stage_buf,sizeof stage_buf,"hook-sites: %08x is not stock code",h->target);install_stage=stage_buf;return 1;}
+ }
+ return 0;
+}
+int ub_hook_sites(int pid,const struct ub_payload *p,const char *sha){
+ const struct ub_payload_variant *v=ub_payload_variant(p,sha);char path[64];int fd,rc;
+ install_stage="hook-sites";if(!v)return -1;
+ snprintf(path,sizeof path,"/proc/%d/mem",pid);fd=open(path,O_RDONLY|O_CLOEXEC);if(fd<0)return -1;
+ rc=hook_sites(fd,v);close(fd);return rc;
+}
+/* 1 if a thread's PC is inside a prefix about to be replaced, -1 if a PC
+ * cannot be read. A thread that exited while being stopped has tid 0. */
+static int prefix_busy(struct stopped *s,const struct ub_payload_variant *v){
+ for(unsigned i=0;i<s->n;i++){
+  uint64_t pc;if(!s->tids[i])continue;
+  if(thread_pc(s->tids[i],&pc))return -1;
+  for(unsigned j=0;j<v->hook_count;j++)if(pc>v->hooks[j].target&&pc<(uint64_t)v->hooks[j].target+v->hooks[j].length)return 1;
+ }
+ return 0;
+}
 int ub_install_payload(int pid,const struct ub_payload *p){
  char proc[64],digest[65];struct elf e;struct modules mods;struct stopped stop;unsigned char *image=0;uint32_t span=0,base=0,gateway=0;int rc=-1,attached=0,changed=0;unsigned i;uint32_t args[6],result;
  install_stage="hash";
  const struct ub_payload_variant *v=0;
  snprintf(proc,sizeof proc,"/proc/%d/exe",pid);if(ub_hash_file(proc,digest)||!(v=ub_payload_variant(p,digest))){ub_log("injector",UB_ALWAYS,"%s PID%d firmware hash mismatch\n",p->process,pid);return -1;}
+ /* Hook sites are read before anything else and without stopping: code that
+  * is not stock (an earlier helper run's hooks) is refused at once, and
+  * unmapped sites cost no stop and no library scan. */
+ if((rc=ub_hook_sites(pid,p,digest)))return rc;
+ rc=-1;
  if(view(&e,p->elf,p->elf_size)||e.eh->e_type!=ET_DYN||e.eh->e_phentsize!=sizeof(Elf32_Phdr)||!range(e.n,e.eh->e_phoff,(size_t)e.eh->e_phnum*sizeof(Elf32_Phdr)))return -1;
  Elf32_Phdr *ph=(Elf32_Phdr *)(e.raw+e.eh->e_phoff);
  for(i=0;i<e.eh->e_phnum;i++)if(ph[i].p_type==PT_LOAD){if(ph[i].p_vaddr>16*1024*1024||ph[i].p_memsz>16*1024*1024-ph[i].p_vaddr||ph[i].p_filesz>ph[i].p_memsz||!range(e.n,ph[i].p_offset,ph[i].p_filesz))return -1;if(ph[i].p_vaddr+ph[i].p_memsz>span)span=ph[i].p_vaddr+ph[i].p_memsz;}
@@ -525,8 +718,8 @@ int ub_install_payload(int pid,const struct ub_payload *p){
   * below. No filesystem scans or hashing while the UI is stopped. */
  install_stage="relocate";if(relocate(&e,image,span,0,&mods))goto out;
  install_stage="stop";if(stop_threads(pid,&stop)){ub_log("injector",UB_ALWAYS,"%s ptrace attach denied: %s\n",p->process,strerror(errno));goto out;}attached=1;
- install_stage="thread-busy";for(i=0;i<stop.n;i++){struct regs r;if(getregs(stop.tids[i],&r))goto out;for(unsigned j=0;j<v->hook_count;j++)if((r.r[15]&~1u)>v->hooks[j].target&&(r.r[15]&~1u)<v->hooks[j].target+v->hooks[j].length)goto out;}
- install_stage="hook-bytes";for(i=0;i<v->hook_count;i++){unsigned char b[32];if(v->hooks[i].length>32||memio(stop.mem,v->hooks[i].target,b,v->hooks[i].length,0)||memcmp(b,v->hooks[i].expected,v->hooks[i].length)){ub_log("injector",UB_ALWAYS,"Hook bytes mismatch %s:%x\n",p->process,v->hooks[i].target);goto out;}}
+ install_stage="thread-busy";if(prefix_busy(&stop,v))goto out;
+ install_stage="hook-bytes";{int sites=hook_sites(stop.mem,v);if(sites){rc=sites;goto out;}}
  install_stage="base-mmap";memset(args,0,sizeof args);args[1]=span+4096;args[2]=7;args[3]=0x4022;args[4]=0xffffffffu;
  {int src=remote_syscall(&stop,pid,192,args,&base);
   if(src||base>=0xfffff001u||base<65536u){snprintf(stage_buf,sizeof stage_buf,"base-mmap rc=%d ret=%08x len=%x | thread r7=%u orig=%08x oldpc=%08x stub=%08x trap=%08x stops=%u sig=%d",src,(unsigned)base,(unsigned)(span+4096),(unsigned)rsdbg.old_r7,(unsigned)rsdbg.old_orig,(unsigned)rsdbg.old_pc,(unsigned)rsdbg.pc,(unsigned)rsdbg.trap_pc,rsdbg.stops,rsdbg.lastsig);install_stage=stage_buf;goto out;}}
@@ -561,7 +754,7 @@ int ub_install_payload(int pid,const struct ub_payload *p){
  stop.until=ub_now_ms()+UB_PTRACE_PAUSE_MS;
  if(base){memset(args,0,sizeof args);args[0]=base;args[1]=span+4096;remote_syscall(&stop,pid,91,args,&result);}
  if(gateway){memset(args,0,sizeof args);args[0]=gateway;args[1]=4096;remote_syscall(&stop,pid,91,args,&result);}
- out:if(attached){if(stop.quarantine)rc=-2;if(stop.mem>=0)close(stop.mem);detach_all(&stop);}close(mods.mem);free(image);return rc;
+ out:if(attached){if(stop.quarantine)rc=-2;if(stop.mem>=0)close(stop.mem);detach_all(&stop);}module_free(&mods);free(image);return rc;
 }
 
 /* Diagnostic: inject a throwaway 4 KiB mmap into pid and report the injected

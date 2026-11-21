@@ -1,0 +1,12 @@
+{
+  "program":"apl_mgr",
+  "firmware":"1.82",
+  "sha256":"5ba307fa43e18ee0aa72576ff4e5a49b316f7f239794fb84579f638ec00ba6a9",
+  "hooks":[{"target":"0x140b8","replacement":"ub_hook_launch","original_pointer":"ub_original_launch","note":"Native launcher entry; preserve state-3/debug fallback and both parent-side notifications. Only exact apl_setting path gets pre-main wait support."}],
+  "bindings":[
+    {"symbol":"ub_debug_name","value":"0x7d680"},
+    {"symbol":"ub_mgr_started_wait","value":"0x13aa1"},
+    {"symbol":"ub_mgr_started","value":"0x13d71"}
+  ],
+  "variants":[{"firmware":"1.85","sha256":"eeb1b73b4c2b2857aae7699c8f74eaefdb77fd4aeaf79eea579b55aeb76a8ca0","hooks":{"ub_hook_launch":"0x140b8"},"bindings":{"ub_debug_name":"0x7d680","ub_mgr_started_wait":"0x13aa1","ub_mgr_started":"0x13d71"}}]
+}

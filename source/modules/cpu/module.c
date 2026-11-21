@@ -44,7 +44,7 @@ static unsigned menu_seq;
 static char message[160]="not queried";
 static struct cpu_owner owner;
 static struct {
- pid_t pid;int active,timed_out,operation,manual,expected,deferred_off;uint64_t deadline;
+ pid_t pid;int active,timed_out,operation,manual,expected,deferred_off,health_check;uint64_t deadline;
  unsigned seq;unsigned char nonce[16];char reply[UB_ACTION_PATH],job[192],result[192];
 } pending;
 
@@ -182,20 +182,54 @@ static int code_words(int active,const struct cpu_instance *m){
  rc=0;
 out:close(fd);return rc;
 }
-static int trusted(const struct cpu_receipt *r,const struct cpu_instance *m,const struct cpu_native *s,const char *boot){
+/* The resident module is ours: receipt, module base/size, boot, artifact and
+ * the two worker pids with their start times, references matching the pin. */
+static int identity_busy;
+static int identity(const struct cpu_receipt *r,const struct cpu_instance *m,const struct cpu_native *s,const char *boot){
  if(r->magic!=UB_CPU_MAGIC||r->version!=UB_CPU_VERSION||r->base!=m->base||r->size!=m->size||memcmp(r->boot,boot,40)||memcmp(r->sha,UB_CPU_ARTIFACT_SHA256,65))return 0;
  for(unsigned i=0;i<2;i++)if(r->pid[i]!=s->pid[i]||!r->born[i]||birth(r->pid[i])!=r->born[i])return 0;
- int mode=cpu_native_mode(s);if(mode<0||(!s->pinned&&m->references)|| (s->pinned&&m->references!=1))return 0;
- return !code_words(mode,m);
+ /* Each open of the control device holds a module reference (fops owner).
+  * Ours in every other respect, pinned, but opened elsewhere right now (for
+  * example read over SSH): busy, not an unknown module. */
+ if(s->pinned&&m->references>1){identity_busy=1;return 0;}
+ return !((!s->pinned&&m->references)||(s->pinned&&m->references!=1));
 }
-static int observe(const char *boot,struct cpu_instance *m,struct cpu_native *s,struct cpu_receipt *r){
- struct ub_stat st;int exists=instance(m);if(exists<0)return -1;
+static int write_receipt(const char *boot,const struct cpu_instance *m,const struct cpu_native *s,struct cpu_receipt *r){
+ memset(r,0,sizeof *r);r->magic=UB_CPU_MAGIC;r->version=UB_CPU_VERSION;r->size=m->size;r->base=m->base;r->preference=-1;
+ memcpy(r->boot,boot,40);memcpy(r->sha,UB_CPU_ARTIFACT_SHA256,65);
+ for(unsigned i=0;i<2;i++){r->pid[i]=s->pid[i];r->born[i]=birth(r->pid[i]);if(!r->born[i])return -1;}
+ return atomic_file(RECEIPT,r,sizeof *r,1);
+}
+/* A failure between init_module and the receipt leaves our module resident
+ * with no receipt. It is adopted only while provably inert: never activated
+ * (phase 0, unpinned, no references), stock words, live workers. */
+static int adopt_inert(const char *boot,const struct cpu_instance *m,const struct cpu_native *s,struct cpu_receipt *r){
+ if(s->phase!=0||s->pinned||m->references||cpu_native_mode(s)!=0||code_words(0,m)||write_receipt(boot,m,s,r))return -1;
+ ub_log(ID,UB_ALWAYS,"inert resident kernel component adopted; receipt rewritten");return 0;
+}
+/* strict: a known On/Off whose code words match. Otherwise identity only, so
+ * an explicit Off can still reach rw15_off, which checks each word itself. */
+static int observe(const char *boot,struct cpu_instance *m,struct cpu_native *s,struct cpu_receipt *r,int strict){
+ struct ub_stat st;int exists=instance(m),mode;if(exists<0)return -1;
  int fd=open(UB_CPU_NODE,O_RDONLY|O_NOFOLLOW|O_CLOEXEC);
  if(!exists){if(fd>=0){close(fd);return -1;}if(errno!=ENOENT)return -1;return code_words(0,m)?-1:0;}
  if(fd<0)return -1;
  int bad=ub_fstat(fd,&st)||!S_ISCHR(st.mode)||st.uid||(st.mode&0777)!=0600;close(fd);
- if(bad||read_record(RECEIPT,r,sizeof *r)||native_status(s)||!trusted(r,m,s,boot))return -1;
+ if(bad||native_status(s))return -1;
+ if((read_record(RECEIPT,r,sizeof *r)||!identity(r,m,s,boot))&&(adopt_inert(boot,m,s,r)||!identity(r,m,s,boot)))return -1;
+ if(strict&&((mode=cpu_native_mode(s))<0||code_words(mode,m)))return -1;
  return 1;
+}
+/* -1 unusable; 0 absent; 1 ours in a known mode (*mode); 2 ours, mode not
+ * known (only an explicit Off may act). A sticky context rejection with the
+ * stock words restored is Off in effect, but never eligible for On. */
+static int examine(const char *boot,struct cpu_instance *m,struct cpu_native *s,struct cpu_receipt *r,int *mode){
+ int state=observe(boot,m,s,r,1);
+ *mode=state==1?cpu_native_mode(s):0;
+ if(state>=0)return state;
+ if(observe(boot,m,s,r,0)!=1)return -1;
+ if(cpu_native_off_state(s)&&!code_words(0,m)){*mode=0;return 1;}
+ *mode=-1;return 2;
 }
 enum { LATCH_INVALID=-1,LATCH_NONE=0,LATCH_ON=1,LATCH_OFF=2 };
 static int latch_state(const char *boot){
@@ -226,10 +260,7 @@ static int load_inert(const char *boot,struct cpu_instance *m,struct cpu_native 
  if(uname(&u)||strcmp(u.release,"4.4.8")||(strcmp(u.machine,"aarch64")&&strcmp(u.machine,"armv8l"))||ub_tool_cpu_wait_size!=UB_CPU_ARTIFACT_BYTES)return -1;
  ub_hash_bytes(ub_tool_cpu_wait,ub_tool_cpu_wait_size,hash);if(strcmp(hash,UB_CPU_ARTIFACT_SHA256))return -1;
  if(syscall(SYS_init_module,ub_tool_cpu_wait,ub_tool_cpu_wait_size,"")||instance(m)!=1||native_status(s)||s->phase!=0||cpu_native_mode(s)!=0||m->references||code_words(0,m))return -1;
- memset(r,0,sizeof *r);r->magic=UB_CPU_MAGIC;r->version=UB_CPU_VERSION;r->size=m->size;r->base=m->base;r->preference=-1;
- memcpy(r->boot,boot,40);memcpy(r->sha,UB_CPU_ARTIFACT_SHA256,65);
- for(unsigned i=0;i<2;i++){r->pid[i]=s->pid[i];r->born[i]=birth(r->pid[i]);if(!r->born[i])return -1;}
- return atomic_file(RECEIPT,r,sizeof *r,1);
+ return write_receipt(boot,m,s,r); /* on failure, a later observe adopts the inert module */
 }
 static void result_set(struct cpu_result *r,int mode,int code,const char *why){r->mode=mode;r->code=code;snprintf(r->message,sizeof r->message,"%s",why);}
 static int worker(const char *nonce){
@@ -248,10 +279,14 @@ static int worker(const char *nonce){
  int cleanup=j.operation==CPU_RECONCILE;
  if(flock(lock,LOCK_EX|(cleanup?0:LOCK_NB))){result_set(&out,-1,CPU_BUSY,"a previous CPU operation still owns the device");goto done;}
  if(current_owner(&latest,boot)||(!cleanup&&(!cpu_owner_equal(&latest,&j.owner)||ub_now_ms()>=j.deadline))){result_set(&out,-1,CPU_STALE,"expired or superseded CPU request");goto done;}
- int latched=latch_state(boot);out.suppress_auto_on=latched!=LATCH_NONE;
- state=observe(boot,&m,&s,&receipt);if(state<0){result_set(&out,-1,CPU_INVALID,"native identity/state unavailable; restart player required");goto done;}
- int mode=state?cpu_native_mode(&s):0;
+ int latched=latch_state(boot),mode;out.suppress_auto_on=latched!=LATCH_NONE;
+ identity_busy=0;state=examine(boot,&m,&s,&receipt,&mode);
+ if(state<0&&identity_busy){result_set(&out,-1,CPU_BUSY,"the CPU control device is open in another process; try again");goto done;}
+ if(state<0){result_set(&out,-1,CPU_INVALID,"native identity/state unavailable; restart player required");goto done;}
  if(cleanup&&latest.enabled&&latest.desired){result_set(&out,mode,CPU_OK,"Off cleanup superseded by the latest On policy");goto done;}
+ /* Identity verified but the kernel reports an anomaly (unknown mode,
+  * PARTIAL, fault, rejection): only an explicit Off may act on it. */
+ if(state==2&&j.operation!=CPU_OFF){result_set(&out,-1,CPU_UNCERTAIN,"kernel state is not a verified On or Off; select Off to recover");goto done;}
  /* A previous uncertain Off is not a new authorization to write Off again.
   * A healthy stock-Off observation below may still resolve it without I/O. */
  if(cleanup&&mode==1&&(latched==LATCH_OFF||latched==LATCH_INVALID)){
@@ -260,6 +295,7 @@ static int worker(const char *nonce){
  if(j.operation==CPU_QUERY){result_set(&out,mode,CPU_OK,out.suppress_auto_on?"previous activation is unresolved; select Off to recover":"ready");goto done;}
  if(j.operation==CPU_ON){
   if(!cpu_on_allowed(&latest,&j.owner,out.suppress_auto_on)){result_set(&out,-1,CPU_UNCERTAIN,"activation is blocked; select Off to verify recovery");goto done;}
+  if(state==1&&cpu_native_mode(&s)<0){result_set(&out,-1,CPU_UNCERTAIN,"off; a native wait context was rejected, On needs a player restart");goto done;}
   if(mode==1){result_set(&out,1,CPU_OK,"already on");goto reconcile;}
   if(set_latch(&j,CPU_ON))goto done;
   out.suppress_auto_on=1;
@@ -276,8 +312,8 @@ static int worker(const char *nonce){
   out.suppress_auto_on=1;
   wrote=native_write(0,&out.off_attempted);
  }
- state=observe(boot,&m,&s,&receipt);mode=state==1?cpu_native_mode(&s):-1;
- if(wrote||mode!=(j.operation==CPU_ON)){result_set(&out,-1,CPU_UNCERTAIN,state<0?"native state unhealthy or unverified; restart player required":"native change was not fully acknowledged; no automatic resend");goto reconcile;}
+ state=examine(boot,&m,&s,&receipt,&mode);if(state!=1)mode=-1;
+ if(wrote||mode!=(j.operation==CPU_ON)){result_set(&out,-1,CPU_UNCERTAIN,state<0?"native state unhealthy or unverified; restart player required":state==2?"kernel state is not a verified On or Off; select Off to recover":"native change was not fully acknowledged; no automatic resend");goto reconcile;}
  if(unlink(LATCH)&&errno!=ENOENT){result_set(&out,-1,CPU_UNCERTAIN,"cannot clear activation receipt");goto reconcile;}
  out.suppress_auto_on=0;result_set(&out,mode,CPU_OK,"applied");
 reconcile:
@@ -286,8 +322,8 @@ reconcile:
   * A GET never enters this path. No polling or second activation occurs. */
  if(j.operation==CPU_ON&&!current_owner(&latest,boot)&&state==1&&cpu_completion_needs_off(&latest,cpu_native_mode(&s))){
   if(set_latch(&j,CPU_OFF)){out.suppress_auto_on=1;result_set(&out,-1,CPU_UNCERTAIN,"cannot record latest Off intent");goto done;}
-  wrote=native_write(0,&out.off_attempted);state=observe(boot,&m,&s,&receipt);
-  if(!wrote&&state==1&&cpu_native_mode(&s)==0){if(!unlink(LATCH)||errno==ENOENT){out.suppress_auto_on=0;result_set(&out,0,CPU_OK,"off for the latest helper policy");}}
+  wrote=native_write(0,&out.off_attempted);state=examine(boot,&m,&s,&receipt,&mode);
+  if(!wrote&&state==1&&mode==0){if(!unlink(LATCH)||errno==ENOENT){out.suppress_auto_on=0;result_set(&out,0,CPU_OK,"off for the latest helper policy");}}
   else{out.suppress_auto_on=1;result_set(&out,-1,CPU_UNCERTAIN,"latest Off policy was not confirmed");}
  }
 done:
@@ -296,12 +332,8 @@ done:
  int rc=atomic_file(resultpath,&out,sizeof out,0);if(lock>=0)close(lock);return rc?3:0;
 }
 static void clean_worker(const char *nonce){
- struct ub_dir d;const char *e;sigset_t empty;int nul;
- for(int sig=1;sig<65;sig++)signal(sig,SIG_DFL);
- sigemptyset(&empty);sigprocmask(SIG_SETMASK,&empty,0);umask(077);
- if(!ub_dir_open(&d,"/proc/self/fd")){while((e=ub_dir_next(&d)))if(e[0]>='0'&&e[0]<='9'){int fd=atoi(e);if(fd>2&&fd!=d.fd)close(fd);}ub_dir_close(&d);}
- else{struct rlimit lim;if(getrlimit(RLIMIT_NOFILE,&lim)||lim.rlim_max==RLIM_INFINITY||lim.rlim_max>1048576)_exit(126);for(rlim_t fd=3;fd<lim.rlim_max;fd++)close((int)fd);}
- nul=open("/dev/null",O_RDWR|O_CLOEXEC);if(nul<0||dup2(nul,0)<0||dup2(nul,1)<0||dup2(nul,2)<0)_exit(126);if(nul>2)close(nul);
+ if(ub_child_sanitize(0))_exit(126);
+ umask(077);
  execl("/proc/self/exe","engage","--cpu-worker",nonce,(char *)0);_exit(127);
 }
 static int module_enabled;
@@ -315,11 +347,11 @@ static void answer(const char *reply,unsigned seq){
  char text[256];int n;if(!reply||!*reply)return;
  n=snprintf(text,sizeof text,"%u %s %s\n",seq,mode_name(effective),message);if(n>0&&(size_t)n<sizeof text)ub_action_reply(reply,text,(size_t)n);
 }
-static int begin(int operation,int manual,unsigned seq,const char *reply,uint32_t expires){
+static int begin_until(int operation,int manual,unsigned seq,const char *reply,uint64_t expires_ms){
  struct cpu_job j;char nonce[33];pid_t pid;if(pending.active)return -1;
  memset(&j,0,sizeof j);j.magic=UB_CPU_MAGIC;j.version=UB_CPU_VERSION;j.operation=(unsigned)operation;j.manual=(unsigned)manual;j.owner=owner;
  uint64_t now=ub_now_ms();j.deadline=now+15000;
- if(expires){uint64_t d=(uint64_t)expires*1000;if(d<=now)return -1;if(d<j.deadline)j.deadline=d;}
+ if(expires_ms){if(expires_ms<=now)return -1;if(expires_ms<j.deadline)j.deadline=expires_ms;}
  if(random_bytes(j.nonce,16))return -1;
  hex_nonce(j.nonce,nonce);
  memset(&pending,0,sizeof pending);snprintf(pending.job,sizeof pending.job,UB_CPU_DIR "/job.%s",nonce);snprintf(pending.result,sizeof pending.result,UB_CPU_DIR "/result.%s",nonce);
@@ -327,32 +359,91 @@ static int begin(int operation,int manual,unsigned seq,const char *reply,uint32_
  pending.active=1;pending.operation=operation;pending.manual=manual;pending.expected=operation==CPU_ON;pending.seq=seq;pending.deadline=j.deadline;memcpy(pending.nonce,j.nonce,16);if(reply)snprintf(pending.reply,sizeof pending.reply,"%s",reply);
  pid=fork();if(!pid)clean_worker(nonce);if(pid<0){unlink(pending.job);memset(&pending,0,sizeof pending);return -1;}pending.pid=pid;return 0;
 }
+static int begin(int operation,int manual,unsigned seq,const char *reply,uint32_t expires){
+ return begin_until(operation,manual,seq,reply,(uint64_t)expires*1000);
+}
+/* USB breaker for automatic On ([cpu] auto_on_armed in ub820_menu.cfg): set
+ * before an automatic On, cleared by a verified manual Off, or once a fresh
+ * query CPU_HEALTHY_MS after On was verified still finds it On. A marker left
+ * by an earlier run means that On never proved healthy (or the helper ended
+ * within that interval, e.g. a power cycle), so startup does not turn it On
+ * again; manual On still works. A clear that the USB did not save is retried:
+ * the settings layer already shows 0 in RAM. */
+#define CPU_HEALTHY_MS (30ull*60ull*1000ull)
+#define CPU_MARKER_RETRY_MS 60000ull
+static int armed,armed_here,marker_clear_pending;
+static uint64_t healthy_at,marker_retry_at;
+static int set_armed(int value){
+ int rc=value?ub_setting_set_saved(ID,"auto_on_armed","1"):ub_setting_set(ID,"auto_on_armed","0");
+ if(rc)ub_log(ID,UB_ALWAYS,"automatic On safety marker not %s on USB (%s)",value?"set":"cleared",rc<0?"invalid":ub_stick_error(rc));
+ if(value&&!rc)marker_clear_pending=0;
+ return rc;
+}
+static void clear_marker(const char *why){
+ if(!set_armed(0)){marker_clear_pending=0;armed_here=0;ub_log(ID,UB_INFO,"automatic On safety marker cleared (%s)",why);}
+ else{marker_clear_pending=1;marker_retry_at=ub_now_ms()+CPU_MARKER_RETRY_MS;}
+}
+/* A device still owned by an older worker at startup (e.g. the previous
+ * helper's cleanup) is retried from a fresh query a bounded number of times.
+ * BUSY is decided before any latch or kernel access, so nothing changed. */
+#define CPU_BUSY_RETRIES 5u
+#define CPU_BUSY_RETRY_MS 3000u
+static unsigned busy_retries;
+static uint64_t busy_retry_at;
 static void poll_worker(void){
- int status;pid_t rc;struct cpu_result result;
+ int status,reaped;pid_t rc;struct cpu_result result;
  if(!pending.active)return;
  do{rc=waitpid(pending.pid,&status,WNOHANG);}while(rc<0&&errno==EINTR);
+ /* ECHILD: an inherited SIGCHLD ignore already reaped the worker; then the
+  * nonce-bound result file alone shows its outcome. */
+ reaped=rc<0&&errno==ECHILD;
  if(!rc){if(!pending.timed_out&&ub_now_ms()>=pending.deadline){pending.timed_out=1;automatic_pending=0;automatic_blocked=1;effective=-1;snprintf(message,sizeof message,"CPU operation has not returned; no automatic retry");ub_log(ID,UB_ALWAYS,"%s; worker retained for completion",message);answer(pending.reply,pending.seq);pending.reply[0]=0;publish_status();}return;}
  if(ub_now_ms()>=pending.deadline){pending.timed_out=1;automatic_pending=0;automatic_blocked=1;}
- int valid=rc==pending.pid&&WIFEXITED(status)&&WEXITSTATUS(status)==0&&!read_record(pending.result,&result,sizeof result)&&result.magic==UB_CPU_MAGIC&&result.version==UB_CPU_VERSION&&!memcmp(result.nonce,pending.nonce,16)&&result.mode>=-1&&result.mode<=1&&result.off_attempted<=1&&memchr(result.message,0,sizeof result.message);
+ int valid=(reaped||(rc==pending.pid&&WIFEXITED(status)&&WEXITSTATUS(status)==0))&&!read_record(pending.result,&result,sizeof result)&&result.magic==UB_CPU_MAGIC&&result.version==UB_CPU_VERSION&&!memcmp(result.nonce,pending.nonce,16)&&result.mode>=-1&&result.mode<=1&&result.off_attempted<=1&&memchr(result.message,0,sizeof result.message);
  int operation=pending.operation,manual=pending.manual;
  /* A manual Off arriving during an older operation gets one follow-up only
   * when a valid result proves that older worker never attempted Off. An
   * uncertain attempted Off, or a lost result, cannot authorize a resend. */
- if(pending.deferred_off&&valid&&!result.off_attempted&&!(result.code==CPU_OK&&result.mode==0)&&ub_now_ms()<pending.deadline){
-  char reply[UB_ACTION_PATH];unsigned seq=pending.seq;uint32_t expiry=(uint32_t)(pending.deadline/1000);
+ /* A verified Off with an unresolved activation record still runs the Off:
+  * only the Off worker clears that record (a QUERY merely reports it). */
+ if(pending.deferred_off&&valid&&!result.off_attempted&&!(result.code==CPU_OK&&result.mode==0&&!result.suppress_auto_on)&&ub_now_ms()<pending.deadline){
+  char reply[UB_ACTION_PATH];unsigned seq=pending.seq;uint64_t expiry=pending.deadline;
   snprintf(reply,sizeof reply,"%s",pending.reply);unlink(pending.job);unlink(pending.result);memset(&pending,0,sizeof pending);
-  if(!begin(CPU_OFF,1,seq,reply,expiry))return;
+  if(!begin_until(CPU_OFF,1,seq,reply,expiry))return;
   effective=-1;snprintf(message,sizeof message,"Off could not be queued after the previous operation");answer(reply,seq);publish_status();return;
+ }
+ if(!pending.health_check&&valid&&result.code==CPU_BUSY&&!manual&&!pending.reply[0]&&!pending.timed_out&&module_enabled&&busy_retries<CPU_BUSY_RETRIES){
+  busy_retries++;busy_retry_at=ub_now_ms()+CPU_BUSY_RETRY_MS;automatic_pending=0;effective=-1;
+  snprintf(message,sizeof message,"a previous CPU operation still owns the device; retrying");ub_log(ID,UB_INFO,"%s (%u of %u)",message,busy_retries,CPU_BUSY_RETRIES);
+  unlink(pending.job);unlink(pending.result);memset(&pending,0,sizeof pending);publish_status();return;
  }
  effective=valid&&result.code==CPU_OK?result.mode:-1;menu_seq=pending.seq;
  if(!valid||result.suppress_auto_on)automatic_blocked=1;
  snprintf(message,sizeof message,"%s",valid?result.message:"CPU worker ended without a verified result");
- if(manual&&effective==pending.expected&&!pending.timed_out){int saved=ub_setting_set(ID,"optimize",mode_name(effective));if(saved)snprintf(message,sizeof message,"applied; not saved to USB (%s)",ub_stick_error(saved));else snprintf(message,sizeof message,"saved");}
+ if(manual&&effective==pending.expected&&!pending.timed_out){
+  int saved=ub_setting_set(ID,"optimize",mode_name(effective));if(saved)snprintf(message,sizeof message,"applied; not saved to USB (%s)",ub_stick_error(saved));else snprintf(message,sizeof message,"saved");
+  if(!effective&&(armed||marker_clear_pending))clear_marker("verified Off"); /* an orderly Off */
+ }
+ healthy_at=effective==1&&armed?(healthy_at?healthy_at:ub_now_ms()+CPU_HEALTHY_MS):0;
+ /* The fresh query at the end of the interval decides; a result other than
+  * a verified On starts the interval again from the next verified On. */
+ if(pending.health_check&&!pending.timed_out&&module_enabled&&armed){
+  if(effective==1){healthy_at=0;clear_marker("still On after the healthy interval");}
+  else if(valid&&result.code==CPU_BUSY)healthy_at=ub_now_ms()+CPU_MARKER_RETRY_MS;
+ }
  ub_log(ID,effective<0?UB_ALWAYS:UB_INFO,"effective %s: %s",mode_name(effective),message);
  answer(pending.reply,pending.seq);unlink(pending.job);unlink(pending.result);memset(&pending,0,sizeof pending);publish_status();
  if(!module_enabled){if(cleanup_pending){cleanup_pending=0;if(!(valid&&result.off_attempted&&effective<0))begin(CPU_RECONCILE,0,0,0,0);}return;}
  if(automatic_pending&&(operation==CPU_QUERY||operation==CPU_RECONCILE)){automatic_pending=0;
-  if(effective>=0&&effective!=optimize&&(!optimize||!automatic_blocked)){if(publish_owner(1,optimize)||begin(optimize?CPU_ON:CPU_OFF,0,0,0,0)){effective=-1;snprintf(message,sizeof message,"could not queue saved CPU preference");publish_status();}}}
+  if(effective>=0&&effective!=optimize&&(!optimize||!automatic_blocked)){
+   if(optimize&&!ub_menu_known_at_start()){snprintf(message,sizeof message,"automatic On skipped: saved settings were unreadable at startup; select On to use it");ub_log(ID,UB_ALWAYS,"%s",message);publish_status();}
+   else if(optimize&&armed&&!armed_here){snprintf(message,sizeof message,"automatic On skipped: an earlier automatic On was not confirmed healthy; select On to use it");ub_log(ID,UB_ALWAYS,"%s",message);publish_status();}
+   else if(optimize&&!armed_here&&set_armed(1)){snprintf(message,sizeof message,"automatic On skipped: safety marker not saved to USB");publish_status();}
+   else{
+    if(optimize)armed_here=1;
+    if(publish_owner(1,optimize)||begin(optimize?CPU_ON:CPU_OFF,0,0,0,0)){effective=-1;snprintf(message,sizeof message,"could not queue saved CPU preference");publish_status();}
+   }
+  }}
 }
 static int parse_request(const char *text,int *operation,unsigned *seq){
  const char *p;uint64_t v;
@@ -367,15 +458,17 @@ static void handle_request(int op,unsigned seq,const char *reply,uint32_t expiry
  if((int32_t)((uint32_t)(ub_now_ms()/1000)-expiry)>=0)return;
  if(pending.active){
   if(op==CPU_OFF){if(!publish_owner(1,0)){
-   automatic_pending=0;effective=-1;snprintf(message,sizeof message,"superseded by a newer Off request");answer(pending.reply,pending.seq);
-   pending.expected=0;pending.manual=1;pending.deferred_off=1;pending.seq=seq;snprintf(pending.reply,sizeof pending.reply,"%s",reply);
+   automatic_pending=0;busy_retry_at=0;effective=-1;snprintf(message,sizeof message,"superseded by a newer Off request");answer(pending.reply,pending.seq);
+   pending.expected=0;pending.manual=1;pending.deferred_off=1;pending.health_check=0;pending.seq=seq;snprintf(pending.reply,sizeof pending.reply,"%s",reply);
    uint64_t request_deadline=(uint64_t)expiry*1000;pending.deadline=ub_now_ms()+15000;if(request_deadline<pending.deadline)pending.deadline=request_deadline;pending.timed_out=0;
    snprintf(message,sizeof message,"Off intent queued; previous native operation is still running");return;
   }else{effective=-1;snprintf(message,sizeof message,"cannot publish Off intent");}}
   else{effective=-1;snprintf(message,sizeof message,"a previous CPU operation is still running");}
   answer(reply,seq);return;
  }
- automatic_pending=0;
+ /* A change supersedes the automatic start; a page-open query only reads,
+  * so a pending automatic retry stays scheduled. */
+ if(op!=CPU_QUERY){automatic_pending=0;busy_retry_at=0;}
  if(op!=CPU_QUERY&&publish_owner(1,op==CPU_ON)){effective=-1;snprintf(message,sizeof message,"cannot publish CPU policy");answer(reply,seq);return;}
  if(begin(op,op!=CPU_QUERY,seq,reply,expiry)){effective=-1;snprintf(message,sizeof message,"could not start CPU worker");answer(reply,seq);publish_status();}
 }
@@ -386,26 +479,44 @@ static void menu_request(void){
  const char *suffix=strrchr(reply,'.');char expected[12];snprintf(expected,sizeof expected,"%u",seq);if(!suffix||strcmp(suffix+1,expected))return;
  handle_request(op,seq,reply,expiry);
 }
+/* Disabled (the default): no worker, and so no /proc/kcore read, at start
+ * unless our module is resident or an activation of this boot is latched. */
+static int nothing_resident(const char *boot){struct cpu_instance m;return instance(&m)==0&&latch_state(boot)==LATCH_NONE;}
 static void initialize(int enabled){
  started=1;module_enabled=enabled;effective=-1;automatic_pending=enabled&&optimize;cleanup_pending=0;unlink(UB_CPU_ENABLED);unlink(UB_CPU_STATUS);
  memset(&owner,0,sizeof owner);owner.magic=UB_CPU_MAGIC;owner.version=UB_CPU_VERSION;owner.pid=(unsigned)getpid();owner.born=birth(owner.pid);
- if(runtime_dir()||boot_id(owner.boot)||!owner.born||random_bytes(owner.token,16)||publish_owner(enabled,enabled?optimize:0)||begin(enabled&&optimize?CPU_QUERY:CPU_RECONCILE,0,0,0,0)){automatic_pending=0;automatic_blocked=1;snprintf(message,sizeof message,"CPU control is unavailable");}
+ if(runtime_dir()||boot_id(owner.boot)||!owner.born||random_bytes(owner.token,16)||publish_owner(enabled,enabled?optimize:0)||
+    ((enabled||!nothing_resident(owner.boot))&&begin(enabled&&optimize?CPU_QUERY:CPU_RECONCILE,0,0,0,0))){automatic_pending=0;automatic_blocked=1;snprintf(message,sizeof message,"CPU control is unavailable");}
  publish_status();
 }
 static void start(struct ub_module *m){initialize(m->enabled);}
 static void step(struct ub_part *p,struct ub_target *t){
  (void)p;(void)t;
  if(!module_enabled){module_enabled=1;automatic_pending=optimize;cleanup_pending=0;if(publish_owner(1,optimize)||(!pending.active&&begin(optimize?CPU_QUERY:CPU_RECONCILE,0,0,0,0))){automatic_pending=0;automatic_blocked=1;}publish_status();}
- poll_worker();menu_request();
+ poll_worker();
+ if(busy_retry_at&&!pending.active&&ub_now_ms()>=busy_retry_at){
+  busy_retry_at=0;automatic_pending=optimize;
+  if(begin(optimize?CPU_QUERY:CPU_RECONCILE,0,0,0,0)){automatic_pending=0;automatic_blocked=1;}
+ }
+ if(healthy_at&&!pending.active&&ub_now_ms()>=healthy_at){
+  /* Ask again rather than trusting the last result. */
+  healthy_at=0;
+  if(armed){
+   if(begin(CPU_QUERY,0,0,0,0))healthy_at=ub_now_ms()+CPU_MARKER_RETRY_MS;
+   else pending.health_check=1;
+  }
+ }
+ if(marker_clear_pending&&!pending.active&&ub_now_ms()>=marker_retry_at)clear_marker("retried save");
+ menu_request();
 }
 static void disabled_step(struct ub_module *m){
  (void)m;if(!started){initialize(0);return;}
- if(module_enabled){module_enabled=0;automatic_pending=0;cleanup_pending=pending.active&&pending.operation!=CPU_RECONCILE;publish_status();
+ if(module_enabled){module_enabled=0;automatic_pending=0;busy_retry_at=0;healthy_at=0;pending.health_check=0;cleanup_pending=pending.active&&pending.operation!=CPU_RECONCILE;publish_status();
   if(publish_owner(0,0)||(!pending.active&&begin(CPU_RECONCILE,0,0,0,0))){effective=-1;automatic_blocked=1;}}
  poll_worker();
 }
 static int command(int argc,char **argv){if(argc>=2&&!strcmp(argv[1],"--cpu-worker"))return argc==3?worker(argv[2]):2;return -1;}
 static const char *const choices[]={"off","on",0};
-static const struct ub_option options[]={{"optimize",0,1,&optimize,choices},{0,0,0,0,0}};
+static const struct ub_option options[]={{"optimize",0,1,&optimize,choices},{"auto_on_armed",0,1,&armed,0},{0,0,0,0,0}};
 static struct ub_part parts[]={{"control",0,0,0,0,0,step,{0},0,0}};
 struct ub_module ub_module_cpu={ID,"CPU wait optimization (experimental)",0,options,start,parts,1,command,disabled_step};

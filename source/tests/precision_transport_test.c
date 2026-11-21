@@ -186,7 +186,8 @@ int main(void) {
  assert(wait_paused(&client,6,0,1500));close(raw);
  assert(wait_sample(&client,6,&ticks,1500));
  /* Pause/resume/pause while an 80ms query owns MM is coalesced safely:
-  * the reply describes the final explicit state, not its pre-query state. */
+  * the source queries once more after the change, so the published sample
+  * describes the final explicit state and was taken after it. */
  __atomic_store_n(&shared->mode,3,__ATOMIC_RELEASE);ub_pc_client_wake(&client);
  uint32_t before_query_sequence=client.state.sequence;
  baseline=__atomic_load_n(&shared->calls,__ATOMIC_ACQUIRE);until=now_ms()+500;
@@ -197,8 +198,9 @@ int main(void) {
  set_paused(1);set_paused(0);set_paused(1);
  until=now_ms()+1500;
  while(client.state.sequence==before_query_sequence&&now_ms()<until){checked_step(&client,6,1,&ticks);usleep(2000);}
- assert(client.state.sequence!=before_query_sequence&&!client.paused);
- /* Only a second query with stable paused state+generation can suspend. */
+ assert(client.state.sequence!=before_query_sequence);
+ assert(__atomic_load_n(&shared->calls,__ATOMIC_ACQUIRE)>=baseline+2);
+ /* Only a query with stable paused state+generation can suspend. */
  assert(wait_paused(&client,6,1,1500));
  baseline=__atomic_load_n(&shared->calls,__ATOMIC_ACQUIRE);usleep(150000);
  checked_step(&client,6,1,&ticks);assert(client.paused);

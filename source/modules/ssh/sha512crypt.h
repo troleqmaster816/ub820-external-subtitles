@@ -64,7 +64,7 @@ static void ub_b64_from_24(unsigned char **cp,unsigned b2,unsigned b1,unsigned b
  unsigned w=(b2<<16)|(b1<<8)|b0;
  while(n-->0){*(*cp)++=itoa64[w&0x3f];w>>=6;}
 }
-/* Writes "$6$<salt>$<43-char hash>" into out (>=100 bytes). salt up to 16 chars. */
+/* Writes "$6$<salt>$<86-char hash>" into out (>=107 bytes). salt up to 16 chars. */
 static void ub_sha512_crypt(const char *pw,const char *salt,char *out){
  unsigned plen=(unsigned)strlen(pw),slen=(unsigned)strlen(salt);unsigned i,cnt;
  unsigned char A[64],B[64],DP[64],DS[64];struct ub_sha512 a,b;char *o;

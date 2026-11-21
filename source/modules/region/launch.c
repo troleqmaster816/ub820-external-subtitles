@@ -1,9 +1,11 @@
 /* apl_medm's native process launcher, intercepted after its null/state guards.
- * Only the verified BD executable uses this branch. All preparation occurs
+ * Only verified on-demand children use this branch. All preparation occurs
  * before fork; the child performs the same close range, exec and _exit as stock.
  * No global environment is changed in the multithreaded media manager. */
 #define _GNU_SOURCE
 #include "bd_launch.h"
+#include "native_diag.h"
+#include "native_wait.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
@@ -15,6 +17,21 @@
 int (*ub_original_launch)(uintptr_t *);
 const char *ub_debug_name;
 extern char **environ;
+#ifdef UB_NATIVE_MGR_LAUNCH
+void (*ub_mgr_started_wait)(uint32_t),(*ub_mgr_started)(uint32_t);
+#else
+#include "../native_events/medm_wait.c"
+#endif
+
+static int launch_target(const char *path){
+ if(!path)return 0;
+#ifdef UB_NATIVE_MGR_LAUNCH
+ return !strcmp(path,"/usr/dtvrec/bin/apl_setting")?2:0;
+#else
+ if(!strcmp(path,"/usr/dtvrec/bin/apl_bdv"))return 1;
+ return !strcmp(path,"/usr/dtvrec/bin/apl_meda_bdplay")||!strcmp(path,"/usr/dtvrec/bin/apl_meda_dvdv")?3:0;
+#endif
+}
 
 static void launch_log(const char *s){
  int fd=open("/tmp/ub820_submenu.log",O_WRONLY|O_APPEND|O_CLOEXEC);size_t n=strlen(s);
@@ -32,11 +49,11 @@ static int launch_config(struct ub_bd_launch_config *c){
  * strings remain unchanged and survive in the child's fork copy. */
 static char **launch_environment(int policy){
  size_t count=0,i,n=0,oldlen,bytes,capacity,cleanlen=0;char **env,*old="",*preload,*previous,*clean;
- const char *choice=policy==-1?"UB820_BD_POLICY=v1:auto":policy==1?"UB820_BD_POLICY=v1:1":policy==2?"UB820_BD_POLICY=v1:2":policy==4?"UB820_BD_POLICY=v1:4":"UB820_BD_POLICY=v1:7";
+ const char *choice=policy==-1?"UB820_BD_POLICY=v1:auto":policy==0?"UB820_BD_POLICY=v1:0":policy==1?"UB820_BD_POLICY=v1:1":policy==2?"UB820_BD_POLICY=v1:2":policy==4?"UB820_BD_POLICY=v1:4":"UB820_BD_POLICY=v1:7";
  if(environ)while(environ[count]){if(!strncmp(environ[count],"LD_PRELOAD=",11))old=environ[count]+11;count++;}
  oldlen=strlen(old);
- if(count>(SIZE_MAX/sizeof(char *))-5||oldlen>(SIZE_MAX-2*sizeof(UB_BD_PRELOAD)-128)/3)return 0;
- bytes=(count+5)*sizeof(char *);
+ if(count>(SIZE_MAX/sizeof(char *))-6||oldlen>(SIZE_MAX-2*sizeof(UB_BD_PRELOAD)-128)/3)return 0;
+ bytes=(count+6)*sizeof(char *);
  capacity=3*oldlen+2*sizeof(UB_BD_PRELOAD)+128;
  if(bytes>SIZE_MAX-capacity)return 0;
  env=malloc(bytes+capacity);if(!env)return 0;
@@ -58,30 +75,65 @@ static char **launch_environment(int policy){
  i=11+cleanlen;if(cleanlen)preload[i++]=' ';
  memcpy(preload+i,UB_BD_PRELOAD,sizeof(UB_BD_PRELOAD));
  memcpy(previous,"UB820_BD_PRELOAD_OLD=",21);memmove(previous+21,clean,cleanlen+1);
- for(i=0;i<count;i++)if(strncmp(environ[i],"LD_PRELOAD=",11)&&strncmp(environ[i],"UB820_BD_POLICY=",16)&&strncmp(environ[i],"UB820_BD_PRELOAD_OLD=",21))env[n++]=environ[i];
- env[n++]=preload;env[n++]=previous;env[n++]=(char *)choice;env[n]=0;
+ for(i=0;i<count;i++)if(strncmp(environ[i],"LD_PRELOAD=",11)&&strncmp(environ[i],"UB820_BD_POLICY=",16)&&strncmp(environ[i],"UB820_BD_PRELOAD_OLD=",21)&&strncmp(environ[i],UB_NATIVE_WAIT_ENV "=",sizeof(UB_NATIVE_WAIT_ENV)))env[n++]=environ[i];
+ env[n++]=preload;env[n++]=previous;env[n++]=(char *)choice;env[n++]=(char *)UB_NATIVE_WAIT_ENV "=" UB_NATIVE_WAIT_VALUE;env[n]=0;
  return env;
 }
+static int native_event_debug(void){
+ char value[5];int fd=open(UB_NATIVE_EV_DEBUG,O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);ssize_t n;
+ if(fd<0)return 0;
+ do{n=read(fd,value,sizeof value);}while(n<0&&errno==EINTR);
+ close(fd);return n==4&&!memcmp(value,UB_NATIVE_EV_DEBUG_VALUE,4);
+}
+static char **event_debug_environment(char *const *original){
+ size_t count=0,n=0;char **copy;
+ if(original)while(original[count])count++;
+ if(count>SIZE_MAX/sizeof(char *)-2)return 0;
+ copy=malloc((count+2)*sizeof(char *));if(!copy)return 0;
+ for(size_t i=0;i<count;i++)if(strncmp(original[i],"EV_DEBUG=",9))copy[n++]=original[i];
+ copy[n++]=(char *)"EV_DEBUG=1";copy[n]=0;return copy;
+}
 int ub_hook_launch(uintptr_t *desc){
- struct ub_bd_launch_config c;char **env;pid_t pid;int saved;
+ struct ub_bd_launch_config c;char **env=0,**debug_env=0;pid_t pid;int saved,debug,kind;
  /* The native prelude precedes this hook, so desc is non-NULL and state is
   * neither 1 nor 2. Keep guards here as well for isolated tests and clarity. */
  if(!desc||desc[7]==1||desc[7]==2)return desc?0:-1;
- if(!desc[3]||strcmp((const char *)desc[3],"/usr/dtvrec/bin/apl_bdv")||
-    !desc[2]||!ub_debug_name||!strcmp((const char *)desc[2],ub_debug_name))return ub_original_launch(desc);
+ kind=launch_target((const char *)desc[3]);
+#ifdef UB_NATIVE_MGR_LAUNCH
+ /* The native state-3 retry/debug branches stay with the original launcher.
+  * A child without a receipt cannot subsequently be stopped by our injector. */
+ if(!kind||desc[7]==3||!desc[5]||!ub_debug_name||!strcmp((const char *)desc[5],ub_debug_name))return ub_original_launch(desc);
+#else
+ if(!kind||!desc[2]||!ub_debug_name||!strcmp((const char *)desc[2],ub_debug_name))return ub_original_launch(desc);
+#endif
  if(launch_config(&c)){
   launch_log("region: BD pre-main configuration unavailable; native launch retained\n");return ub_original_launch(desc);
  }
- if(!c.policy)return ub_original_launch(desc);
- env=launch_environment(c.policy);
- if(!env){launch_log("region: BD pre-main environment allocation failed; native launch retained\n");return ub_original_launch(desc);}
+ debug=native_event_debug();
+ env=launch_environment(kind==1?c.policy:0);
+ if(debug)debug_env=event_debug_environment(env?env:environ);
+ if(!env||(debug&&!debug_env)){
+  free(debug_env);free(env);launch_log("region: BD environment allocation failed; native launch retained\n");return ub_original_launch(desc);
+ }
  pid=fork();saved=errno;desc[6]=(uintptr_t)pid;
  if(pid==0){
   int fd;for(fd=3;fd<50;fd++)close(fd);
-  execve((const char *)desc[3],(char *const *)desc[4],env);
-  _exit(0); /* identical to the native launcher's exec failure behavior */
+  execve((const char *)desc[3],(char *const *)desc[4],debug_env?debug_env:env);
+#ifdef UB_NATIVE_MGR_LAUNCH
+  exit(0); /* preserve apl_mgr's native exec-failure cleanup */
+#else
+  _exit(0);
+#endif
  }
- free(env);errno=saved;
+ free(debug_env);free(env);errno=saved;
  if(pid<0){launch_log("region: BD pre-main launch fork failed\n");return -1;}
- desc[7]=1;return 0;
+ if(debug)launch_log("diag: EV_DEBUG=1 supplied to protected native child; native wait errors use the existing output route\n");
+#ifdef UB_NATIVE_MGR_LAUNCH
+ /* Native parent-side lifecycle notifications, including the wait flag. */
+ if(desc[0]&0x100u){desc[7]=2;ub_mgr_started_wait((uint32_t)desc[1]);}
+ else{desc[7]=1;ub_mgr_started((uint32_t)desc[1]);}
+#else
+ desc[7]=1;
+#endif
+ return 0;
 }

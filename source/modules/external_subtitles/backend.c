@@ -70,7 +70,12 @@ static struct ub_api api;
 
 static struct ub_status state;
 static volatile uint32_t gate, started, closing, lifecycle, session;
+static unsigned session_ended; /* gate held: only a subsequent Open starts another session */
 static uint32_t initialized, last_seq, preferred_enabled, saved_attrs_valid, status_dirty, explicit_selection;
+/* 1 while saved_attrs/preferred_enabled hold a style and display that an Open
+ * accepted but that are not yet in effect: snapshots keep them, and the next
+ * selection applies them again instead of taking the engine's fields. */
+static uint32_t restore_pending;
 static int32_t saved_attrs[5];
 static unsigned text_level=UB_TEXT_LEVEL_DEFAULT;
 static struct {
@@ -79,7 +84,7 @@ static struct {
  uint64_t born;
  uint32_t phase,id,epoch,owner;
  uint64_t owner_born;
- uint32_t base_color,base_level,base_desired;
+ uint32_t base_color,base_level,base_desired,cancel_failures;
  uint32_t commit_seq,commit_epoch,commit_percent,commit_level;
 } brightness;
 static char current_path[1024]; /* Always readable1024 bytes for native memcpy. */
@@ -110,6 +115,16 @@ static unsigned long length(const char *p, unsigned long cap) {
 static void copy(char *d, const char *s, unsigned long cap) {
  unsigned long i=0; if(!cap)return;
  while(i+1<cap && s[i]) {d[i]=s[i];i++;} d[i]=0;
+}
+/* A cut label must not end inside a UTF-8 character: the native CTK drops
+ * such a label. Bytes that are not UTF-8 are copied as they are. */
+static void copy_label(char *d, const char *s, unsigned long cap) {
+ unsigned long n,i;unsigned char lead;
+ copy(d,s,cap);n=length(d,cap);if(!s[n])return;
+ for(i=n;i && n-i<3 && ((unsigned char)d[i-1]&0xc0)==0x80;i--);
+ if(!i)return;
+ lead=(unsigned char)d[i-1];
+ if(lead>=0xc0 && n-(i-1)<(unsigned long)(lead>=0xf0?4:lead>=0xe0?3:2))d[i-1]=0;
 }
 static int equal(const char *a,const char *b) {
  while(*a && *a==*b) {a++;b++;} return *a==*b;
@@ -264,8 +279,14 @@ static int precision_commit(const struct ub_pc_state *clock,uint32_t generation)
 
 static void *precision_worker(void *unused) {
  struct ub_pc_client client;uint64_t ticks;uint32_t generation,coarse,active,previous_active=0;
- uint32_t observed_wake=0;
- (void)unused;ub_pc_client_init(&client);ub_precision_wake_init(&precision_wake);
+ uint32_t observed_wake=0;int disabled;
+ (void)unused;
+ /* Module option precision=0: the supervisor leaves this marker before the
+  * payload is installed. No clock client or loop for this process; native
+  * Draw keeps the stock whole-second path (precision_valid stays 0). */
+ disabled=open(UB_PC_DISABLED_FILE,O_RDONLY|O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC);
+ if(disabled>=0){close(disabled);return 0;}
+ ub_pc_client_init(&client);ub_precision_wake_init(&precision_wake);
  for(;;){
   ub_precision_wake_drain(&precision_wake);
   uint32_t wake=ub_precision_wake_generation(&precision_wake);
@@ -323,9 +344,11 @@ static void snapshot(void) {
  state.active=(*api.active==1 && *api.parser!=0);
  state.enabled=state.active && *api.display!=0;
  if(state.active) {
-  preferred_enabled=state.enabled;
-  for(i=0;i<5;i++)saved_attrs[i]=api.attrs[i];
-  saved_attrs[0]=0;saved_attrs_valid=1;
+  if(!restore_pending){
+   preferred_enabled=state.enabled;
+   for(i=0;i<5;i++)saved_attrs[i]=api.attrs[i];
+   saved_attrs[0]=0;saved_attrs_valid=1;
+  }
   if(!current_path[0] && api.native_path && valid_path(api.native_path))
    copy(current_path,api.native_path,sizeof(current_path));
  }
@@ -379,15 +402,18 @@ static void brightness_snapshot_locked(void){
 /* Caller owns gate, not ESL mutex: both public Open paths call this before
  * Set_Attr/Set_Display can render the newly created surface. Native Open
  * already supplies white, so the default adds no setter or redraw work. */
-static int text_level_restore(unsigned redraw){
+static int text_level_restore_locked(unsigned redraw){
  struct ub_text_level_outcome outcome={0};int rc;
  brightness.seed_pending=0;
- engine_lock();rc=text_level_apply_locked(text_level,redraw,&outcome);engine_unlock();
+ rc=text_level_apply_locked(text_level,redraw,&outcome);
  /* Native Open supplies default white even without a live optional color
   * surface. The status snapshot still reports its availability honestly. */
  if(rc==UB_NO_ENGINE&&text_level==UB_TEXT_LEVEL_DEFAULT)rc=UB_OK;
  brightness.fault=rc!=UB_OK;
  return rc;
+}
+static int text_level_restore(unsigned redraw){
+ int rc;engine_lock();rc=text_level_restore_locked(redraw);engine_unlock();return rc;
 }
 static int text_level_restore_after_open(void){return text_level_restore(0);}
 static int text_level_set(unsigned value){
@@ -416,7 +442,11 @@ static int brightness_cancel(unsigned terminal){
  struct ub_text_level_outcome outcome={0};int rc;
  if(brightness.phase!=UB_BRIGHTNESS_PREVIEW)return UB_STALE;
  engine_lock();rc=text_color_apply_locked(brightness.base_color,1,1,&outcome);engine_unlock();
- if(!rc||terminal||rc==UB_NO_ENGINE){
+ /* One transient error may be retried. A persistent error ends the preview
+  * honestly, with a fault and the saved intent for the next valid Open or
+  * explicit selection, rather than a recurring graphics writer. */
+ if(rc)brightness.cancel_failures++;
+ if(!rc||terminal||rc==UB_NO_ENGINE||brightness.cancel_failures>=2){
   text_level=brightness.base_desired;brightness_edit_end();
  }
  if(rc)brightness.fault=1;else brightness.fault=0;
@@ -442,6 +472,7 @@ static int brightness_request(const struct ub_request *r){
   brightness.phase=UB_BRIGHTNESS_PREVIEW;brightness.id=r->seq;brightness.epoch=state.epoch;
   brightness.owner=r->brightness.owner_pid;brightness.owner_born=owner_born;
   brightness.base_color=color;brightness.base_level=color&255u;brightness.base_desired=text_level;
+  brightness.cancel_failures=0;
   brightness.commit_seq=brightness.commit_epoch=brightness.commit_percent=brightness.commit_level=0;
   engine_unlock();return finish(UB_OK,"Brightness preview ready");
  }
@@ -456,7 +487,9 @@ static int brightness_request(const struct ub_request *r){
  case UB_OP_BRIGHTNESS_CANCEL:
   if(r->brightness.value)return finish(UB_BAD_PATH,"Invalid brightness cancel");
   rc=brightness_cancel(0);
-  return finish(rc,rc?"Previous brightness could not be restored":"Previous brightness restored");
+  return finish(rc,rc?(brightness.phase==UB_BRIGHTNESS_NONE?
+   "Brightness restore failed; saved level kept for next subtitle load":"Previous brightness could not be restored"):
+   "Previous brightness restored");
  case UB_OP_BRIGHTNESS_COMMIT:
   if(r->brightness.value>100)return finish(UB_BAD_PATH,"Invalid brightness percentage");
   engine_lock();brightness_snapshot_locked();
@@ -501,7 +534,7 @@ static void brightness_tick(void){
   struct ub_brightness_save_ack ack;
   if(!ub_br_private_read(UB_BRIGHTNESS_SAVE_ACK,&ack,sizeof ack)&&brightness_save_matches(&ack)){
    brightness_edit_end();
-   copy(state.message,ack.result==UB_BRIGHTNESS_SAVED?"Brightness saved":"Brightness applied; not saved to USB",sizeof state.message);
+   copy(state.message,ack.result==UB_BRIGHTNESS_SAVED?"Brightness saved":ack.result==UB_BRIGHTNESS_SAVE_UNKNOWN?"Brightness applied; USB save result is unconfirmed":"Brightness applied; not saved to USB",sizeof state.message);
   }
  }
 }
@@ -552,7 +585,7 @@ static int scan_catalogue(const char *path,struct ub_catalogue *list) {
   if(!join(full,path,name)){limited=1;continue;}
   if(list->count==UB_MAX_ITEMS){limited=1;continue;}
   list->items[list->count].kind=kind;
-  copy(list->items[list->count].name,name,UB_NAME_BYTES);
+  copy_label(list->items[list->count].name,name,UB_NAME_BYTES);
   copy(list->items[list->count].path,full,UB_PATH_BYTES);list->count++;
  }
  if(UFS_CloseDir(handle)!=0)rc=1;
@@ -584,6 +617,22 @@ static int listed_file(const char *path) {
  return 0;
 }
 
+static int playdat_attrs(int32_t attributes[5],uint32_t *display);
+/* Applies the pending style and display (outside the engine mutex: the
+ * public calls take it). Stock Set_Attr can return 0 after undoing a failed
+ * change, so the engine's own fields decide. 0 in effect, -1 still pending. */
+static int restore_style(void) {
+ int ok=1;uint32_t i;
+ if(saved_attrs_valid) {
+  if(api.set_attr(saved_attrs)!=0)ok=0;
+  engine_lock();
+  for(i=1;i<5;i++)if(api.attrs[i]!=saved_attrs[i])ok=0;
+  engine_unlock();
+  if(!ok)return -1;
+ }
+ if(api.set_display(preferred_enabled?0:1)!=0)return -1;
+ restore_pending=0;return 0;
+}
 static int replace_file(const char *path,int require_listed) {
  uint32_t epoch=atomic_read(&lifecycle),display,i,time;int rc,rollback_rc;
  if(!valid_path(path) || !srt_name(path) || (require_listed && !listed_file(path)))return finish(UB_BAD_PATH,"Choose a listed SRT file");
@@ -594,26 +643,57 @@ static int replace_file(const char *path,int require_listed) {
  engine_lock();
  if(!atomic_read(&session) || atomic_read(&closing) || epoch!=atomic_read(&lifecycle)){engine_unlock();return finish(UB_STALE,"Playback changed; try again");}
  if(*api.active!=1 || !*api.parser) {
+  int32_t stock[5];uint32_t stock_display;const int32_t *attributes=saved_attrs_valid?saved_attrs:0;
   /* Public Open owns the same mutex: call only after releasing it. The
    * controller gate prevents Close/Open hooks interleaving this transition. */
   display=preferred_enabled;
   engine_unlock();
   if(!ub_original_open)return finish(UB_NO_ENGINE,"Native Open trampoline missing");
+  /* With no engine seen in this process, apply what the stock srt thread
+   * applies after its own Open (FUN_000189a0): play_dat style and display.
+   * A play_dat held by its owner right now is not "no settings": nothing is
+   * opened, and the same selection can be made again. */
+  if(!attributes) {
+   int pr=playdat_attrs(stock,&stock_display);
+   if(pr==-2)return finish(UB_BUSY,"Subtitle settings are busy; try again");
+   if(!pr){attributes=stock;display=stock_display;}
+  }
   brightness_before_open();
   rc=ub_original_open(candidate_path);
   if(rc)return finish(UB_PARSE_ERROR,"Cannot load selected subtitle");
-  if(text_level_restore_after_open())return finish(UB_PARSE_ERROR,"Subtitle text level restore failed");
-  if(saved_attrs_valid && api.set_attr(saved_attrs)!=0)return finish(UB_PARSE_ERROR,"Subtitle style restore failed");
-  if(api.set_display(display?0:1)!=0)return finish(UB_PARSE_ERROR,"Subtitle display restore failed");
+  /* The engine is live from here. Publish it to the firmware's Draw/Close
+   * gate at once (both hooks wait for our gate), whatever a restore below
+   * reports: an engine with loaded=0 is never drawn or closed natively. */
   engine_lock();
-  if(!atomic_read(&session) || atomic_read(&closing) || epoch!=atomic_read(&lifecycle)){engine_unlock();return finish(UB_STALE,"Playback changed; subtitle not published");}
   if(*api.active!=1 || !*api.parser){engine_unlock();return finish(UB_NO_ENGINE,"Native subtitle engine did not initialize");}
-  *api.loaded=1;
+  if(attributes==stock){
+   for(i=0;i<5;i++)saved_attrs[i]=stock[i];
+   saved_attrs_valid=1;
+  }
+  preferred_enabled=display;restore_pending=1;
+  *api.loaded=1;copy(current_path,candidate_path,sizeof(current_path));
+  if(require_listed)explicit_selection=1;
+  engine_unlock();
+  if(atomic_read(&closing))return finish(UB_STALE,"Playback changed; try again");
+  if(text_level_restore_after_open())return finish(UB_PARSE_ERROR,"Subtitle loaded; text level restore failed");
+  if(restore_style())return finish(UB_PARSE_ERROR,"Subtitle loaded; style restore failed");
+  engine_lock();
+  if(*api.active!=1 || !*api.parser){engine_unlock();return finish(UB_NO_ENGINE,"Native subtitle engine did not initialize");}
  } else {
-  display=*api.display!=0;
-  for(i=0;i<5;i++)saved_attrs[i]=api.attrs[i];
-  saved_attrs[0]=0;saved_attrs_valid=1;
-  preferred_enabled=display;
+  if(brightness.fault && text_level_restore_locked(0)){
+   engine_unlock();return finish(UB_PARSE_ERROR,"Subtitle text level could not be restored");
+  }
+  if(restore_pending)display=preferred_enabled; /* applied once Start is done */
+  else {
+   display=*api.display!=0;
+   for(i=0;i<5;i++)saved_attrs[i]=api.attrs[i];
+   saved_attrs[0]=0;saved_attrs_valid=1;
+   preferred_enabled=display;
+  }
+  /* Stock Start (0x1de9c) clears the mapped flag without unmapping, after
+   * which unmap (0x2000c) does nothing: take the visible line down first.
+   * Same engine critical section, as inside native Update. */
+  if(ub_precision_renderer.unmap)ub_precision_renderer.unmap();
   rc=api.start(candidate_path);
   if(rc) {
    rollback_rc=rollback_path[0]?api.start(rollback_path):-1;
@@ -628,26 +708,28 @@ static int replace_file(const char *path,int require_listed) {
   * reports an error. Keep the visible selection truthful in that case. */
  copy(current_path,candidate_path,sizeof(current_path));
  if(require_listed)explicit_selection=1;
+ *api.loaded=1; /* a reported success is always an engine native Draw/Close accept */
  api.dirty(1);api.seek(1);time=*api.clock;
  rc=api.update(display,time);
  if(rc>1){engine_unlock();return finish(UB_PARSE_ERROR,"Subtitle loaded; display update failed");}
  if(!atomic_read(&session) || atomic_read(&closing) || epoch!=atomic_read(&lifecycle)){engine_unlock();return finish(UB_STALE,"Playback changed; try again");}
  engine_unlock();
+ if(restore_pending && restore_style())return finish(UB_PARSE_ERROR,"Subtitle loaded; style restore failed");
  return finish(UB_OK,display?"Subtitle selected":"Subtitle selected; display remains off");
 }
 /* The vendor also stores the external-caption toggle in byte5 of this
  * eight-byte record. Hold its own lock and write only the changed byte;
  * positions, sync, charset, font and reserved bytes cannot be clobbered. */
-static int playdat_begin(int *lock_fd,int *data_fd) {
- unsigned char record[8];unsigned long done=0;long n;int lf,fd;
+static int playdat_begin(int *lock_fd,int *data_fd,unsigned char record[8]) {
+ unsigned long done=0;long n;int lf,fd;
  *lock_fd=*data_fd=-1;
- lf=open(UB_PLAY_LOCK,2|0x40|0x800|0x20000,0666);
+ lf=open(UB_PLAY_LOCK,O_RDWR|O_CREAT|O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC,0666);
  if(lf<0)return -1;
- if(flock(lf,2|4)!=0){close(lf);return -1;}
- fd=open(UB_PLAY_DAT,2|0x800|0x20000);
+ if(flock(lf,2|4)!=0){close(lf);return -2;} /* held right now */
+ fd=open(UB_PLAY_DAT,O_RDWR|O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC);
  if(fd<0){flock(lf,8);close(lf);return -1;}
- while(done<sizeof(record)) {
-  n=read(fd,record+done,sizeof(record)-done);
+ while(done<8) {
+  n=read(fd,record+done,8-done);
   if(n<=0){close(fd);flock(lf,8);close(lf);return -1;}
   done+=(unsigned long)n;
  }
@@ -657,18 +739,28 @@ static void playdat_end(int lock_fd,int data_fd) {
  if(data_fd>=0)close(data_fd);
  if(lock_fd>=0){flock(lock_fd,8);close(lock_fd);}
 }
+/* Stock FUN_0001894c after its own Open: {id 0, charcode b4, position -b0,
+ * font b2, sync b3}, each byte sign-extended (ldrsb); byte5==1 means On. */
+static int playdat_attrs(int32_t attributes[5],uint32_t *display) {
+ unsigned char record[8];int lf,fd,rc;
+ if((rc=playdat_begin(&lf,&fd,record))!=0)return rc; /* -2 busy, -1 unreadable */
+ playdat_end(lf,fd);
+ attributes[0]=0;attributes[1]=(signed char)record[4];attributes[2]=-(int32_t)(signed char)record[0];
+ attributes[3]=(signed char)record[2];attributes[4]=(signed char)record[3];*display=record[5]==1;
+ return 0;
+}
 static void restore_display(uint32_t enabled) {
  api.set_display(enabled?0:1);
  if(enabled){engine_lock();if(*api.active==1 && *api.parser){api.seek(1);api.update(1,*api.clock);}engine_unlock();}
 }
 static int display_set(uint32_t enabled) {
- uint32_t epoch=atomic_read(&lifecycle),previous;int rc,lf,fd;unsigned char byte;
+ uint32_t epoch=atomic_read(&lifecycle),previous;int rc,lf,fd;unsigned char byte,record[8];
  if(!atomic_read(&session) || atomic_read(&closing))return finish(UB_NO_ENGINE,"Playback subtitle session is closed");
  engine_lock();
  if(*api.active!=1 || !*api.parser){engine_unlock();return finish(UB_NO_ENGINE,"Select a subtitle first");}
  previous=*api.display!=0;
  engine_unlock();
- if(playdat_begin(&lf,&fd)!=0)return finish(UB_IO_ERROR,"Cannot lock/read subtitle settings; display unchanged");
+ if(playdat_begin(&lf,&fd,record)!=0)return finish(UB_IO_ERROR,"Cannot lock/read subtitle settings; display unchanged");
  rc=api.set_display(enabled?0:1);
  if(rc){playdat_end(lf,fd);return finish(UB_PARSE_ERROR,"Native display request failed");}
  if(enabled) {
@@ -727,7 +819,7 @@ static int write_status(const struct ub_status *published) {
  char tmp[192];int fd;unsigned long done=0;long n;
  int length=snprintf(tmp,sizeof tmp,"%s.tmp",UB_STATUS_FILE);
  if(length<0||(size_t)length>=sizeof tmp)return -1;
- fd=open(tmp,1|0x40|0x200|0x800|0x20000,0600);
+ fd=open(tmp,O_WRONLY|O_CREAT|O_TRUNC|O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC,0600);
  if(fd<0)return -1;
  while(done<sizeof(*published)) {
   n=write(fd,(const char *)published+done,sizeof(*published)-done);
@@ -738,7 +830,7 @@ static int write_status(const struct ub_status *published) {
 }
 static int request_read(struct ub_request *r) {
  int fd;unsigned long done=0;long n;unsigned char extra;
- fd=open(UB_REQUEST_FILE,0x800|0x20000);
+ fd=open(UB_REQUEST_FILE,O_RDONLY|O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC);
  if(fd<0)return 0;
  while(done<sizeof(*r)) {
   n=read(fd,(char *)r+done,sizeof(*r)-done);
@@ -749,8 +841,9 @@ static int request_read(struct ub_request *r) {
  return done==sizeof(*r) && n==0;
 }
 static void *worker(void *unused) {
- struct ub_request request;struct ub_status published;
+ struct ub_request request,seen;struct ub_status published;
  uint32_t tick=0;unsigned long old_signature;int publish,have_request;(void)unused;
+ zero(&seen,sizeof seen);
  gate_lock();initialize();
  if(brightness.seed_pending)(void)text_level_restore(1);
  if(catalogue("/mnt/usb/sub")==UB_IO_ERROR)catalogue("/mnt/usb");
@@ -759,8 +852,13 @@ static void *worker(void *unused) {
  for(;;) {
   usleep(200000);have_request=request_read(&request);gate_lock();publish=0;
   brightness_tick();
-  if(have_request && (int32_t)(request.seq-last_seq)>0) {
-   process(&request);publish=1;
+  /* Act once per distinct request file. An old or repeated sequence is never
+   * replayed, but it gets the current status once, from which a waiting
+   * client resynchronises its counter (it adopts a higher published seq). */
+  if(have_request && memcmp(&request,&seen,sizeof request)) {
+   seen=request;
+   if((int32_t)(request.seq-last_seq)>0)process(&request);
+   publish=1;
   }
   if(status_dirty){snapshot();status_dirty=0;publish=1;}
   if(++tick==5) {
@@ -790,13 +888,19 @@ static void bootstrap(void) {
 int ub_hook_open(const char *path) {
  int rc;const char *chosen;
  if(!ub_original_open)return 3;
- gate_lock();initialize();brightness_before_open();atomic_write(&session,1);__sync_add_and_fetch(&lifecycle,1);
+ gate_lock();initialize();
+ if(atomic_read(&closing)){gate_unlock();return 3;}
+ session_ended=0;brightness_before_open();atomic_write(&session,1);__sync_add_and_fetch(&lifecycle,1);
  precision_invalidate();precision_native_seen=0;
  if(++state.epoch==0)state.epoch=1;
  status_dirty=1;
  chosen=explicit_selection && valid_path(current_path)?current_path:path;
  rc=ub_original_open(chosen);
+ /* A failed Open keeps session=1 with no engine, deliberately: the menu can
+  * still open a chosen file during this playback. ub_hook_session_end, not
+  * Close (loaded stays 0), ends that window. */
  if(!rc){
+  if(restore_pending)restore_pending=saved_attrs_valid=0;
   /* Open has released its native mutex and created a fresh GC. Apply the
    * existing choice before returning to the first Draw; no file/timer/seek. */
   int color_rc=text_level_restore_after_open();
@@ -811,7 +915,7 @@ int ub_hook_draw(uint32_t time) {
  int rc;
  gate_lock();initialize();
  if(brightness.seed_pending)(void)text_level_restore_after_open();
- if(*api.active==1 && !atomic_read(&closing))atomic_write(&session,1);
+ if(*api.active==1 && !session_ended && !atomic_read(&closing))atomic_write(&session,1);
  if(precision_native_seen && time!=precision_native_seconds && time!=precision_native_seconds+1)
   precision_invalidate();
  precision_native_seen=1;precision_native_seconds=time;
@@ -841,10 +945,35 @@ int ub_hook_close(void) {
   * Clear the outer draw gate only when both authoritative engine indicators
   * confirm shutdown; retain it if Close leaves a live engine/parser. */
  engine_lock();
- if(*api.active==0 && *api.parser==0)*api.loaded=0;
+ if(*api.active==0 && *api.parser==0){*api.loaded=0;if(restore_pending)restore_pending=saved_attrs_valid=0;}
  else if(cancelled){struct ub_text_level_outcome outcome={0};if(text_color_apply_locked(old_color,1,1,&outcome))brightness.fault=1;}
  engine_unlock();
  gate_unlock();__sync_sub_and_fetch(&closing,1);return rc;
+}
+/* Stock subtitle session end FUN_00018a90 (event 0xb234 and process exit;
+ * 0x18a90 in 1.82 and 1.85). It calls ESL_Close only while loaded, so after
+ * a failed natural Open no Close arrives: a session kept open for a menu
+ * selection during that playback ends here, following the engine state.
+ * Never inside a Close. The original's r0 is passed through unchanged. */
+int (*ub_original_session_end)(int);
+int ub_hook_session_end(int notify) {
+ /* Drain a selection already in Open before stock samples loaded. Keep new
+  * selections out, but release the gate: stock can synchronously call Close. */
+ __sync_add_and_fetch(&closing,1);
+ gate_lock();initialize();session_ended=1;gate_unlock();
+ int rc=ub_original_session_end?ub_original_session_end(notify):0;
+ gate_lock();
+ engine_lock();
+ if(*api.active==0 && *api.parser==0&&restore_pending)restore_pending=saved_attrs_valid=0;
+ engine_unlock();
+ if(atomic_read(&session)){
+  atomic_write(&session,0);__sync_add_and_fetch(&lifecycle,1);
+  precision_invalidate();precision_native_seen=0;
+  if(++state.epoch==0)state.epoch=1;
+  status_dirty=1;
+ }
+ gate_unlock();__sync_sub_and_fetch(&closing,1);
+ return rc;
 }
 
 #ifdef UB_HOST_TEST
@@ -852,7 +981,7 @@ void ub_test_bind(const struct ub_api *a) {api=*a;}
 void ub_test_reset(void) {
  zero(&state,sizeof(state));zero(current_path,sizeof(current_path));
  zero(candidate_path,sizeof(candidate_path));zero(rollback_path,sizeof(rollback_path));
- gate=started=closing=lifecycle=session=initialized=last_seq=preferred_enabled=saved_attrs_valid=status_dirty=explicit_selection=0;
+ gate=started=closing=lifecycle=session=session_ended=initialized=last_seq=preferred_enabled=saved_attrs_valid=status_dirty=explicit_selection=restore_pending=0;
  text_level=UB_TEXT_LEVEL_DEFAULT;
  zero(&brightness,sizeof brightness);
  precision_started=precision_call_active=precision_valid=precision_drawn=precision_native_seen=0;

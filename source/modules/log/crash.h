@@ -161,7 +161,7 @@ static int crash_command(int argc,char **argv){
  pid=atoi(argv[2]);sig=atoi(argv[3]);
  for(int i=4;i<argc&&used<sizeof comm;i++)used+=(size_t)snprintf(comm+used,sizeof comm-used,"%s%s",i>4?" ":"",argv[i]);
  alarm(CRASH_SECONDS); /* never hold the crashed process for long */
- ub_log_open();
+ ub_log_attach(); /* append only: the running helper trims the log */
  while(got<need&&(n=read(0,head+got,need-got))>0){
   size_t want;got+=(size_t)n;
   if(got==need&&(want=crash_need(head,got))>need)need=want;

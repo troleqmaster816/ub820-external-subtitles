@@ -48,6 +48,7 @@ static int test_rename(const char *from,const char *to){
 #undef ub_now
 #undef rename
 static int test_clock(clockid_t id,struct timespec *out){assert(id==CLOCK_MONOTONIC);out->tv_sec=seconds;out->tv_nsec=0;return 0;}
+#include "log_mode_fixture.h"  /* "Save log to USB" needs an enabled log module */
 #define clock_gettime test_clock
 #include "../modules/ui/helper_actions.h"
 #undef clock_gettime
@@ -101,6 +102,27 @@ int main(void){
  assert(ub_action_receive(UB_REMOTE_REQUEST,buf,sizeof buf,reply,sizeof reply));assert(!strcmp(buf,"set nothing 1\n")&&!reply[0]);
  assert(ub_action_receive(UB_REMOTE_REQUEST,buf,sizeof buf,reply,sizeof reply));assert(!strcmp(buf,"set helper 2\n"));
  assert(!ub_action_suffix("a"));assert(!ub_action_suffix("00000000000000000000000000000000.1.work"));
+ /* The scoped answer may precede a global publication. A different client
+  * can legitimately use seq=1 as well, but cannot acknowledge our action. */
+ {struct helper_state first={0},fresh={0};
+  put(UB_REMOTE_STATUS,"0 netflix saved\nSTATE 100 1 0\n");
+  ha_netflix_poll(&first);ha_netflix_set(&first,2);assert(first.netflix_wait);
+  assert(ub_action_receive(UB_REMOTE_REQUEST,buf,sizeof buf,reply,sizeof reply));
+  reply_to(&first,UB_REMOTE_REQUEST,1,"1 helper not in effect yet (retrying)\nSTATE 100 2 1\n");
+  ha_netflix_poll(&first);ha_netflix_poll(&first);assert(first.netflix_follow==1&&first.netflix_choice==2);
+  put(UB_REMOTE_STATUS,"1 helper saved\nSTATE 100 2 0\n");ha_netflix_poll(&first);
+  assert(!first.netflix_follow&&!first.netflix_pref.retry&&!strcmp(first.notice,"Netflix button: UB820 Helper"));
+  ha_netflix_set(&first,1);assert(ub_action_receive(UB_REMOTE_REQUEST,buf,sizeof buf,reply,sizeof reply));
+  reply_to(&first,UB_REMOTE_REQUEST,2,"2 nothing not in effect yet (retrying)\nSTATE 100 3 1\n");ha_netflix_poll(&first);
+  put(UB_REMOTE_STATUS,"2 helper saved\nSTATE 100 4 0\n");ha_netflix_poll(&first);
+  assert(!first.netflix_follow&&first.netflix_choice==2&&!first.notice[0]);
+  put(UB_REMOTE_STATUS,"3 helper not saved to USB\nSTATE 101 1 1\n");
+  put(UB_REGION_STATUS,"3 A 2 2 1 not saved to USB\nSTATE 101 2 1\n");
+  put(UB_DVD_STATUS,"3 auto unknown choice bogus\nSTATE 101 3 1\n");
+  ha_load(&fresh);ha_netflix_set(&fresh,2);ha_region_set(&fresh,1);ha_dvd_set(&fresh,1);
+  assert(fresh.netflix_wait&&fresh.region_wait&&fresh.dvd_wait);
+  ha_action_cancel(&fresh,UB_REMOTE_REQUEST,1);ha_action_cancel(&fresh,UB_REGION_REQUEST,1);ha_action_cancel(&fresh,UB_DVD_REQUEST,1);
+ }
  unlink(UB_REGION_STATUS);unlink(UB_DVD_STATUS);unlink(UB_REMOTE_STATUS);unlink(UB_SSH_STATUS);unlink(UB_STORAGE_STATUS);rmdir(UB_ACTION_TEST_DIR);
  puts("action_ipc_test passed");return 0;
 }

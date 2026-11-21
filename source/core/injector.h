@@ -27,7 +27,15 @@ struct ub_payload {
  * hash, or the 1.82 variant for a 1.85 build whose code is byte-identical to
  * 1.82 (ub_firmware_injectable); NULL if none, then nothing is installed. */
 const struct ub_payload_variant *ub_payload_variant(const struct ub_payload *payload,const char *sha);
+/* 0 installed; 1 a hook site holds code that is not stock (e.g. hooks of
+ * an earlier helper run): nothing was changed, the process was not stopped,
+ * and retrying will not help; -1 safely not installed, may be retried;
+ * -2 rollback failed, the process is quarantined. */
 int ub_install_payload(int pid,const struct ub_payload *payload);
+/* Without stopping the process, reads every hook site of the variant for the
+ * executable hash sha: 0 all stock, 1 one is not stock (refuse, do not adopt),
+ * -1 not readable yet or no variant. Names the site in ub_install_stage(). */
+int ub_hook_sites(int pid,const struct ub_payload *payload,const char *sha);
 /* The phase ub_install_payload was in at its last return; names the step a
  * retry stalled on (e.g. "stop", "thread-busy", "base-mmap", "gateway"). */
 const char *ub_install_stage(void);

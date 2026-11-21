@@ -10,14 +10,19 @@
  *   save=always  during startup, then periodically and after crash reports.
  *                The previous run is archived before replacing the canonical
  *                file. If preservation cannot be confirmed, a separate file
- *                identifies this run; failures never prove the old log absent.
+ *                identifies this run; failures never prove the old log absent,
+ *                only a directory listing does (core/storage.h). Retries are
+ *                quiet, so they add nothing to the log by themselves.
  * diagnostics=1 adds crash reports, hangs, process exits and kernel messages
- * (diag.h, crash.h). */
+ * (diag.h, crash.h). It also requests the native EV_DEBUG error messages for
+ * subsequent BD starts through the verified media-manager launcher. Those
+ * messages stay on the player's console/slog route, separate from this log. */
 #define _GNU_SOURCE
 #include "ub.h"
 #include "storage.h"
 #include "helper_menu.h"
 #include "action_ipc.h"
+#include "native_diag.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -39,6 +44,7 @@
 enum { SAVE_OFF, SAVE_MENU, SAVE_ALWAYS };
 #define SAVE_PAUSE 5      /* seconds between continuous saves */
 #define SAVE_RETRY 60     /* after a failed save */
+#define SAVE_URGENT_GAP 2 /* urgent saves: at least this far apart, coalesced */
 
 static int level=UB_INFO,save=SAVE_MENU,diagnostics=0;
 static const char *const level_names[]={"errors","info","debug",0};
@@ -56,7 +62,7 @@ static int rotation_pending,rotation_loaded,rotation_error;
 static unsigned rotation_pause;
 static int startup_checkpoint;
 static char fallback_path[256];
-static struct { long long size;unsigned pause;int failures,fallback; } kept={-1,0,0,0};
+static struct { long long size;unsigned pause;int failures,fallback;unsigned gap; } kept={-1,0,0,0,0};
 static void keep_saved(void);
 /* Never overwrite an unpreserved earlier run merely because opening its log
  * failed. Boot UUID plus PID/start time identifies this run without listing USB. */
@@ -83,12 +89,17 @@ static int keep_previous(void){
  int rc;
  if(!rotation_pending)return 0;
  if(!rotation_loaded){
-  rc=ub_stick_read(UB_STICK_LOG,UB_PREV_TMP);
-  /* Code 4 includes every source-open failure, not confirmed absence. */
+  /* A retry is quiet: the tool's line would grow the log and force a save. */
+  rc=ub_stick_load(UB_STICK_LOG,UB_PREV_TMP,rotation_error!=0); /* written by this module */
+  /* Code 4 includes every source-open failure; only a listing proves absence. */
+  if(rc==UB_STICK_ABSENT){
+   rotation_pending=rotation_error=0;unlink(UB_PREV_TMP);
+   ub_log(ID,UB_INFO,"no earlier log on the stick; nothing to keep");return 0;
+  }
   if(rc)goto failed;
   rotation_loaded=1;
  }
- rc=ub_stick_write(UB_PREV_TMP,UB_STICK_PREV);
+ rc=rotation_error?ub_stick_write_quiet(UB_PREV_TMP,UB_STICK_PREV):ub_stick_write(UB_PREV_TMP,UB_STICK_PREV);
  if(rc)goto failed; /* Keep the complete RAM copy for the next attempt. */
  rotation_pending=rotation_loaded=rotation_error=0;unlink(UB_PREV_TMP);
  ub_log(ID,UB_INFO,"previous run's log kept as %s",UB_STICK_PREV);return 0;
@@ -98,7 +109,7 @@ static int keep_previous(void){
 }
 /* Freeze a bounded copy before the vendor tool starts reading. Appends or
  * trimming during USB I/O affect the live log, never the transfer's source. */
-static int save_snapshot(const char *destination,long long *saved_size){
+static int save_snapshot(const char *destination,long long *saved_size,int quiet){
  char buf[4096];struct ub_stat st;long long at=0;int in=-1,out=-1,rc=6;ssize_t n;
  in=open(UB_LOG_FILE,O_RDONLY|O_CLOEXEC);if(in<0)return 4;
  if(ub_fstat(in,&st)||!S_ISREG(st.mode)||st.size<0)goto done;
@@ -116,19 +127,29 @@ static int save_snapshot(const char *destination,long long *saved_size){
  {struct ub_stat after;if(ub_fstat(in,&after)||after.size<st.size)goto done;}
  if(close(out)){out=-1;rc=8;goto done;}out=-1;
  close(in);in=-1;
- rc=ub_stick_write(UB_SNAPSHOT_TMP,destination);
+ rc=quiet?ub_stick_write_quiet(UB_SNAPSHOT_TMP,destination):ub_stick_write(UB_SNAPSHOT_TMP,destination);
  if(!rc&&saved_size)*saved_size=at;
  done:
  if(in>=0)close(in);
  if(out>=0)close(out);
  unlink(UB_SNAPSHOT_TMP);return rc;
 }
+static void native_event_request(int enabled){
+ unlink(UB_NATIVE_EV_DEBUG);
+ if(enabled){
+  int fd=open(UB_NATIVE_EV_DEBUG,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600),ok=0;
+  if(fd>=0){ok=write(fd,UB_NATIVE_EV_DEBUG_VALUE,4)==4;if(close(fd))ok=0;}
+  if(!ok){unlink(UB_NATIVE_EV_DEBUG);ub_log(ID,UB_ALWAYS,"native EV diagnostic request unavailable");}
+  else ub_log(ID,UB_ALWAYS,"native EV error details requested for future BD launches; native output remains on its existing console/log route");
+ }
+}
 static void start(struct ub_module *m){
  (void)m;ub_log_level=level;
+ native_event_request(diagnostics);
  {int fd=open(UB_LOG_MODE,O_WRONLY|O_CREAT|O_TRUNC,0600); /* for the menu */
   if(fd>=0){if(write(fd,save_names[save],strlen(save_names[save]))<0){}close(fd);}}
  if(save==SAVE_ALWAYS){
-  kept.size=-1;kept.pause=0;kept.failures=kept.fallback=0;
+  kept.size=-1;kept.pause=kept.gap=0;kept.failures=kept.fallback=0;
   rotation_pending=1;rotation_loaded=rotation_error=0;rotation_pause=0;unlink(UB_PREV_TMP);
   startup_checkpoint=1;
   ub_log(ID,UB_INFO,"the log is saved to %s continuously",UB_STICK_LOG);
@@ -150,22 +171,25 @@ static void answer(unsigned seq,int code,const char *text){
  if(close(fd)||rename(UB_STORAGE_STATUS ".tmp",UB_STORAGE_STATUS))unlink(UB_STORAGE_STATUS ".tmp");
 }
 /* save=always: write the RAM log to the stick when it changed, at most every
- * SAVE_PAUSE seconds unless something urgent was logged. Each write replaces
- * the whole file through the player's file layer. */
+ * SAVE_PAUSE seconds unless something urgent was logged; urgent saves are at
+ * least SAVE_URGENT_GAP apart, and urgency raised meanwhile waits for the next
+ * one. Each write replaces the whole file through the player's file layer. */
 static void keep_saved(void){
  struct ub_stat st;int rc,now_urgent,target_changed;long long saved_size;const char *destination;
  if(kept.pause)kept.pause--;
+ if(kept.gap)kept.gap--;
  if(rotation_pause)rotation_pause--;
  if(rotation_pending&&!rotation_pause){if(keep_previous())rotation_pause=SAVE_RETRY;}
  if(ub_stat(UB_LOG_FILE,&st))return;
  now_urgent=urgent||!access(UB_LOG_URGENT,F_OK);
  target_changed=kept.fallback!=!!rotation_pending;
  if(!target_changed&&st.size==kept.size)return;
- if(kept.pause&&!(target_changed&&!rotation_pending)&&!(now_urgent&&!kept.failures))return;
+ if(kept.pause&&!(target_changed&&!rotation_pending)&&!(now_urgent&&!kept.failures&&!kept.gap))return;
  destination=save_destination();if(!destination){rc=11;goto failed;}
  if(target_changed&&rotation_pending)ub_log(ID,UB_INFO,"current run's log uses %s while the previous USB log is retained",destination);
  urgent=0;unlink(UB_LOG_URGENT);
- rc=save_snapshot(destination,&saved_size);
+ rc=save_snapshot(destination,&saved_size,kept.failures!=0);
+ kept.gap=SAVE_URGENT_GAP;
  if(rc){
   /* Consume only the old urgency; concurrent crash reporters may have
    * published another marker during the copy. A failure retains this one. */
@@ -180,6 +204,7 @@ static void keep_saved(void){
 static void step(struct ub_part *p,struct ub_target *t){
  char buf[64],message[256];unsigned seq;int rc;const char *destination;
  (void)p;(void)t;
+ ub_stick_reap(); /* a USB tool killed at its deadline, once it has ended */
  if(save==SAVE_ALWAYS){
   /* Capture the later module initializers before the first payload install.
    * A failed early write keeps its normal retry deadline. */
@@ -192,7 +217,7 @@ static void step(struct ub_part *p,struct ub_target *t){
  if(rotation_pending){if(keep_previous())rotation_pause=SAVE_RETRY;}
  destination=save_destination();
  if(!destination)rc=11;
- else{ub_log(ID,UB_INFO,"saving the log to %s",destination);rc=save_snapshot(destination,0);}
+ else{ub_log(ID,UB_INFO,"saving the log to %s",destination);rc=save_snapshot(destination,0,0);}
  if(rc)ub_log(ID,UB_ALWAYS,"cannot save the log to the stick: %s (code %d)",save_error(rc),rc);
  else ub_log(ID,UB_INFO,"log saved to %s",destination);
  if(rc)snprintf(message,sizeof message,"%s",save_error(rc));
@@ -232,6 +257,10 @@ static void mount_step(struct ub_part *p,struct ub_target *t){
 
 static void diag_step(struct ub_part *p,struct ub_target *t){(void)p;(void)t;if(diagnostics)diag_tick();}
 
+/* Module off: the menu reads the mode file as "log module on", so a copy left
+ * by an earlier run of the helper goes. */
+static void disabled_step(struct ub_module *m){(void)m;unlink(UB_LOG_MODE);unlink(UB_NATIVE_EV_DEBUG);}
+
 static struct ub_part parts[]={
  {"diagnostics",0,0,0,0,0,diag_step,{0},0,0},
  {"mounts",0,0,0,0,0,mount_step,{0},0,0},
@@ -239,5 +268,5 @@ static struct ub_part parts[]={
 };
 struct ub_module ub_module_log={
  ID,"Log detail, saving the log to the USB stick (on request or always), detailed diagnostics, mount record",
- 1,options,start,parts,sizeof parts/sizeof *parts,crash_command,0
+ 1,options,start,parts,sizeof parts/sizeof *parts,crash_command,disabled_step
 };

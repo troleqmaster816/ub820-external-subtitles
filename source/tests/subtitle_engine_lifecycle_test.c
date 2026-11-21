@@ -1,0 +1,175 @@
+/* Engine lifecycle through the real controller and the luminance fixture's
+ * native callbacks: an opened engine is always visible to the firmware's
+ * Draw/Close gate, a file change takes the old line down, the first Open
+ * gets the stock play_dat attributes, and a session ends without Close. */
+#define main luminance_fixture_main
+#include "subtitle_luminance_backend_test.c"
+#undef main
+#include <fcntl.h>
+#include <sched.h>
+#include <sys/file.h>
+
+static unsigned attr_calls,start_seen_mapped,start_fail,session_end_calls;
+static int32_t last_attr[5];static int attr_result,attr_ignore;
+static int recording_attr(const int32_t *a){
+ attr_calls++;memcpy(last_attr,a,sizeof last_attr);
+ if(attr_ignore)return 0; /* stock: change undone, repaint reported */
+ return attr_result?attr_result:set_attr(a);
+}
+static int failing_display(uint32_t value){(void)value;return 3;}
+static int checked_start(const char *path){
+ locked();start_calls++;if(mapped_value)start_seen_mapped++;
+ mapped_value=0; /* stock esl_tst_Start clears the mapped flag without unmapping */
+ return start_fail&&strstr(path,"bad")?7:0;
+}
+/* Stock FUN_00018a90: ESL_Close only while loaded. */
+static int native_session_end(int notify){
+ (void)notify;session_end_calls++;
+ if(loaded_value&&ub_hook_close()==0)loaded_value=0;
+ return 0x5e; /* passed through */
+}
+static int reload(const char *path){gate_lock();int rc=replace_file(path,0);gate_unlock();return rc;}
+static pthread_barrier_t opening;
+static int open_during_stop(const char *path){
+ int rc=pthread_barrier_wait(&opening);assert(!rc||rc==PTHREAD_BARRIER_SERIAL_THREAD);
+ while(!atomic_read(&closing))sched_yield();
+ return native_open(path);
+}
+static void *select_during_stop(void *result){
+ struct ub_request q=request(UB_OP_SELECT);struct ub_status s;
+ copy(q.path,state.items[0].path,sizeof q.path);
+ *(int *)result=ub_test_process(&q,&s);return 0;
+}
+static void playdat(const unsigned char b[8]){
+ FILE *f=fopen(UB_PLAY_DAT,"wb");assert(f);assert(fwrite(b,1,8,f)==8);assert(!fclose(f));
+}
+static void setup(void){
+ struct ub_api a={0};
+ a.active=&active_value;a.parser=&parser_value;a.display=&display_value;a.clock=&clock_value;
+ a.attrs=attrs;a.loaded=&loaded_value;a.mutex=&mutex;a.start=checked_start;a.dirty=dirty;a.seek=seek;a.update=update;
+ a.set_attr=recording_attr;a.set_display=set_display;a.set_foreground=foreground;a.ti_display=&ti_value;a.text_gc=&gc_value;
+ ub_test_bind(&a);ub_test_reset();ub_original_open=native_open;ub_original_close=native_close;
+ ub_precision_renderer=(struct ub_precision_render_api){.prepare=prepare,.render=render,.present=present,.unmap=unmap,.cue=cue_value,.mapped=&mapped_value};
+ active_value=parser_value=display_value=mapped_value=0;loaded_value=0;ti_value=gc_value=0;memset(attrs,0,sizeof attrs);
+ open_calls=close_calls=start_calls=attr_calls=start_seen_mapped=start_fail=session_end_calls=0;
+ attr_result=attr_ignore=fg_failure=open_error=0;atomic_write(&session,1);unlink(UB_PLAY_DAT);
+}
+int main(void){
+ unsigned cases=0;char directory[]="/tmp/ub820-lifecycle-XXXXXX";assert(mkdtemp(directory));
+ snprintf(play_path,sizeof play_path,"%s/play",directory);snprintf(lock_path,sizeof lock_path,"%s/lock",directory);
+ /* 1. A restore error after a successful Open still leaves an engine the
+  *    firmware draws and closes, and the selection names the loaded file. */
+ for(int fault=0;fault<3;fault++){
+  setup();
+  if(fault==0){text_level=100;fg_failure=1;brightness.seed_ok=1;}
+  if(fault==1){saved_attrs_valid=1;attr_result=3;}
+  if(fault==2)api.set_display=failing_display;
+  assert(reload("/mnt/usb/sub/a.srt")==UB_PARSE_ERROR);
+  assert(open_calls==1&&active_value==1&&parser_value==1&&loaded_value==1&&!close_calls);
+  assert(!strcmp(current_path,"/mnt/usb/sub/a.srt")&&strstr(state.message,"loaded"));
+  fg_failure=attr_result=0;api.set_display=set_display;
+  assert(reload("/mnt/usb/sub/a.srt")==UB_OK&&loaded_value==1&&open_calls==1);
+  if(fault==0)assert(gc.foreground==0xff646464&&!brightness.fault&&state.brightness_available);
+  ub_original_session_end=native_session_end;ub_hook_session_end(1);
+  assert(session_end_calls==1&&close_calls==1&&!active_value&&!loaded_value&&!atomic_read(&session));cases++;
+ }
+ /* A success on a live engine that the firmware does not see yet (loaded=0,
+  * the state the old restore errors left) makes it visible as well. */
+ setup();gate_lock();assert(!native_open("/mnt/usb/sub/a.srt"));gate_unlock();open_calls=0;assert(!loaded_value);
+ assert(reload("/mnt/usb/sub/b.srt")==UB_OK&&loaded_value==1&&start_calls==1&&!open_calls);cases++;
+ assert(!ub_hook_close());
+ /* 2. Switching files on a live engine unmaps the visible line under the
+  *    engine mutex before stock Start; the rollback path inherits that. */
+ setup();unsigned char record[8]={0xf8,0,3,2,1,1,0,0};playdat(record);
+ assert(reload("/mnt/usb/sub/a.srt")==UB_OK&&loaded_value==1&&display_value==1&&mapped_value==1);
+ assert(reload("/mnt/usb/sub/b.srt")==UB_OK&&start_calls==1&&!start_seen_mapped&&mapped_value==1);cases++;
+ start_fail=1;assert(reload("/mnt/usb/sub/bad.srt")==UB_PARSE_ERROR);
+ assert(start_calls==3&&!start_seen_mapped&&!strcmp(current_path,"/mnt/usb/sub/b.srt"));cases++;
+ assert(!ub_hook_close());
+ /* 3. The first engine opened here gets what stock applies after its own
+  *    Open: {0, b4, -b0, b2, b3}, sign-extended, display from byte5. */
+ setup();playdat(record);
+ assert(reload("/mnt/usb/sub/a.srt")==UB_OK&&attr_calls==1);
+ assert(last_attr[0]==0&&last_attr[1]==1&&last_attr[2]==8&&last_attr[3]==3&&last_attr[4]==2&&display_value==1);cases++;
+ assert(!ub_hook_close());
+ setup();record[0]=4;record[3]=0xfe;record[5]=0;playdat(record);
+ assert(reload("/mnt/usb/sub/a.srt")==UB_OK&&attr_calls==1&&last_attr[2]==-4&&last_attr[4]==-2&&!display_value);cases++;
+ /* A snapshot of an engine seen in this process still wins over play_dat. */
+ attrs[1]=5;attrs[2]=6;attrs[3]=7;attrs[4]=8;struct ub_status status;ub_test_refresh(&status);
+ assert(!ub_hook_close());playdat(record);attr_calls=0;atomic_write(&session,1);
+ assert(reload("/mnt/usb/sub/a.srt")==UB_OK&&attr_calls==1);
+ assert(last_attr[0]==0&&last_attr[1]==5&&last_attr[2]==6&&last_attr[3]==7&&last_attr[4]==8);cases++;
+ assert(!ub_hook_close());
+ /* Unreadable play_dat keeps the previous behavior: no invented attributes. */
+ setup();assert(reload("/mnt/usb/sub/a.srt")==UB_OK&&!attr_calls&&loaded_value==1);cases++;
+ assert(!ub_hook_close());
+ /* 5. play_dat held by its owner at the first Open: nothing is opened, and
+  *    the same selection once it is free gets play_dat's style and display. */
+ {unsigned char fresh[8]={0xf8,0,3,2,1,1,0,0};
+  setup();playdat(fresh);
+  int held=open(UB_PLAY_LOCK,O_RDWR|O_CREAT,0666);assert(held>=0&&!flock(held,LOCK_EX));
+  assert(reload("/mnt/usb/sub/a.srt")==UB_BUSY&&!open_calls&&!active_value&&!attr_calls);
+  assert(!flock(held,LOCK_UN));close(held);
+  assert(reload("/mnt/usb/sub/a.srt")==UB_OK&&open_calls==1&&display_value==1&&attrs[2]==8);cases++;
+  assert(!ub_hook_close());
+  /* 6. Set_Attr reports success after undoing the change: the style stays
+   *    pending through snapshots and the next selection applies it. */
+  setup();playdat(fresh);attr_ignore=1;
+  assert(reload("/mnt/usb/sub/a.srt")==UB_PARSE_ERROR&&loaded_value==1&&attrs[2]==0);
+  {struct ub_status st;ub_test_refresh(&st);}
+  attr_ignore=0;assert(reload("/mnt/usb/sub/a.srt")==UB_OK&&attrs[2]==8&&attrs[4]==2&&display_value==1);cases++;
+  assert(!ub_hook_close());
+  /* The same after a Set_Attr error. */
+  setup();playdat(fresh);attr_result=3;
+  assert(reload("/mnt/usb/sub/a.srt")==UB_PARSE_ERROR&&attrs[2]==0);
+  attr_result=0;assert(reload("/mnt/usb/sub/a.srt")==UB_OK&&attrs[2]==8&&display_value==1);cases++;
+  assert(!ub_hook_close());
+ }
+ /* 4. A failed natural Open keeps the session for a menu selection during
+  *    this playback; the stock session end (no Close: loaded is 0) ends it. */
+ setup();atomic_write(&session,0);open_error=3;
+ assert(ub_hook_open("/mnt/usb/sub/sub.srt")==3&&atomic_read(&session)==1&&!loaded_value&&!active_value);
+ open_error=0;uint32_t epoch=state.epoch;
+ ub_original_session_end=native_session_end;assert(ub_hook_session_end(1)==0x5e);
+ assert(session_end_calls==1&&!close_calls&&!atomic_read(&session)&&state.epoch!=epoch&&status_dirty);
+ assert(reload("/mnt/usb/sub/a.srt")==UB_NO_ENGINE&&open_calls==1&&!active_value);cases++;
+ setup();atomic_write(&session,0);open_error=3;assert(ub_hook_open("/mnt/usb/sub/sub.srt")==3);open_error=0;
+ assert(reload("/mnt/usb/sub/a.srt")==UB_OK&&loaded_value==1&&atomic_read(&session)==1);
+ epoch=state.epoch;ub_hook_session_end(1);
+ assert(close_calls==1&&!loaded_value&&!atomic_read(&session)&&state.epoch==epoch+1);cases++;
+ /* A rejected first file hasn't established a style baseline. */
+ setup();record[0]=0xf8;record[5]=1;playdat(record);open_error=3;
+ assert(reload("/mnt/usb/sub/bad.srt")==UB_PARSE_ERROR&&!saved_attrs_valid&&!restore_pending);
+ record[0]=0xfe;record[5]=0;playdat(record);open_error=0;
+ assert(reload("/mnt/usb/sub/good.srt")==UB_OK&&attrs[2]==2&&!display_value);cases++;
+ assert(!ub_hook_close());
+ /* Hold SELECT inside Open until STOP starts. Stock samples loaded only
+  * after SELECT finishes and can reenter Close without waiting on itself. */
+ setup();open_error=3;assert(ub_hook_open("/mnt/usb/sub/sub.srt")==3);open_error=0;
+ state.count=1;state.items[0].kind=UB_KIND_FILE;copy(state.items[0].path,"/mnt/usb/sub/user.srt",sizeof state.items[0].path);
+ ub_original_open=open_during_stop;ub_original_session_end=native_session_end;
+ pthread_t selector;int select_result=-1;
+ assert(!pthread_barrier_init(&opening,0,2));
+ alarm(10);
+ assert(!pthread_create(&selector,0,select_during_stop,&select_result));
+ int reached=pthread_barrier_wait(&opening);assert(!reached||reached==PTHREAD_BARRIER_SERIAL_THREAD);
+ epoch=state.epoch;assert(ub_hook_session_end(1)==0x5e);
+ assert(!pthread_join(selector,0));alarm(0);assert(!pthread_barrier_destroy(&opening));
+ assert(select_result==UB_STALE&&close_calls==1&&!loaded_value&&!active_value&&!session&&state.epoch==epoch+1);
+ assert(reload("/mnt/usb/sub/after.srt")==UB_NO_ENGINE);
+ ub_original_open=native_open;
+ assert(!ub_hook_open("/mnt/usb/sub/next.srt")&&session);
+ assert(!ub_hook_close());cases++;
+ /* A failed restore from one session must not override native preferences
+  * chosen after that engine was confirmed closed. */
+ setup();saved_attrs_valid=1;saved_attrs[2]=8;preferred_enabled=1;attr_result=3;
+ assert(reload("/mnt/usb/sub/a.srt")==UB_PARSE_ERROR&&restore_pending);
+ attr_result=0;ub_original_session_end=native_session_end;ub_hook_session_end(1);
+ assert(!active_value&&!restore_pending&&!saved_attrs_valid);
+ assert(!ub_hook_open("/mnt/usb/sub/new.srt"));attrs[2]=2;display_value=0;
+ gate_lock();snapshot();gate_unlock();assert(saved_attrs[2]==2&&!preferred_enabled);
+ assert(reload("/mnt/usb/sub/selected.srt")==UB_OK&&attrs[2]==2&&!display_value);cases++;
+ unlink(UB_PLAY_DAT);unlink(UB_PLAY_LOCK);assert(!rmdir(directory));
+ printf("subtitle_engine_lifecycle_test passed: %u cases; published Open after restore errors, unmap before Start, stock first-Open attributes, session end without Close\n",cases);
+ return 0;
+}

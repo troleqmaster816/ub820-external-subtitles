@@ -1,8 +1,15 @@
 /* Host test of the remote module: the markers the apl_mgr payload checks,
  * the overlay's key FIFO, the menu's request and status files, and the
  * choice saved to ub820_menu.cfg. */
+#include <unistd.h>
+/* A menu save can report a forced result after config.c applied the value. */
+static int forcing,forced_rc;
+#define ub_setting_set test_setting_set
 #include "../modules/remote/module.c"
+#undef ub_setting_set
 #include <stdlib.h>
+int ub_setting_set(const char *module,const char *key,const char *value);
+int test_setting_set(const char *module,const char *key,const char *value){int rc=ub_setting_set(module,key,value);return forcing&&rc>=0?forced_rc:rc;}
 
 static int failures;
 #define CHECK(c) do{if(!(c)){printf("FAIL %s:%d: %s\n",__FILE__,__LINE__,#c);failures++;}}while(0)
@@ -11,7 +18,14 @@ struct ub_module *const ub_modules[]={&ub_module_remote,0};
 const char *ub_stick_error(int code){(void)code;return "test";}
 const struct ub_payload ub_payload_remote_keys;
 
-static void read_text(const char *path,char *buf,size_t cap){FILE *f=fopen(path,"r");size_t n=f?fread(buf,1,cap-1,f):0;if(f)fclose(f);buf[n]=0;}
+static void read_text(const char *path,char *buf,size_t cap){
+ FILE *f=fopen(path,"r");size_t n=f?fread(buf,1,cap-1,f):0;if(f)fclose(f);buf[n]=0;
+ if(strstr(path,".cfg"))return;
+ char *state=strstr(buf,"\nSTATE ");unsigned sec,ns,retry;int end=0;
+ CHECK(state&&sscanf(state,"\nSTATE %u %u %u%n",&sec,&ns,&retry,&end)==3&&
+       (sec||ns)&&ns<1000000000u&&retry<=1u&&!strcmp(state+end,"\n"));
+ if(state)state[1]=0;
+}
 static void menu_set(const char *text){FILE *f=fopen(UB_REMOTE_REQUEST,"w");fputs(text,f);fclose(f);}
 static void touch(const char *path){FILE *f=fopen(path,"w");fclose(f);}
 static int present(const char *path){return access(path,F_OK)==0;}
@@ -56,6 +70,30 @@ int main(void){
   read_text(rb,buf,sizeof buf);{uint32_t expires;char *body=ub_action_body(buf,&expires);CHECK(body&&!strcmp(body,"1 helper saved\n"));}
   CHECK(!present(qa)&&!present(qb));unlink(ra);unlink(rb);
  }
+ /* Applied in RAM, USB copy failed with a negative tool code: the markers
+  * follow and the answer says "not saved", never "unknown choice". */
+ menu_set("set helper 6\n");menu_step(0,0);CHECK(netflix_key==NETFLIX_HELPER);
+ forcing=1;forced_rc=-2;menu_set("set nothing 7\n");menu_step(0,0);forcing=0;
+ CHECK(netflix_key==NETFLIX_NOTHING);CHECK(present(UB_NETFLIX_OFF));CHECK(!present(UB_NETFLIX_HELPER));
+ read_text(UB_REMOTE_STATUS,buf,sizeof buf);CHECK(!strcmp(buf,"7 nothing not saved to USB (test)\n"));
+ /* The markers are changed before the request is confirmed: a marker that
+  * cannot be set is reported, then retried, and the status follows. */
+ CHECK(!mkdir(UB_NETFLIX_HELPER,0700));
+ menu_set("set helper 8\n");menu_step(0,0);
+ CHECK(netflix_key==NETFLIX_HELPER);read_text(UB_REMOTE_STATUS,buf,sizeof buf);
+ CHECK(!strncmp(buf,"8 helper ",9)&&strstr(buf,"not in effect yet")&&strcmp(buf,"8 helper saved\n"));
+ CHECK(!rmdir(UB_NETFLIX_HELPER));menu_step(0,0);
+ CHECK(present(UB_NETFLIX_HELPER)&&!present(UB_NETFLIX_OFF));
+ read_text(UB_REMOTE_STATUS,buf,sizeof buf);CHECK(!strcmp(buf,"8 helper saved\n"));
+ /* nothing -> helper half done (OFF removed, HELPER not made) -> nothing
+  * again before the retry: both files are checked again, OFF comes back. */
+ menu_set("set nothing 9\n");menu_step(0,0);CHECK(present(UB_NETFLIX_OFF)&&!present(UB_NETFLIX_HELPER));
+ unlink(UB_NETFLIX_HELPER);CHECK(!mkdir(UB_NETFLIX_HELPER,0700));
+ menu_set("set helper 10\n");menu_step(0,0);CHECK(!present(UB_NETFLIX_OFF));
+ CHECK(!rmdir(UB_NETFLIX_HELPER));
+ menu_set("set nothing 11\n");menu_step(0,0);
+ CHECK(netflix_key==NETFLIX_NOTHING&&present(UB_NETFLIX_OFF)&&!present(UB_NETFLIX_HELPER));
+ read_text(UB_REMOTE_STATUS,buf,sizeof buf);CHECK(!strcmp(buf,"11 nothing saved\n"));
  /* back to Netflix */
  menu_set("set netflix 5\n");menu_step(0,0);
  CHECK(netflix_key==NETFLIX_STOCK);CHECK(!present(UB_NETFLIX_OFF));CHECK(!present(UB_NETFLIX_HELPER));

@@ -11,6 +11,9 @@ enum { UB_ALWAYS=0, UB_INFO=1, UB_DEBUG=2 };
  * module save the log to the stick at once (save=always). */
 #define UB_LOG_URGENT "/tmp/ub820_log.urgent"
 extern int ub_log_level;
+/* The supervisor: opens the log and owns its trimming. */
 void ub_log_open(void);
+/* Another process (crash reporter): appends only, never trims. */
+void ub_log_attach(void);
 void ub_log(const char *module,int level,const char *format,...) __attribute__((format(printf,3,4)));
 #endif

@@ -68,7 +68,9 @@ static void reset(unsigned pct,unsigned raw){
  unlink(request_path);unlink(status_path);unlink(save_path);
  m.kind=PAGE_SUBS;m.epoch=10;m.status.magic=UB_MAGIC;m.status.version=UB_VERSION;m.status.epoch=10;
  strcpy(m.status.dir,"/mnt/usb");m.status.brightness_available=m.status.brightness_known=1;
- m.status.brightness_percent=pct;m.status.text_level=raw;m.status.brightness_pid=6001;m.status.brightness_birth_lo=8;m.status.brightness_birth_hi=1;
+ /* The publisher is this live process: the menu checks the engine's pid and start time. */
+ uint64_t born=0;assert(!ub_br_birth((unsigned)getpid(),&born));
+ m.status.brightness_percent=pct;m.status.text_level=raw;m.status.brightness_pid=(uint32_t)getpid();m.status.brightness_birth_lo=(uint32_t)born;m.status.brightness_birth_hi=(uint32_t)(born>>32);
  memset(m.status.brightness_token,0xa5,16);assert(!create_child());m.selected=2;
 }
 static void response(struct ub_request r,int result,unsigned pct,unsigned raw){
@@ -106,9 +108,11 @@ int main(void){
  reset(80,204);begin(80,204);brightness_key(KEY_OK);r=queued();deferred_read=1;response(r,UB_OK,80,204);
  f=fopen(status_path,"rb");assert(f&&fread(&early,1,sizeof early,f)==sizeof early&&!fclose(f));early.epoch++;early.brightness_edit=0;early.brightness_phase=UB_BRIGHTNESS_NONE;put(status_path,&early,sizeof early);read_status();
  assert(brightness.active&&brightness.saving&&brightness.epoch==r.epoch&&m.epoch!=r.epoch&&m.needs_list);save_ack(UB_BRIGHTNESS_SAVED);assert(!brightness.active&&m.needs_list&&strstr(m.notice,"saved")&&queued().seq==r.seq);cases++;
- /* The same old receipt/ACK does not authorize a DIFFERENT payload instance. */
- reset(80,204);begin(80,204);brightness_key(KEY_OK);r=queued();deferred_read=1;response(r,UB_OK,80,204);done=brightness.save;done.result=UB_BRIGHTNESS_SAVED;put(save_path,&done,sizeof done);
- f=fopen(status_path,"rb");assert(f&&fread(&early,1,sizeof early,f)==sizeof early&&!fclose(f));early.epoch++;early.brightness_token[0]^=1;put(status_path,&early,sizeof early);read_status();assert(!brightness.active&&m.needs_list&&!strstr(m.notice,"saved")&&queued().seq==r.seq);cases++;
+ /* Only the supervisor can finish the old save after engine replacement.
+  * The replacement status cannot acknowledge it and receives no replay. */
+ reset(80,204);begin(80,204);brightness_key(KEY_OK);r=queued();deferred_read=1;response(r,UB_OK,80,204);done=brightness.save;done.seq++;done.result=UB_BRIGHTNESS_SAVED;put(save_path,&done,sizeof done);
+ f=fopen(status_path,"rb");assert(f&&fread(&early,1,sizeof early,f)==sizeof early&&!fclose(f));early.epoch++;early.brightness_token[0]^=1;put(status_path,&early,sizeof early);read_status();assert(brightness.saving==UNCONFIRMED_SAVE&&m.needs_list&&!strstr(m.notice,"saved")&&queued().seq==r.seq);
+ seconds+=BRIGHTNESS_SAVE_WAIT;brightness_pump();assert(!brightness.active&&!strcmp(m.notice,"Brightness save result is unconfirmed")&&queued().seq==r.seq);cases++;
  /* Read-only opening does not normalize a legacy nonrepresentable raw80. */
  reset(31,80);begin(31,80);r=queued();assert(r.op==UB_OP_BRIGHTNESS_BEGIN&&!m.pending);brightness_key(KEY_BACK);r=queued();assert(r.op==UB_OP_BRIGHTNESS_CANCEL&&r.brightness.value==0);response(r,UB_OK,31,80);assert(!brightness.active&&m.status.text_level==80);cases++;
  /* Explicit OK does normalize the chosen31% before its persisted commit. */
@@ -130,7 +134,8 @@ int main(void){
  /* Timeout publishes a compensating Cancel, never a preview/commit resend. */
  reset(50,128);brightness_begin(0);r=queued();seconds+=12;assert(subtitle_pending_expire());brightness_pump();p=queued();assert(p.op==UB_OP_BRIGHTNESS_CANCEL&&p.seq!=r.seq);
  response(r,UB_OK,50,128);assert(brightness.active&&m.pending==p.seq);response(p,UB_OK,50,128);assert(!brightness.active);cases++;
- reset(50,128);begin(50,128);brightness_key(KEY_BACK);r=queued();seconds+=12;assert(subtitle_pending_expire()&&brightness.active&&brightness.op==UB_OP_BRIGHTNESS_CANCEL);brightness_pump();assert(queued().seq==r.seq);response(r,UB_OK,50,128);assert(!brightness.active);cases++;
+ /* A timed-out Cancel is sent once more; a late OK to the first one still ends the edit. */
+ reset(50,128);begin(50,128);brightness_key(KEY_BACK);r=queued();seconds+=12;assert(subtitle_pending_expire()&&brightness.active&&!brightness.op&&brightness.cancel);brightness_pump();p=queued();assert(p.op==UB_OP_BRIGHTNESS_CANCEL&&p.seq!=r.seq&&m.pending==p.seq);response(r,UB_OK,50,128);assert(!brightness.active&&!m.pending);cases++;
  reset(50,128);begin(50,128);brightness_key(KEY_BACK);r=queued();response(r,UB_PARSE_ERROR,50,128);assert(brightness.active&&!brightness.op&&!brightness.cancel);brightness_pump();assert(queued().seq==r.seq);brightness_key(KEY_BACK);p=queued();assert(p.op==UB_OP_BRIGHTNESS_CANCEL&&p.seq!=r.seq);response(p,UB_OK,50,128);assert(!brightness.active);cases++;
  /* Missing persistence transport cannot hold all subtitle controls forever. */
  reset(80,204);begin(80,204);brightness_key(KEY_OK);r=queued();response(r,UB_OK,80,204);done=brightness.save;brightness_key(KEY_BACK);assert(brightness.saving&&m.drop_kind==DROP_NONE);

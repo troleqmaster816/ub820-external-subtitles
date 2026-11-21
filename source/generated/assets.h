@@ -2,7 +2,7 @@
 #ifndef UB_ASSETS_H
 #define UB_ASSETS_H
 #include <stddef.h>
-extern const unsigned char ub_asset_region_bd_preload[];
-extern const size_t ub_asset_region_bd_preload_size;
-extern const char ub_asset_region_bd_preload_sha256[];
+extern const unsigned char ub_asset_native_events_bd_preload[];
+extern const size_t ub_asset_native_events_bd_preload_size;
+extern const char ub_asset_native_events_bd_preload_sha256[];
 #endif

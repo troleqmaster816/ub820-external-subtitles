@@ -4,9 +4,11 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "log_mode_fixture.h"
 #include "../modules/ui/settings.c"
 
 static int view[64],timer_result=1,timer_calls,render_calls,make_calls,fail_make,disabled;
+static unsigned int text_id;  /* the text ID CTK keeps in the tile button */
 static uint32_t rec[0x50],panel[0x30],system_keys[25],main_keys[25],child_keys[25];
 static void *active_keys;
 static Widget buttons[R_MAX];
@@ -38,6 +40,9 @@ VOID(CTK_window_set_layer,(Widget w,int layer)) VOID(CTK_fixed_set_shape,(Widget
 void CTK_button_set_text(Widget w,const char *text){snprintf(last_label,sizeof last_label,"%s",text);}
 VOID(CTK_button_set_shape,(Widget w,int shape))
 void CTK_button_set_state_disable(Widget w,int state){disabled=state;}
+/* libctk: keeps the ID (+0x7c) and sets gettext(ID), or "" for ID 0. */
+void CTK_button_set_text_mlang(Widget w,unsigned int id){text_id=id;CTK_button_set_text(w,id?"Default Settings":"");}
+unsigned int CTK_button_get_text_mlang(Widget w){return text_id;}
 unsigned int g_timeout_add(unsigned int interval,int (*fn)(void *),void *arg){return 1;}
 void *gtk_object_get_data(Widget window,const char *name){
  unsigned i;assert(window==(Widget)0x80);
@@ -80,7 +85,7 @@ static void reset(void){
  ub_original_entry_table=entry_original;ub_make_right_button=make_button;ub_build_column=0;
  view[V_RECORD]=(int)(uintptr_t)rec;view[V_WINDOW]=0x80;view[0]=0x3e9;view[1]=3;view[2]=1;view[3]=1;
  active_keys=system_keys;selected_id=0;timer_result=1;timer_calls=render_calls=make_calls=fail_make=stock_ok_calls=tick_replace_record=tick_shutdown=0;
- disabled=-1;last_label[0]=0;build_record(rec,panel,SYSTEM_CATEGORY);
+ disabled=-1;last_label[0]=0;text_id=0;build_record(rec,panel,SYSTEM_CATEGORY);
  buttons[0]=(Widget)0x1000;buttons[1]=(Widget)0x1001;
 }
 int main(void){
@@ -128,5 +133,16 @@ int main(void){
  ub_hook_ui_tick(0);assert(!memcmp(before,rec,sizeof rec)&&make_calls==0&&panel[0x1f]==R_MAX);
  reset();ub_hook_ui_tick(0);memset(buttons,0,sizeof buttons);ub_hook_ui_tick(0);
  assert(rec[R_COUNT]==3&&buttons[2]&&make_calls==2); /* same-address replacement window */
+ /* The stock renderer labels the row by ID (TILE_TEXT). Ours clears the kept
+  * ID; a language change (CTK_window_draw_text_mlang_all re-applies each kept
+  * ID) then cannot bring "Default Settings" back, and the tick restores ours. */
+ reset();ub_hook_build_record(rec,panel,SYSTEM_CATEGORY);buttons[2]=(Widget)0x1002;
+ CTK_button_set_text_mlang(buttons[2],TILE_TEXT);ub_hook_render(view,0,0,0);
+ assert(!text_id&&!strcmp(last_label,"UB820 Helper"));
+ CTK_button_set_text_mlang(buttons[2],CTK_button_get_text_mlang(buttons[2]));
+ assert(strcmp(last_label,"Default Settings"));
+ ub_hook_ui_tick(0);assert(!text_id&&!strcmp(last_label,"UB820 Helper"));
+ /* Also when the stock text was set again without a render of ours. */
+ CTK_button_set_text_mlang(buttons[2],TILE_TEXT);ub_hook_ui_tick(0);assert(!text_id&&!strcmp(last_label,"UB820 Helper"));
  puts("settings_tile_test passed");return 0;
 }

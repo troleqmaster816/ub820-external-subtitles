@@ -13,6 +13,11 @@
 #define UB_ACTION_PATH 192u
 #define UB_ACTION_SESSION 32u
 
+/* The helper assigns a revision to each preference request. Its public state
+ * and private answer share this revision, even when different clients use the
+ * same local sequence. Uptime orders revisions across helper restarts. */
+struct ub_action_revision {uint32_t sec,nsec;};
+
 static int ub_action_path(char *out,size_t cap,const char *base,char kind,const char *session,unsigned seq){
  int n=snprintf(out,cap,"%s.%c.%s.%u",base,kind,session,seq);
  return n<0||(size_t)n>=cap?-1:0;
@@ -48,6 +53,20 @@ static char *ub_action_body(char *text,uint32_t *expires){
 
 #ifndef UB_PAYLOAD
 #include "sys.h"
+static inline void ub_action_advance(struct ub_action_revision *r){
+ struct timespec now;ub_now(&now);
+ struct ub_action_revision next={(uint32_t)now.tv_sec,(uint32_t)now.tv_nsec};
+ if(next.sec>r->sec||(next.sec==r->sec&&next.nsec>r->nsec))*r=next;
+ else if(++r->nsec==1000000000u){r->sec++;r->nsec=0;}
+}
+/* Older menus consume the first line. The second carries the freshness and
+ * retry state independently of the last human-readable message. */
+static inline int ub_action_describe(char *line,size_t cap,int used,struct ub_action_revision *r,int retry){
+ if(used<0||(size_t)used>=cap)return -1;
+ if(!r->sec&&!r->nsec)ub_action_advance(r);
+ int n=snprintf(line+used,cap-(size_t)used,"STATE %u %u %u\n",r->sec,r->nsec,retry?1u:0u);
+ return n<0||(size_t)n>=cap-(size_t)used?-1:used+n;
+}
 static uint32_t ub_action_clock(void){struct timespec t;ub_now(&t);return (uint32_t)t.tv_sec;}
 static int ub_action_expired(const char *path,uint32_t now){
  char text[64];uint32_t expires;ssize_t n;const char *temp;int fd=open(path,O_RDONLY);

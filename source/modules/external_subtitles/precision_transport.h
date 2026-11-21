@@ -193,12 +193,24 @@ static inline void ub_precision_source_serve(int (*get)(uint32_t[2]),
   }
   int subscribed=event_fd>=0&&paused&&ub_pc_subscribe(&sub,&from,from_len,(uint32_t)peer.pid,&request);
   if(UB_PC_NOW_MS(&begin))continue;
-  last=begin;words[0]=words[1]=0;
-  generation_before=0;paused_before=paused?paused(&generation_before):-1;
-  int valid=get(words)==0;
-  if(UB_PC_NOW_MS(&end))continue;
-  if(end<begin||end-begin>UB_PC_MAX_AGE_MS)valid=0;
-  generation=0;state=paused?paused(&generation):-1;
+  last=begin;
+  /* A native notification (a seek, a state change) landing during GET can
+   * leave that sample older than the generation it would carry. Query once
+   * more, after the change. Ordinary clock callbacks (about 1 Hz) change the
+   * generation too: they cost at most one extra query, never a sample. */
+  int valid,retried=0;
+  for(;;) {
+   words[0]=words[1]=0;
+   generation_before=0;paused_before=paused?paused(&generation_before):-1;
+   valid=get(words)==0;
+   if(UB_PC_NOW_MS(&end)){valid=-1;break;}
+   if(end<begin||end-begin>UB_PC_MAX_AGE_MS)valid=0;
+   generation=0;state=paused?paused(&generation):-1;
+   if(generation==generation_before)break;
+   if(retried){valid=0;break;} /* changed again: no sample this time */
+   retried=1;if(UB_PC_NOW_MS(&begin)){valid=-1;break;}
+  }
+  if(valid<0)continue;
   ub_pc_pack(&reply,(uint32_t)getpid(),instance,++sequence,
    ub_pc_u64(request.client_nonce_lo,request.client_nonce_hi),request.request_sequence,
    begin,ub_pc_u64(words[0],words[1]),(uint32_t)valid);

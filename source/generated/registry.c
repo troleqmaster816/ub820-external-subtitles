@@ -2,10 +2,11 @@
 #include "ub.h"
 extern struct ub_module ub_module_ssh;
 extern struct ub_module ub_module_log;
+extern struct ub_module ub_module_native_events;
 extern struct ub_module ub_module_ui;
 extern struct ub_module ub_module_external_subtitles;
 extern struct ub_module ub_module_power;
 extern struct ub_module ub_module_cpu;
 extern struct ub_module ub_module_region;
 extern struct ub_module ub_module_remote;
-struct ub_module *const ub_modules[]={&ub_module_ssh,&ub_module_log,&ub_module_ui,&ub_module_external_subtitles,&ub_module_power,&ub_module_cpu,&ub_module_region,&ub_module_remote,0};
+struct ub_module *const ub_modules[]={&ub_module_ssh,&ub_module_log,&ub_module_native_events,&ub_module_ui,&ub_module_external_subtitles,&ub_module_power,&ub_module_cpu,&ub_module_region,&ub_module_remote,0};
