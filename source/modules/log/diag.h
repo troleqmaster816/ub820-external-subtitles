@@ -14,6 +14,7 @@
  * continuously saved log shows the state just before a freeze. */
 #ifndef UB_LOG_DIAG_H
 #define UB_LOG_DIAG_H
+#include <ctype.h>
 #include <sys/klog.h>
 #include <sys/socket.h>
 #include <sys/utsname.h>
@@ -90,7 +91,7 @@ struct diag_stat { char comm[17],state;int ppid;unsigned long ticks,vsize;unsign
 static int stat_parse(const char *buf,struct diag_stat *s){
  const char *open=strchr(buf,'('),*close=strrchr(buf,')'),*p;unsigned field=3;size_t len;
  memset(s,0,sizeof *s);
- if(!open||!close||close<open)return -1;
+ if(!open||!close||close<open||close[1]!=' ')return -1;
  len=(size_t)(close-open-1);if(len>16)len=16;memcpy(s->comm,open+1,len);
  for(p=close+2;*p;field++){
   char *end;unsigned long long v=strtoull(p,&end,10);
@@ -126,12 +127,13 @@ struct diag_proc { int pid,ppid;unsigned long long born;unsigned long ticks,snap
 struct diag_thread { int tid,pid;unsigned long long born;unsigned long ticks;unsigned busy,blocked;int busy_said,blocked_said;uint32_t pcs[3];char comm[17]; };
 static struct diag_proc procs_a[DIAG_PROCS],procs_b[DIAG_PROCS],*procs=procs_a,*procs_new=procs_b;
 static struct diag_thread threads_a[DIAG_THREADS],threads_b[DIAG_THREADS],*threads=threads_a,*threads_new=threads_b;
-static unsigned thread_count;
-#define SLOT(table,size,key,field) for(i=(unsigned)(key)%(size);table[i].field&&table[i].field!=(key);i=(i+1)%(size))
-static struct diag_proc *proc_find(struct diag_proc *t,int pid){unsigned i;SLOT(t,DIAG_PROCS,pid,pid);return t[i].pid?&t[i]:0;}
-static struct diag_proc *proc_add(struct diag_proc *t,int pid){unsigned i;SLOT(t,DIAG_PROCS,pid,pid);return &t[i];}
-static struct diag_thread *thread_find(struct diag_thread *t,int tid){unsigned i;SLOT(t,DIAG_THREADS,tid,tid);return t[i].tid?&t[i]:0;}
-static struct diag_thread *thread_add(struct diag_thread *t,int tid){unsigned i;SLOT(t,DIAG_THREADS,tid,tid);return &t[i];}
+static unsigned thread_count,proc_count;
+/* Linear probing, at most one lap: a full table ends the search (n==size). */
+#define SLOT(table,size,key,field) for(i=(unsigned)(key)%(size),n=0;n<(size)&&table[i].field&&table[i].field!=(key);i=(i+1)%(size),n++)
+static struct diag_proc *proc_find(struct diag_proc *t,int pid){unsigned i,n;SLOT(t,DIAG_PROCS,pid,pid);return n<DIAG_PROCS&&t[i].pid?&t[i]:0;}
+static struct diag_proc *proc_add(struct diag_proc *t,int pid){unsigned i,n;SLOT(t,DIAG_PROCS,pid,pid);return n<DIAG_PROCS?&t[i]:0;}
+static struct diag_thread *thread_find(struct diag_thread *t,int tid){unsigned i,n;SLOT(t,DIAG_THREADS,tid,tid);return n<DIAG_THREADS&&t[i].tid?&t[i]:0;}
+static struct diag_thread *thread_add(struct diag_thread *t,int tid){unsigned i,n;SLOT(t,DIAG_THREADS,tid,tid);return n<DIAG_THREADS?&t[i]:0;}
 
 static int diag_scans,crash_active;
 static long hz;
@@ -168,7 +170,8 @@ static void diag_threads(int pid,unsigned long long elapsed_ms){
   if(tid<=0||thread_count>=DIAG_THREADS*3/4)continue;
   snprintf(p,sizeof p,"/proc/%d/task/%d/stat",pid,tid);
   if(stat_read(p,&s))continue;
-  old=thread_find(threads,tid);t=thread_add(threads_new,tid);thread_count++;
+  old=thread_find(threads,tid);if(!(t=thread_add(threads_new,tid)))continue;
+  thread_count++;
   if(old&&old->born==s.born)*t=*old;
   else{memset(t,0,sizeof *t);t->tid=tid;t->pid=pid;t->born=s.born;t->ticks=s.ticks;}
   memcpy(t->comm,s.comm,sizeof t->comm);
@@ -240,16 +243,25 @@ static void chain_check(void){
 }
 
 static void diag_scan(unsigned long long elapsed_ms){
- static struct ub_dir d;const char *e;int self=getpid();struct burst started,ended;
+ static struct ub_dir d;const char *e;int self=getpid(),incomplete;struct burst started,ended;
  if(ub_dir_open(&d,"/proc"))return;
  memset(&started,0,sizeof started);memset(&ended,0,sizeof ended);
- memset(procs_new,0,sizeof procs_a);memset(threads_new,0,sizeof threads_a);thread_count=0;
+ memset(procs_new,0,sizeof procs_a);memset(threads_new,0,sizeof threads_a);thread_count=proc_count=0;
  while((e=ub_dir_next(&d))){
   struct diag_stat s;struct diag_proc *old,*p;int pid=atoi(e);char path[64];
   if(pid<=0)continue;
+  if(proc_count>=DIAG_PROCS*3/4)break; /* as for threads: probing stays short */
   snprintf(path,sizeof path,"/proc/%d/stat",pid);
-  if(stat_read(path,&s)||!s.vsize)continue; /* gone, or a kernel thread */
-  old=proc_find(procs,pid);p=proc_add(procs_new,pid);
+  old=proc_find(procs,pid);
+  if(stat_read(path,&s)){
+   /* The PID was listed. Keep its last identity until a complete scan
+    * observes it absent or reads a different start time. */
+   if(old&&(p=proc_add(procs_new,pid))){*p=*old;proc_count++;}
+   continue;
+  }
+  if(!s.vsize)continue;
+  if(!(p=proc_add(procs_new,pid)))continue;
+  proc_count++;
   if(old&&old->born==s.born)*p=*old;
   else{
    memset(p,0,sizeof *p);p->pid=pid;p->born=s.born;p->snap=s.ticks;
@@ -268,10 +280,21 @@ static void diag_scan(unsigned long long elapsed_ms){
   }
   if(!p->ours)diag_threads(pid,elapsed_ms);
  }
+ /* A listing that failed part way is not a list of what runs: no process
+  * is taken as ended from it, and the ones it missed stay followed. */
+ incomplete=d.err!=0;
  ub_dir_close(&d);
+ {static int said;if(incomplete&&!said)ub_log(DIAG_ID,UB_ALWAYS,"/proc could not be listed completely; process ends are not concluded from such a scan");said=incomplete;}
  burst_summary(&started,"started");
  chain_check();
- for(unsigned i=0;i<DIAG_PROCS;i++){
+ {static int full;int now_full=proc_count>=DIAG_PROCS*3/4;
+  if(now_full&&!full)ub_log(DIAG_ID,UB_ALWAYS,"more than %d processes: only %d are followed, ends are not listed meanwhile",DIAG_PROCS*3/4,DIAG_PROCS*3/4);
+  full=now_full;}
+ if(incomplete)for(unsigned i=0;i<DIAG_PROCS;i++){
+  struct diag_proc *q;
+  if(procs[i].pid&&!proc_find(procs_new,procs[i].pid)&&(q=proc_add(procs_new,procs[i].pid)))*q=procs[i];
+ }
+ for(unsigned i=0;!incomplete&&i<DIAG_PROCS&&proc_count<DIAG_PROCS*3/4;i++){
   struct diag_proc *p=&procs[i],*now;
   if(!p->pid)continue;
   now=proc_find(procs_new,p->pid);
@@ -286,7 +309,7 @@ static void diag_scan(unsigned long long elapsed_ms){
  }
  burst_summary(&ended,"ended");
  {struct diag_proc *t=procs;procs=procs_new;procs_new=t;}
- {struct diag_thread *t=threads;threads=threads_new;threads_new=t;}
+ if(!incomplete){struct diag_thread *t=threads;threads=threads_new;threads_new=t;}
  diag_scans++;
 }
 
@@ -300,10 +323,15 @@ static int kernel_level(const char **line){
  if(p[0]=='<'){char *end;long v=strtol(p+1,&end,10);if(*end=='>'){level=(int)(v&7);*line=end+1;}}
  return level;
 }
+/* Whole words only: "BUG" is not in "DEBUG", nor "oom" in "room". */
 static int kernel_urgent(const char *line,int level){
  static const char *const words[]={"Oops","BUG","Out of memory","Killed process","oom","segfault","Unable to handle","panic","hung_task","blocked for more than",0};
  if(level>=0&&level<=3)return 1;
- for(unsigned i=0;words[i];i++)if(strstr(line,words[i]))return 1;
+ for(unsigned i=0;words[i];i++){
+  size_t n=strlen(words[i]);
+  for(const char *p=line;(p=strstr(p,words[i]));p++)
+   if((p==line||!isalnum((unsigned char)p[-1]))&&!isalnum((unsigned char)p[n]))return 1;
+ }
  return 0;
 }
 /* Logs the lines after the previous read's tail; returns how many. */

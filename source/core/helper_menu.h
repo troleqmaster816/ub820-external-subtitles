@@ -44,8 +44,9 @@
 /* power module: idle auto-power-off only. The enabled marker is published
  * only while the supported native policy control is ready. Requests use
  * private action envelopes: "set on|off <seq>\n". Status and replies contain
- * "<seq> <on|off> <message>\n"; the value is the confirmed effective state,
- * including the previous state when applying a request failed. */
+ * "<seq> <on|off> <saved|unsaved> <message>\n"; the value is the confirmed
+ * effective state, including the previous state when applying a request
+ * failed; unsaved: it is applied but not kept on the USB stick. */
 #define UB_POWER_ENABLED "/tmp/ub820_power.enabled"
 #define UB_POWER_REQUEST "/tmp/ub820_power.request"
 #define UB_POWER_STATUS "/tmp/ub820_power.status"

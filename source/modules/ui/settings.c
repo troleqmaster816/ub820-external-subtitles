@@ -53,6 +53,8 @@ extern void gtk_label_set_text(Widget,const char *),gtk_label_set_justify(Widget
 extern void CTK_window_set_layer(Widget,int),CTK_fixed_set_shape(Widget,int),CTK_fixed_set_alpha(Widget,int);
 extern void CTK_button_set_text(Widget,const char *),CTK_button_set_shape(Widget,int);
 extern void CTK_button_set_state_disable(Widget,int);
+extern void CTK_button_set_text_mlang(Widget,unsigned int);
+extern unsigned int CTK_button_get_text_mlang(Widget);
 extern unsigned int g_timeout_add(unsigned int,int (*)(void *),void *);
 extern void *gtk_object_get_data(Widget,const char *);
 
@@ -150,6 +152,18 @@ static const char *make_tile_button(const int *view,unsigned int at){
  ub_make_right_button(window,fixed,(int)at);
  return gtk_object_get_data(window,name)?"made":"not made";
 }
+/* Our label over the stock row text. The renderer labels the row by text ID
+ * (CTK_button_set_text_mlang keeps the ID in the button) and a language change
+ * re-applies every kept ID (FUN_000b6b0c, 1.85 FUN_000b6b8c, through
+ * CTK_window_draw_text_mlang_all), which would show TILE_TEXT ("Default
+ * Settings") again. ID 0 is CTK's own "no ID" (that refresh then sets ""), and
+ * the UI tick below puts the label back. libctk .text is the same in 1.82 and
+ * 1.85. CTK_button_set_text returns at once when the text is unchanged. */
+static void label_tile(Widget button){
+ Widget b=cast(button,CTK_button_get_type());
+ if(CTK_button_get_text_mlang(b))CTK_button_set_text_mlang(b,0);
+ CTK_button_set_text(b,"UB820 Helper");
+}
 /* One line per change of window, button or outcome (the log stays short). */
 static void log_tile(const int *view,int at,Widget button,const char *how){
  static int last_window,last_at=-2;static Widget last_button;static const char *last_how;char t[128];
@@ -205,7 +219,7 @@ void ub_hook_render(int *view,void *a,void *b,void *c){
    button=(Widget)gtk_object_get_data((Widget)(uintptr_t)view[V_WINDOW],ub_right_names_all[at]);
    view[V_RIGHT+at]=(int)(uintptr_t)button;
   }
-  if(button){CTK_button_set_text(cast(button,CTK_button_get_type()),"UB820 Helper");gtk_widget_show(button);}
+  if(button){label_tile(button);gtk_widget_show(button);}
   log_tile(view,at,button,how);
  }
 }
@@ -288,12 +302,12 @@ int ub_hook_ui_tick(void *app){
   at=tile_index(rec);
   if(at>=0&&(button=(Widget)(uintptr_t)ub_view[V_RIGHT+at])!=0)
    CTK_button_set_state_disable(cast(button,CTK_button_get_type()),ub_view[3]==0);
- }
+ }else label_tile(button);  /* after a language change re-applied the stock text */
  install_tile_keys();
  return keep;
 }
 static char log_text[LOG_BYTES+1];
-static unsigned int sub_rows(unsigned int *ids){unsigned int n=0;ids[n++]=S_REGION;if(hs.dvd_known)ids[n++]=S_DVD;if(hs.netflix_known)ids[n++]=S_NETFLIX;if(hs.power_enabled)ids[n++]=S_POWER;if(hs.cpu_enabled)ids[n++]=S_CPU;if(hs.ssh_enabled)ids[n++]=S_SSH;ids[n++]=S_LOG;ids[n++]=S_SAVE;return n;}
+static unsigned int sub_rows(unsigned int *ids){unsigned int n=0;ids[n++]=S_REGION;if(hs.dvd_known)ids[n++]=S_DVD;if(hs.netflix_known)ids[n++]=S_NETFLIX;if(hs.power_enabled)ids[n++]=S_POWER;if(hs.cpu_enabled)ids[n++]=S_CPU;if(hs.ssh_enabled)ids[n++]=S_SSH;ids[n++]=S_LOG;if(!hs.log_off)ids[n++]=S_SAVE;return n;}
 #define SUB_ROWS_MAX 8u
 static unsigned int list_count(void){return s.listing==LIST_POWER||s.listing==LIST_CPU?2u:s.listing==LIST_NETFLIX?HA_NETFLIX_CHOICES:s.listing==LIST_DVD?HA_DVD_CHOICES:ha_region_count(&hs);}
 static const char *list_label(unsigned int k){return s.listing==LIST_POWER||s.listing==LIST_CPU?(k?"Off":"On"):s.listing==LIST_NETFLIX?ha_netflix_labels[k]:s.listing==LIST_DVD?ha_dvd_labels[k]:ha_region_labels[k];}
@@ -325,19 +339,19 @@ static void load_log(void){
 static void close_list(void);
 static int create_list(void);
 static void render_sub(void){
- unsigned int ids[SUB_ROWS_MAX],n,i;char text[200];
+ unsigned int ids[SUB_ROWS_MAX],n,i;char text[200],line[200];
  if(!s.open)return;
  if(s.listing==LIST_POWER&&(!hs.power_enabled||!hs.power_known)){
   close_list();s.listing=LIST_NONE;
  }
- if(s.listing==LIST_CPU&&(!hs.cpu_enabled||!hs.cpu_known)){
+ if(s.listing==LIST_CPU&&!hs.cpu_enabled){
   close_list();s.listing=LIST_NONE;
  }
  if(s.log_view){
   gtk_label_set_text(cast(s.title,gtk_label_get_type()),"Helper log");
   for(i=0;i<ROWS;i++){
    unsigned int k=s.log_first+i;
-   if(k<s.log_count){CTK_button_set_text(cast(s.rows[i],CTK_button_get_type()),s.log_lines[k]);gtk_widget_set_usize(s.rows[i],560,30);gtk_widget_set_state(s.rows[i],0);gtk_widget_show(s.rows[i]);}
+   if(k<s.log_count){CTK_button_set_text(cast(s.rows[i],CTK_button_get_type()),ha_display(line,sizeof line,s.log_lines[k],HA_TEXT_CHARS));gtk_widget_set_usize(s.rows[i],560,30);gtk_widget_set_state(s.rows[i],0);gtk_widget_show(s.rows[i]);}
    else gtk_widget_hide(s.rows[i]);
    gtk_widget_hide(s.values[i]);
   }
@@ -429,8 +443,8 @@ static int sub_ok(void){
   if(!hs.power_enabled||!hs.power_known){ha_copy(hs.notice,"Power control is not ready; reopen Helper to refresh",sizeof hs.notice);break;}
   s.listing=LIST_POWER;s.drop_sel=hs.power_choice?0u:1u;break;
  case S_CPU:
-  if(!hs.cpu_enabled||!hs.cpu_known){ha_cpu_unavailable(&hs);break;}
-  s.listing=LIST_CPU;s.drop_sel=hs.cpu_choice?0u:1u;break;
+  if(!hs.cpu_enabled){ha_cpu_unavailable(&hs);break;}
+  s.listing=LIST_CPU;s.drop_sel=hs.cpu_known&&hs.cpu_choice?0u:1u;break; /* unknown: Off only */
  case S_SSH:ha_ssh_toggle(&hs);break;
  case S_LOG:load_log();s.log_view=1;break;
  default:ha_log_save(&hs);break;

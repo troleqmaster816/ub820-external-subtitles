@@ -47,7 +47,7 @@ int main(void){
  hs.cpu_enabled=1;assert(sub_rows(ids)==8&&ids[4]==S_CPU&&ids[5]==S_SSH&&ids[7]==S_SAVE);
  assert(SUB_ROWS_MAX<=ROWS&&46+(SUB_ROWS_MAX-1)*34+30<SUB_H-24&&46+ROWS*34+4+56<=SUB_H);cases++;
  s.selected=4;s.open=0;ha_copy(hs.cpu_message,"backend not ready",sizeof hs.cpu_message);
- assert(sub_ok()==1&&s.listing==LIST_NONE&&strstr(hs.notice,"backend not ready"));cases++;
+ assert(sub_ok()==1&&s.listing==LIST_CPU&&s.drop_sel==1);s.drop_sel=0;assert(sub_ok()==1&&s.listing==LIST_NONE&&!hs.cpu_wait&&strstr(hs.notice,"backend not ready"));cases++;
  put_power(cpu_enabled_path,"");put_power(cpu_status_path,"0 off no instance\n");assert(ha_cpu_poll(&hs)&&hs.cpu_known&&!hs.cpu_choice);
  ha_load(&hs);assert(hs.cpu_query&&hs.cpu_wait&&!hs.cpu_known&&!strcmp(ha_cpu_value(&hs),"checking..."));
  assert(ub_action_receive(UB_CPU_REQUEST,body,sizeof body,reply,sizeof reply)&&!strcmp(body,"get 1\n"));
@@ -64,8 +64,9 @@ int main(void){
  assert(sub_ok()==1&&s.listing==LIST_CPU&&s.drop_sel==0);s.drop_sel=1;assert(sub_ok()==1&&hs.cpu_wait&&hs.cpu_choice);
  assert(ub_action_receive(UB_CPU_REQUEST,body,sizeof body,reply,sizeof reply)&&!strcmp(body,"set off 3\n"));
  cpu_reply(hs.cpu_seq,"3 unknown native state unhealthy; restart player required\n");assert(ha_cpu_poll(&hs)&&!hs.cpu_known&&hs.cpu_choice&&!hs.cpu_wait&&strstr(hs.notice,"restart player required"));cases++;
- assert(sub_ok()==1&&s.listing==LIST_NONE&&!strcmp(ha_cpu_value(&hs),"unavailable")&&strstr(hs.notice,"restart player required"));cases++;
- s.open=1;s.listing=LIST_CPU;s.list=(Widget)1;s.list_fixed=(Widget)2;render_sub();assert(s.listing==LIST_NONE&&!s.list&&!s.list_fixed&&sub_rows(ids)==8);cases++;
+ assert(sub_ok()==1&&s.listing==LIST_CPU&&s.drop_sel==1&&!strcmp(ha_cpu_value(&hs),"unknown"));
+ s.drop_sel=0;assert(sub_ok()==1&&s.listing==LIST_NONE&&!hs.cpu_wait&&strstr(hs.notice,"choose Off"));cases++;
+ hs.cpu_enabled=0;s.open=1;s.listing=LIST_CPU;s.list=(Widget)1;s.list_fixed=(Widget)2;render_sub();assert(s.listing==LIST_NONE&&!s.list&&!s.list_fixed);hs.cpu_enabled=1;assert(sub_rows(ids)==8);cases++;
  hs.cpu_uncertain=0;put_power(cpu_status_path,"3 off current\n");ha_cpu_poll(&hs);assert(hs.cpu_known&&!hs.cpu_choice);s.open=0;assert(sub_ok()==1&&s.listing==LIST_CPU);s.drop_sel=0;sub_ok();assert(hs.cpu_wait);
  cpu_seconds+=30;assert(ha_cpu_poll(&hs)&&!hs.cpu_wait&&!hs.cpu_known&&hs.cpu_uncertain);cases++;
  ha_load(&hs);assert(hs.cpu_query&&!hs.cpu_known&&hs.cpu_wait);

@@ -20,6 +20,21 @@ remains resident until the kernel restarts. The helper does not unload it or
 repeat an uncertain activation automatically. An unavailable result is not
 reported as a successful On or Off.
 
+When a saved On is applied automatically at helper start, the helper first
+writes `auto_on_armed=1` to the `[cpu]` section of `sub/ub820_menu.cfg`. It
+clears the marker when a fresh check 30 minutes after the verified On still
+finds it On, or when you choose Off; a clear the stick did not save is tried
+again every minute. If the marker is still set at the next start (for example
+after a freeze, or a power cycle within those 30 minutes), the
+optimization is not turned on automatically; the menu says so and **On** can
+still be chosen by hand. If the marker cannot be saved, the automatic On is
+skipped. An unreadable menu configuration at startup also leaves automatic On
+disabled for that run. You can still select On in the menu.
+
+If the kernel component reports an unexpected state while its identity is
+verified, choosing **Off** still restores the original instructions. Other
+states need a player restart.
+
 This is experimental. Firmware 1.82 has passed short tests of menus, remote and
 front-panel controls, Blu-ray playback, external subtitles, pause, seeking and
 chapter changes. Firmware 1.85 has matching build guards but has not been tested

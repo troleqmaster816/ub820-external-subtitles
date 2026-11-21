@@ -25,6 +25,7 @@
 #include "../external_subtitles/protocol.h"
 #include <stddef.h>
 #include <stdint.h>
+#include <signal.h>
 #include "helper_actions.h"
 #include "../external_subtitles/brightness_io.h"
 #include "tiles_png.h"
@@ -70,6 +71,11 @@ void (*ub_original_input)(void *,int,int);
 #define ENABLED_OFF 0x644u
 #define ROOT_WINDOW_OFF 0x400u
 #define ROW_OFF 0x764u
+/* Panel n's flags at +4n: bit 0 is set by the native show (FUN_00188dec) and
+ * cleared by its hide (FUN_00188e1c), also when FUN_00189384 hides every panel
+ * without destroying them. Same code and offsets in 1.82 and 1.85. */
+#define SHOWN_OFF 0x5b4u
+#define TILE_TRIES 3u   /* tile image writes per process before giving up */
 /* Use a valid root-category identity for unhooked native keyguide tables.
  * Distinguish our rows by (id0,child0), owner and compacted index; the native
  * Operating Menu category is (id0,child1). Never leak a private numeric ID or
@@ -121,7 +127,7 @@ struct menu_state {
  void *ctx; Widget owner,window,fixed,title,info,footer,rows[VIEW_ROWS],list,list_fixed,drop[DROP_ROWS];
  int tiled[MAX_CUSTOM];
  unsigned int base,count,kinds[MAX_CUSTOM],kind;  /* our root categories: base..base+count-1 */
- unsigned int selected,first,timer,seq,pending,epoch,needs_list,refresh_guard;
+ unsigned int selected,first,timer,seq,pending,pending_op,epoch,needs_list,refresh_guard;
  uint32_t pending_deadline;
  uint32_t media_kind,media_number,deck_mode;
  int active; struct ub_status status; char notice[128];
@@ -136,11 +142,22 @@ struct menu_state {
 static struct menu_state m;
 /* Editing outlives the popup: closing OPTIONS still lets the existing UI
  * timer finish an acknowledged Cancel. One request is outstanding at a time. */
+enum brightness_save_wait { NO_SAVE_WAIT, CONFIRMED_SAVE, UNCONFIRMED_SAVE };
 static struct {
- unsigned active,cancel,commit,reset,edited,saving,op,percent,level,sent_percent;
- uint32_t epoch,edit,seq,pid,birth_lo,birth_hi,backend_pid,backend_birth_lo,backend_birth_hi,save_deadline;
+ enum brightness_save_wait saving;
+ unsigned active,cancel,commit,reset,edited,op,percent,level,sent_percent;
+ /* lost_cancel: the Cancel whose answer did not come in time; it is sent once
+  * more and a late answer to either one still closes this edit. */
+ uint32_t epoch,edit,seq,pid,birth_lo,birth_hi,backend_pid,backend_birth_lo,backend_birth_hi,save_deadline,lost_cancel;
  unsigned char token[16];struct ub_brightness_save_ack save;
 } brightness;
+/* An edit closed here although its Cancel was never confirmed: while the
+ * backend still shows it in preview (same engine, same owner), it is taken
+ * up again only to send Cancel once more; any other status ends the record. */
+static struct {
+ uint32_t edit,epoch,pid,birth_lo,birth_hi,backend_pid,backend_birth_lo,backend_birth_hi;
+ unsigned char token[16];
+} orphan;
 static struct helper_state hs;
 static char log_text[LOG_BYTES+1];
 static struct ub_status incoming;
@@ -158,8 +175,8 @@ static void close_list(void){
 }
 static int create_list(void);
 static void render_brightness(void);
-static void brightness_abort(void),brightness_pump(void),brightness_forget(void);
-static int brightness_ack(const struct ub_status *);
+static void brightness_abort(void),brightness_pump(void),brightness_forget(void),brightness_orphan(void),brightness_adopt(const struct ub_status *);
+static int brightness_ack(const struct ub_status *),brightness_owned(const struct ub_status *);
 static void close_child(int restore){
  Widget w=m.window;
  if(m.kind==PAGE_SUBS&&m.drop_kind==DROP_BRIGHTNESS)brightness_abort();
@@ -176,7 +193,7 @@ static void set_notice(const char *text){ha_copy(m.kind==PAGE_HELPER?hs.notice:m
 
 /* ---- Rows of the open page ------------------------------------------------- */
 static unsigned int helper_rows(unsigned int *ids){
- unsigned int n=0;ids[n++]=H_REGION;if(hs.dvd_known)ids[n++]=H_DVD;if(hs.netflix_known)ids[n++]=H_NETFLIX;if(hs.power_enabled)ids[n++]=H_POWER;if(hs.cpu_enabled)ids[n++]=H_CPU;if(hs.ssh_enabled)ids[n++]=H_SSH;ids[n++]=H_LOG;ids[n++]=H_SAVE;return n;
+ unsigned int n=0;ids[n++]=H_REGION;if(hs.dvd_known)ids[n++]=H_DVD;if(hs.netflix_known)ids[n++]=H_NETFLIX;if(hs.power_enabled)ids[n++]=H_POWER;if(hs.cpu_enabled)ids[n++]=H_CPU;if(hs.ssh_enabled)ids[n++]=H_SSH;ids[n++]=H_LOG;if(!hs.log_off)ids[n++]=H_SAVE;return n;
 }
 static const char *helper_text(unsigned int id,char *buf,size_t cap){
  if(id==H_REGION){
@@ -209,7 +226,7 @@ static const char *helper_text(unsigned int id,char *buf,size_t cap){
 }
 static unsigned int total_rows(void){unsigned int ids[HELPER_ROWS];return m.kind==PAGE_HELPER?helper_rows(ids):SUB_ACTIONS+m.status.count;}
 static const char *row_text(unsigned int n,char *buf,size_t cap){
- size_t i;
+ char text[UB_NAME_BYTES+16];
  if(m.kind==PAGE_HELPER){unsigned int ids[HELPER_ROWS],c=helper_rows(ids);return n<c?helper_text(ids[n],buf,cap):"";}
  if(n==0)return "[..] Up one folder";
  if(n==1)return m.drop_kind==DROP_SUBS?"Subtitles":m.status.enabled?"Subtitles: On":"Subtitles: Off";
@@ -221,9 +238,9 @@ static const char *row_text(unsigned int n,char *buf,size_t cap){
  if(n==3)return "Reset text brightness";
  if(n==4)return "Refresh files";
  n-=SUB_ACTIONS;if(n>=m.status.count)return "";
- snprintf(buf,cap,"%s%s",m.status.items[n].kind==UB_KIND_DIR?"[Folder] ":"",m.status.items[n].name);
- for(i=0;buf[i];i++)if((unsigned char)buf[i]<32||buf[i]==127)buf[i]=' ';
- return buf;
+ /* The backend cuts names at UB_NAME_BYTES, possibly inside a character. */
+ snprintf(text,sizeof text,"%s%s",m.status.items[n].kind==UB_KIND_DIR?"[Folder] ":"",m.status.items[n].name);
+ return ha_display(buf,cap,text,HA_TEXT_CHARS);
 }
 /* Reads the last LOG_BYTES of the log into lines, newest at the bottom. */
 static void load_log(void){
@@ -247,14 +264,14 @@ static void load_log(void){
  m.log_first=m.log_count>VIEW_ROWS?m.log_count-VIEW_ROWS:0;
 }
 static void render_log(void){
- unsigned int i;char text[160];
+ unsigned int i;char text[160],line[200];
  gtk_label_set_text(cast(m.title,gtk_label_get_type()),"Helper log\n" LOG_FILE);
  if(m.log_count)snprintf(text,sizeof text,"Lines %u-%u of %u",m.log_first+1,m.log_first+VIEW_ROWS<m.log_count?m.log_first+VIEW_ROWS:m.log_count,m.log_count);
  else ha_copy(text,"The log is empty or cannot be read",sizeof text);
  gtk_label_set_text(cast(m.info,gtk_label_get_type()),text);
  for(i=0;i<VIEW_ROWS;i++){
   unsigned int n=m.log_first+i;
-  if(n<m.log_count){CTK_button_set_text(cast(m.rows[i],CTK_button_get_type()),m.log_lines[n]);gtk_widget_show(m.rows[i]);gtk_widget_set_sensitive(m.rows[i],1);gtk_widget_set_state(m.rows[i],0);}
+  if(n<m.log_count){CTK_button_set_text(cast(m.rows[i],CTK_button_get_type()),ha_display(line,sizeof line,m.log_lines[n],HA_TEXT_CHARS));gtk_widget_show(m.rows[i]);gtk_widget_set_sensitive(m.rows[i],1);gtk_widget_set_state(m.rows[i],0);}
   else gtk_widget_hide(m.rows[i]);
  }
  close_list();
@@ -289,14 +306,14 @@ static void render_drop(void){
  gtk_widget_show(m.list);
 }
 static void render(void){
- unsigned int i,total=total_rows();char text[512],row[160];
+ unsigned int i,total=total_rows();char text[512],row[160],label[384];
  if(!m.active||!m.window)return;
  /* A backend loss/unknown result removes the choice that owns this popup.
   * Close it before rendering the newly compacted rows or their values. */
  if(m.drop_kind==DROP_POWER&&(!hs.power_enabled||!hs.power_known)){
   m.drop_kind=DROP_NONE;close_list();
  }
- if(m.drop_kind==DROP_CPU&&(!hs.cpu_enabled||!hs.cpu_known)){
+ if(m.drop_kind==DROP_CPU&&!hs.cpu_enabled){
   m.drop_kind=DROP_NONE;close_list();
  }
  if(m.log_view){render_log();return;}
@@ -307,9 +324,9 @@ static void render(void){
   gtk_label_set_text(cast(m.title,gtk_label_get_type()),"UB820 Helper");
   gtk_label_set_text(cast(m.info,gtk_label_get_type()),"Choices are kept on the USB stick");
  }else{
-  snprintf(text,sizeof text,"External Subtitles\n%s",m.status.dir[0]?m.status.dir:"/mnt/usb");
+  snprintf(text,sizeof text,"External Subtitles\n%s",ha_display(label,sizeof label,m.status.dir[0]?m.status.dir:"/mnt/usb",HA_TEXT_CHARS));
   gtk_label_set_text(cast(m.title,gtk_label_get_type()),text);
-  snprintf(text,sizeof text,"%s | %s%s%s",m.status.enabled?"On":"Off",m.status.current[0]?m.status.current:"No subtitle selected",m.pending?" | Waiting...":"",m.status.count==UB_MAX_ITEMS?" | First 64 entries":"");
+  snprintf(text,sizeof text,"%s | %s%s%s",m.status.enabled?"On":"Off",ha_display(label,sizeof label,m.status.current[0]?m.status.current:"No subtitle selected",HA_TEXT_CHARS),m.pending?" | Waiting...":"",m.status.count==UB_MAX_ITEMS?" | First 64 entries":"");
   gtk_label_set_text(cast(m.info,gtk_label_get_type()),text);
  }
  for(i=0;i<VIEW_ROWS;i++){
@@ -329,14 +346,31 @@ static void render(void){
 /* Check elapsed time, not timer callback counts: a busy UI may dispatch its
  * timer late. Also called on a click so an expired request cannot keep the
  * page stuck behind a generic busy message until the next timer arrives. */
+static void brightness_wait_save(enum brightness_save_wait state){
+ uint32_t now;
+ brightness.op=0;m.pending=0;brightness.saving=state;
+ if(!ha_action_now(&now))brightness.save_deadline=now+BRIGHTNESS_SAVE_WAIT;
+ ha_copy(m.notice,state==CONFIRMED_SAVE?"Saving text brightness to USB...":"Waiting for the previous brightness save result",sizeof m.notice);
+}
 static int subtitle_pending_expire(void){
  uint32_t now;
  if(!m.pending)return 0;
  if(!ha_action_now(&now)&&(int32_t)(now-m.pending_deadline)<0)return 0;
  m.pending=0;m.needs_list=1;
  if(brightness.active&&brightness.op){
-  if(brightness.op==UB_OP_BRIGHTNESS_COMMIT){ha_copy(m.notice,"Brightness save result is unconfirmed; reopen to check",sizeof m.notice);brightness_forget();return 1;}
-  if(brightness.op==UB_OP_BRIGHTNESS_CANCEL){ha_copy(m.notice,"Brightness restore is still awaiting confirmation",sizeof m.notice);return 1;}
+  if(brightness.op==UB_OP_BRIGHTNESS_COMMIT){brightness_wait_save(UNCONFIRMED_SAVE);return 1;}
+  if(brightness.op==UB_OP_BRIGHTNESS_CANCEL){
+   /* Re-sync from the latest status: while it still shows this edit, send
+    * Cancel once more; when it shows no edit of ours, or the second Cancel
+    * is lost too, close the edit here so the page is usable again. */
+   brightness.op=0;brightness.cancel=1;
+   if(brightness.lost_cancel||!brightness_owned(&m.status)||m.status.brightness_phase!=UB_BRIGHTNESS_PREVIEW){
+    ha_copy(m.notice,"Brightness restore was not confirmed; it is retried after the next refresh",sizeof m.notice);
+    brightness_orphan();brightness_forget();return 1;
+   }
+   brightness.lost_cancel=brightness.seq;
+   ha_copy(m.notice,"Brightness restore is still awaiting confirmation",sizeof m.notice);return 1;
+  }
   brightness.op=0;brightness.cancel=1;brightness.commit=0;
  }
  ha_copy(m.notice,m.epoch?"Subtitle helper did not answer; refresh files to retry":"Subtitle helper is not ready; check Helper log, then refresh files",sizeof m.notice);
@@ -349,7 +383,7 @@ static int publish_request(const struct ub_request *r,uint32_t now){
  while(at<sizeof *r){n=write(fd,(const char *)r+at,sizeof *r-at);if(n<0&&errno==EINTR)continue;if(n<=0){close(fd);unlink(temp);return -1;}at+=(size_t)n;}
  if(close(fd)){unlink(temp);return -1;}
  if(rename(temp,UB_REQUEST_FILE)){unlink(temp);return -1;}
- m.pending=r->seq;m.pending_deadline=now+(m.epoch?12u:3u);return 0;
+ m.pending=r->seq;m.pending_op=r->op;m.pending_deadline=now+(m.epoch?12u:3u);return 0;
 }
 static int send_request(unsigned int op,const char *path){
  struct ub_request r;uint32_t now;
@@ -373,27 +407,83 @@ static int status_valid(struct ub_status *s){
  for(i=0;i<s->count;i++)if((s->items[i].kind!=UB_KIND_FILE&&s->items[i].kind!=UB_KIND_DIR)||!memchr(s->items[i].name,0,UB_NAME_BYTES)||!memchr(s->items[i].path,0,UB_PATH_BYTES)||!bounded_path(s->items[i].path))return 0;
  return 1;
 }
+/* The engine that published this status has ended: its pid is gone, a zombie
+ * or another process (the backend checks the menu owner the same way). No pid
+ * or start time: it cannot be told, 0. */
+static int status_publisher_gone(const struct ub_status *s){
+ uint64_t born=0,want=((uint64_t)s->brightness_birth_hi<<32)|s->brightness_birth_lo;int rc;
+ if(!s->brightness_pid||s->brightness_pid>INT32_MAX||!want)return 0;
+ rc=ub_br_birth(s->brightness_pid,&born);
+ if(rc==-2||(!rc&&born!=want))return 1;
+ return rc&&kill((pid_t)s->brightness_pid,0)&&errno==ESRCH;
+}
+/* A supervisor acknowledgement is also proof of acceptance when the UI
+ * missed the former engine's last status. Match the full transaction. */
+static int brightness_save_result(void){
+ struct ub_brightness_save_ack ack;
+ if(ub_br_private_read(UB_BRIGHTNESS_SAVE_ACK,&ack,sizeof ack)||ack.result<UB_BRIGHTNESS_SAVED||
+    ack.result>UB_BRIGHTNESS_SAVE_UNKNOWN||memcmp(&ack,&brightness.save,offsetof(struct ub_brightness_save_ack,result)))return -1;
+ return ack.result;
+}
+static void brightness_finish_save(int result){
+ ha_copy(m.notice,result==UB_BRIGHTNESS_SAVED?"Text brightness saved":result==UB_BRIGHTNESS_SAVE_STALE?"Playback changed; brightness was not saved":result==UB_BRIGHTNESS_SAVE_ERROR?"Brightness applied; not saved to USB":brightness.saving==CONFIRMED_SAVE?"Brightness applied; USB save result is unconfirmed":"Brightness save result is unconfirmed",sizeof m.notice);
+ brightness_forget();
+}
 static void read_status(void){
  if(ub_br_private_read(UB_STATUS_FILE,&incoming,sizeof incoming)||!status_valid(&incoming))return;
  int same_backend=brightness.active&&!memcmp(brightness.token,incoming.brightness_token,16)&&brightness.backend_pid==incoming.brightness_pid&&brightness.backend_birth_lo==incoming.brightness_birth_lo&&brightness.backend_birth_hi==incoming.brightness_birth_hi;
- int accepted_commit=same_backend&&(brightness.saving||
-  (brightness.op==UB_OP_BRIGHTNESS_COMMIT&&incoming.brightness_commit_seq==brightness.seq&&incoming.brightness_commit_epoch==brightness.epoch&&incoming.brightness_commit_percent==brightness.percent&&incoming.brightness_commit_level==brightness.level));
+ int gone=status_publisher_gone(&incoming);
+ int accepted_commit=same_backend&&brightness.op==UB_OP_BRIGHTNESS_COMMIT&&incoming.brightness_commit_seq==brightness.seq&&incoming.brightness_commit_epoch==brightness.epoch&&incoming.brightness_commit_percent==brightness.percent&&incoming.brightness_commit_level==brightness.level;
+ if(brightness.op==UB_OP_BRIGHTNESS_COMMIT&&!accepted_commit&&(!same_backend||gone||m.epoch!=incoming.epoch)){
+  /* The supervisor may already own the write. Keep the old receipt identity
+   * until its deadline. No operation is sent to the replacement publisher. */
+  brightness_wait_save(UNCONFIRMED_SAVE);m.needs_list=1;
+ }
  /* Generation changes invalidate pending mutations. A fresh LIST is the only
   * epoch-independent request; never replay SELECT/ON/OFF into a new backend. */
  if(m.epoch&&m.epoch!=incoming.epoch){
-  if(!accepted_commit){brightness_forget();m.pending=0;}
-  m.needs_list=1;ha_copy(m.notice,accepted_commit?"Playback changed; text brightness save is finishing":"Helper restarted; refresh files before selecting",sizeof m.notice);
+  if(!accepted_commit&&!brightness.saving){brightness_forget();m.pending=0;}
+  m.needs_list=1;if(!brightness.saving)ha_copy(m.notice,accepted_commit?"Playback changed; text brightness save is finishing":"Helper restarted; refresh files before selecting",sizeof m.notice);
  }
  m.epoch=incoming.epoch;
  if(incoming.seq>m.seq)m.seq=incoming.seq;
  memcpy(&m.status,&incoming,sizeof m.status);
- if(brightness.active){
+ if(gone&&accepted_commit&&!brightness.saving&&incoming.seq==brightness.seq){
+  /* Its last answer accepted our save: account for that save (the
+   * supervisor's result) before treating the engine as gone. */
+  if(brightness_ack(&incoming))m.pending=0;
+ }
+ if(gone){
+  /* Nobody will answer: drop the wait and an unconfirmed brightness edit.
+   * An accepted save belongs to the supervisor and keeps its own deadline. */
+  memset(&orphan,0,sizeof orphan);
+  if(brightness.active&&!brightness.saving)brightness_forget();
+  if(!brightness.active)m.pending=0;
+  m.needs_list=1;ha_copy(m.notice,"Subtitle engine has ended; start playback, then refresh files",sizeof m.notice);
+  brightness_pump();render();return;
+ }
+ if(brightness.active&&!brightness.saving){
   if(!same_backend){brightness_forget();m.pending=0;m.needs_list=1;ha_copy(m.notice,"Subtitle engine changed; brightness edit closed",sizeof m.notice);}
-  else if(brightness.op&&incoming.seq==brightness.seq){
-   uint32_t edit_epoch=brightness.epoch;
-   if(brightness_ack(&incoming)){m.pending=0;if(incoming.result==UB_OK&&edit_epoch==m.epoch)m.needs_list=0;}
+  else{
+   /* A late OK to the Cancel that timed out ends this same edit too; a
+    * new edit has a new lost_cancel, so an older answer never matches it. */
+   int late=brightness.lost_cancel&&incoming.seq==brightness.lost_cancel&&incoming.result==UB_OK&&brightness.cancel;
+   unsigned op=brightness.op;
+   if((op&&incoming.seq==brightness.seq)||late){
+    uint32_t edit_epoch=brightness.epoch;
+    if(late)brightness.op=UB_OP_BRIGHTNESS_CANCEL;
+    if(brightness_ack(&incoming)){m.pending=0;if(incoming.result==UB_OK&&edit_epoch==m.epoch)m.needs_list=0;}
+    else if(late)brightness.op=op;
+   }
   }
- }else if(m.pending&&incoming.seq==m.pending){m.pending=0;if(incoming.result==UB_OK)m.needs_list=0;}
+ }else if(m.pending&&incoming.seq==m.pending){
+  /* A partial list (UB_LIMIT) is published and as current as a full one;
+   * its message tells about the limit. */
+  int listed=m.pending_op==UB_OP_LIST&&incoming.result==UB_LIMIT;
+  m.pending=0;if(incoming.result==UB_OK||listed)m.needs_list=0;
+  if(listed)m.notice[0]=0;
+ }
+ if(!brightness.active&&orphan.edit)brightness_adopt(&incoming);
  brightness_pump();render();
 }
 static int brightness_owner(uint32_t *pid,uint32_t *lo,uint32_t *hi){
@@ -408,6 +498,26 @@ static int brightness_owner(uint32_t *pid,uint32_t *lo,uint32_t *hi){
 static int brightness_owned(const struct ub_status *s){
  return s->brightness_edit==brightness.edit&&s->brightness_edit_epoch==brightness.epoch&&
   s->brightness_owner_pid==brightness.pid&&s->brightness_owner_start_lo==brightness.birth_lo&&s->brightness_owner_start_hi==brightness.birth_hi;
+}
+static void brightness_orphan(void){
+ orphan.edit=brightness.edit;orphan.epoch=brightness.epoch;orphan.pid=brightness.pid;orphan.birth_lo=brightness.birth_lo;orphan.birth_hi=brightness.birth_hi;
+ orphan.backend_pid=brightness.backend_pid;orphan.backend_birth_lo=brightness.backend_birth_lo;orphan.backend_birth_hi=brightness.backend_birth_hi;
+ memcpy(orphan.token,brightness.token,16);
+}
+static void brightness_adopt(const struct ub_status *s){
+ int ours=s->brightness_phase==UB_BRIGHTNESS_PREVIEW&&s->brightness_edit==orphan.edit&&s->brightness_edit_epoch==orphan.epoch&&
+  s->brightness_owner_pid==orphan.pid&&s->brightness_owner_start_lo==orphan.birth_lo&&s->brightness_owner_start_hi==orphan.birth_hi&&
+  s->brightness_pid==orphan.backend_pid&&s->brightness_birth_lo==orphan.backend_birth_lo&&s->brightness_birth_hi==orphan.backend_birth_hi&&
+  !memcmp(s->brightness_token,orphan.token,16);
+ if(!ours){memset(&orphan,0,sizeof orphan);return;}
+ if(m.pending)return; /* after the answer to what is outstanding */
+ memset(&brightness,0,sizeof brightness);
+ brightness.active=1;brightness.cancel=1;brightness.edit=orphan.edit;brightness.epoch=orphan.epoch;
+ brightness.pid=orphan.pid;brightness.birth_lo=orphan.birth_lo;brightness.birth_hi=orphan.birth_hi;
+ brightness.backend_pid=orphan.backend_pid;brightness.backend_birth_lo=orphan.backend_birth_lo;brightness.backend_birth_hi=orphan.backend_birth_hi;
+ memcpy(brightness.token,orphan.token,16);brightness.percent=s->brightness_percent;brightness.level=s->text_level;
+ memset(&orphan,0,sizeof orphan);
+ ha_copy(m.notice,"Restoring text brightness from an earlier change...",sizeof m.notice);
 }
 static void brightness_forget(void){
  if(m.pending==brightness.seq)m.pending=0;
@@ -454,13 +564,15 @@ static int brightness_ack(const struct ub_status *s){
  if(s->result!=UB_OK){
   ha_copy(m.notice,s->message[0]?s->message:"Brightness change was not confirmed",sizeof m.notice);
   brightness.commit=brightness.reset=0;
-  if(op==UB_OP_BRIGHTNESS_CANCEL)brightness.cancel=0;
+  /* The open editor can retry by key. Once closed there is no user to
+   * resend a failed restore, so keep it pending for the next backend poll. */
+  if(op==UB_OP_BRIGHTNESS_CANCEL)brightness.cancel=!m.active||m.drop_kind!=DROP_BRIGHTNESS;
   if(op==UB_OP_BRIGHTNESS_BEGIN||!brightness_owned(s))brightness_forget();
   else if(s->brightness_known){brightness.percent=s->brightness_percent;brightness.level=s->text_level;m.drop_sel=brightness.percent;}
   return 1;
  }
  if(op==UB_OP_BRIGHTNESS_CANCEL){ha_copy(m.notice,"Brightness restored; no choice saved",sizeof m.notice);brightness_forget();return 1;}
- if(op==UB_OP_BRIGHTNESS_COMMIT){uint32_t now=0;brightness.saving=1;if(!ha_action_now(&now))brightness.save_deadline=now+BRIGHTNESS_SAVE_WAIT;ha_copy(m.notice,"Saving text brightness to USB...",sizeof m.notice);return 1;}
+ if(op==UB_OP_BRIGHTNESS_COMMIT){brightness_wait_save(CONFIRMED_SAVE);return 1;}
  brightness.level=s->text_level;
  if(op==UB_OP_BRIGHTNESS_BEGIN){if(!brightness.reset&&!brightness.edited)brightness.percent=s->brightness_percent;m.drop_sel=brightness.percent;}
  return 1;
@@ -468,13 +580,10 @@ static int brightness_ack(const struct ub_status *s){
 static void brightness_pump(void){
  if(!brightness.active)return;
  if(brightness.saving){
-  struct ub_brightness_save_ack ack;uint32_t now;
-  if(ub_br_private_read(UB_BRIGHTNESS_SAVE_ACK,&ack,sizeof ack)||ack.result<UB_BRIGHTNESS_SAVED||ack.result>UB_BRIGHTNESS_SAVE_UNKNOWN||memcmp(&ack,&brightness.save,offsetof(struct ub_brightness_save_ack,result))){
-   if(!brightness.save_deadline||ha_action_now(&now)||(int32_t)(now-brightness.save_deadline)>=0){ha_copy(m.notice,"Brightness applied; USB save result is unconfirmed",sizeof m.notice);brightness_forget();}
-   return;
-  }
-  ha_copy(m.notice,ack.result==UB_BRIGHTNESS_SAVED?"Text brightness saved":ack.result==UB_BRIGHTNESS_SAVE_STALE?"Playback changed; brightness was not saved":ack.result==UB_BRIGHTNESS_SAVE_ERROR?"Brightness applied; not saved to USB":"Brightness applied; USB save result is unconfirmed",sizeof m.notice);
-  brightness_forget();return;
+  uint32_t now;int result=brightness_save_result();
+  if(result>=0)brightness_finish_save(result);
+  else if(!brightness.save_deadline||ha_action_now(&now)||(int32_t)(now-brightness.save_deadline)>=0)brightness_finish_save(UB_BRIGHTNESS_SAVE_UNKNOWN);
+  return;
  }
  if(brightness.op||m.pending)return;
  if(brightness.cancel){brightness_send(UB_OP_BRIGHTNESS_CANCEL);return;}
@@ -519,7 +628,7 @@ static void brightness_key(unsigned key){
 }
 static int owner_alive(void){
  void *ctx=ub_get_ctx?ub_get_ctx(0x27):0;
- return ctx&&ctx==m.ctx&&m.owner&&root_window(ctx)==m.owner&&*field(ctx,PAGE_OFF)==0&&*field(ctx,0x33f8)==m.media_kind&&*field(ctx,0x33f4)==m.media_number&&*field(ctx,0x33e4)==m.deck_mode;
+ return ctx&&ctx==m.ctx&&m.owner&&root_window(ctx)==m.owner&&*field(ctx,PAGE_OFF)==0&&(*field(ctx,SHOWN_OFF)&1u)&&*field(ctx,0x33f8)==m.media_kind&&*field(ctx,0x33f4)==m.media_number&&*field(ctx,0x33e4)==m.deck_mode;
 }
 static void overlay_key(unsigned int key);
 static void ensure_timer(void);
@@ -529,7 +638,7 @@ static void read_keys(int discard){
  uint32_t keys[16];ssize_t n;unsigned int i;
  if(!m.keys_open){
   if(m.keys_retry){m.keys_retry--;return;}
-  m.keys_fd=open(UB_KEYS_FIFO,O_RDONLY|O_NONBLOCK);
+  m.keys_fd=open(UB_KEYS_FIFO,O_RDONLY|O_NONBLOCK|O_CLOEXEC);  /* never inherited by apl_dispsrv's children */
   if(m.keys_fd<0){m.keys_retry=FIFO_RETRY;return;}
   m.keys_open=1;
  }
@@ -543,16 +652,15 @@ static int overlay_renew(void){
  return ub_action_write(UB_OVERLAY_OPEN,(const char *)&m.overlay_deadline,sizeof m.overlay_deadline);
 }
 static int timer_tick(void *unused){
- uint32_t now;int discard=ha_exists(UB_OVERLAY_ABORT);
+ uint32_t now;int discard=unlink(UB_OVERLAY_ABORT)==0;
  (void)unused;
  if(m.overlay&&(discard||ha_action_now(&now)||(int32_t)(now-m.overlay_deadline)>=0)){close_child(0);discard=1;}
- unlink(UB_OVERLAY_ABORT);
  read_keys(discard);
  if(m.overlay&&overlay_renew())close_child(0);
  if(++m.ticks<POLL_TICKS)return 1;
  m.ticks=0;
  if(m.active&&!m.overlay&&!owner_alive())close_child(0);
- int edited=brightness.active;
+ int edited=brightness.active||orphan.edit;
  if(edited){read_status();if(subtitle_pending_expire())render();brightness_pump();}
  if(m.active){
   if(m.kind==PAGE_SUBS){
@@ -679,8 +787,8 @@ static void open_drop(unsigned int kind){
   m.drop_count=2;m.drop_sel=hs.power_choice?0:1;
  }
  else if(kind==DROP_CPU){
-  if(!hs.cpu_enabled||!hs.cpu_known){ha_cpu_unavailable(&hs);m.drop_kind=DROP_NONE;render();return;}
-  m.drop_count=2;m.drop_sel=hs.cpu_choice?0:1;
+  if(!hs.cpu_enabled){ha_cpu_unavailable(&hs);m.drop_kind=DROP_NONE;render();return;}
+  m.drop_count=2;m.drop_sel=hs.cpu_known&&hs.cpu_choice?0:1; /* unknown: Off only */
  }
  else if(kind==DROP_NETFLIX){m.drop_count=HA_NETFLIX_CHOICES;m.drop_sel=hs.netflix_choice<HA_NETFLIX_CHOICES?hs.netflix_choice:0;}
  else if(kind==DROP_DVD){m.drop_count=HA_DVD_CHOICES;m.drop_sel=hs.dvd_choice<HA_DVD_CHOICES?hs.dvd_choice:0;}
@@ -736,14 +844,16 @@ static void choose_row(void){
 }
 
 /* ---- OPTIONS root ----------------------------------------------------------- */
-/* The tile images, written to /tmp once per process. */
+/* The tile images, written to /tmp once per process; a failed write is tried
+ * again on later builds, TILE_TRIES times in all (the stock icon stays). */
 static const struct { const char *name; const unsigned char *png; size_t size; } tile_files[4]={
  {"subs",ub_tile_subs_png,sizeof ub_tile_subs_png},{"subs_focus",ub_tile_subs_focus_png,sizeof ub_tile_subs_focus_png},
  {"helper",ub_tile_helper_png,sizeof ub_tile_helper_png},{"helper_focus",ub_tile_helper_focus_png,sizeof ub_tile_helper_focus_png}};
+static unsigned int tile_tries; /* renewed when a new OPTIONS root is built */
 static int tile_ready(void){
- static int ready;unsigned int i,hd;char path[64];
- if(ready)return ready>0;
- ready=-1;
+ static int ready;unsigned int i,hd;char path[64];unsigned int *tries=&tile_tries;
+ if(ready||*tries>=TILE_TRIES)return ready;
+ ++*tries;
  for(i=0;i<4;i++)for(hd=0;hd<2;hd++){
   int fd,ok;
   snprintf(path,sizeof path,"%s%s%s.png",TILE_DIR,tile_files[i].name,hd?"_HD":"");
@@ -795,7 +905,7 @@ unsigned int ub_hook_root_builder(int update){
  ret=ub_original_root_builder?ub_original_root_builder(update):0;
  if(!ub_get_ctx)return ret;
  ctx=ub_get_ctx(0x27);if(!ctx)return ret;owner=root_window(ctx);
- if(m.ctx!=ctx||m.owner!=owner){if(!m.overlay)close_child(0);memset(m.tiled,0,sizeof m.tiled);m.count=0;m.ctx=ctx;m.owner=owner;if(!brightness.active)m.pending=0;if(owner)gtk_signal_connect(owner,"destroy",owner_destroyed,0);}
+ if(m.ctx!=ctx||m.owner!=owner){if(!m.overlay)close_child(0);memset(m.tiled,0,sizeof m.tiled);tile_tries=0;m.count=0;m.ctx=ctx;m.owner=owner;if(!brightness.active)m.pending=0;if(owner)gtk_signal_connect(owner,"destroy",owner_destroyed,0);}
  n=*field(ctx,COUNT_OFF);rows=(struct descriptor *)((char *)ctx+ROW_OFF);
  /* already appended (a nested build) */
  for(k=0;k<n&&k<m.count&&custom_descriptor(&rows[n-1-k]);k++){}
@@ -809,7 +919,8 @@ unsigned int ub_hook_root_builder(int update){
  m.kinds[0]=subs?PAGE_SUBS:PAGE_HELPER;m.kinds[1]=PAGE_HELPER;
  for(i=0;i<want;i++){memset(&rows[n+i],0,sizeof rows[n+i]);rows[n+i].id=CUSTOM_ID;rows[n+i].state=3;rows[n+i].child=0;}
  *field(ctx,COUNT_OFF)=n+want;*field(ctx,ENABLED_OFF)+=want;
- if(m.active){for(i=0;i<want&&m.kinds[i]!=m.kind;i++){}if(i<want)was=i;}
+ /* The overlay is not an OPTIONS page: it never moves the stock focus. */
+ if(m.active&&!m.overlay){for(i=0;i<want&&m.kinds[i]!=m.kind;i++){}if(i<want)was=i;}
  if(was<want)*field(ctx,SELECT_OFF)=n+was;
  else if(*field(ctx,SELECT_OFF)==0xff)*field(ctx,SELECT_OFF)=n;
  present_root();ensure_timer();return n+want;
@@ -829,6 +940,8 @@ static void sync_preview(void){
  unsigned int s,kind;
  if(m.overlay||!m.ctx||!m.owner||!ub_get_ctx||ub_get_ctx(0x27)!=m.ctx||root_window(m.ctx)!=m.owner)return;
  if(m.active&&!m.preview)return;
+ /* A hidden root (hidden, not destroyed) has no preview. */
+ if(!(*field(m.ctx,SHOWN_OFF)&1u)){if(m.active)close_child(0);return;}
  s=*field(m.ctx,SELECT_OFF);
  if(*field(m.ctx,PAGE_OFF)!=0||!m.count||s<m.base||s>=m.base+m.count||!custom_descriptor(&((struct descriptor *)((char *)m.ctx+ROW_OFF))[s])){
   if(m.active)close_child(0);

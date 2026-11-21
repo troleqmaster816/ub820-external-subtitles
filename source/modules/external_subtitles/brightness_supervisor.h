@@ -1,6 +1,7 @@
 #ifndef UB_SUBTITLE_BRIGHTNESS_SUPERVISOR_H
 #define UB_SUBTITLE_BRIGHTNESS_SUPERVISOR_H
 #include "brightness_io.h"
+#include "storage.h"
 
 static struct {
  int valid;
@@ -103,11 +104,12 @@ static void brightness_save_tick(struct ub_target *target){
  }
  snprintf(value,sizeof value,"%u",ack.percent);
  rc=ub_setting_set("external_subtitles","brightness",value);
- ack.result=rc?UB_BRIGHTNESS_SAVE_ERROR:UB_BRIGHTNESS_SAVED;
+ /* A timed-out stick write may still complete: its outcome is unknown. */
+ ack.result=!rc?UB_BRIGHTNESS_SAVED:rc==UB_STICK_TIMEOUT?UB_BRIGHTNESS_SAVE_UNKNOWN:UB_BRIGHTNESS_SAVE_ERROR;
  claim=ack;(void)ub_br_private_write(UB_BRIGHTNESS_SAVE_CLAIM,&claim,sizeof claim);
  brightness_supervisor.seed.percent=ack.percent;
  (void)ub_br_private_write(UB_BRIGHTNESS_SEED,&brightness_supervisor.seed,sizeof brightness_supervisor.seed);
  brightness_publish_save(&ack);
- ub_log("external_subtitles",UB_ALWAYS,"brightness %u%% applied; %s (save result %d)",ack.percent,rc?"not saved to USB":"saved",rc);
+ ub_log("external_subtitles",UB_ALWAYS,"brightness %u%% applied; %s (save result %d)",ack.percent,!rc?"saved":rc==UB_STICK_TIMEOUT?"USB save outcome unknown":"not saved to USB",rc);
 }
 #endif

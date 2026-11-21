@@ -18,6 +18,11 @@
 #define UB_PC_GET 1u
 #define UB_PC_STOP 2u
 #define UB_PC_TICKS_PER_SECOND 45000u
+/* Supervisor-owned RAM marker for the module option precision=0: present,
+ * the engine never starts its clock client and keeps the stock clock. */
+#ifndef UB_PC_DISABLED_FILE
+#define UB_PC_DISABLED_FILE "/tmp/ub820_srt_precision.off"
+#endif
 struct ub_pc_record {
  uint32_t magic,version,bytes,pid,instance_lo,instance_hi,sequence;
  uint32_t client_nonce_lo,client_nonce_hi,request_sequence;

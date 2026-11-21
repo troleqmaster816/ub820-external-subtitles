@@ -24,7 +24,7 @@
 #define UB_NETFLIX_HELPER UB_KEYS_TEST_DIR "/helper"
 #define UB_NETFLIX_OFF UB_KEYS_TEST_DIR "/off"
 static uint32_t seconds=100;
-static int mode,calls,stock_calls,reader=-1,close_reader;
+static int mode,calls,stock_calls,reader=-1,close_reader,stock_errno,unsafe_opens;
 static int test_clock(clockid_t id,struct timespec *out){assert(id==CLOCK_MONOTONIC);out->tv_sec=seconds;out->tv_nsec=0;return 0;}
 static ssize_t test_write(int fd,const void *buf,size_t n){
  calls++;
@@ -37,6 +37,9 @@ static int test_open(const char *path,int flags,...){
  int create_mode=0;
  if(flags&O_CREAT){va_list ap;va_start(ap,flags);create_mode=va_arg(ap,int);va_end(ap);}
  if(close_reader&&!strncmp(path,"/proc/self/fd/",14)&&(flags&(O_ACCMODE|O_NONBLOCK))==O_NONBLOCK){close(reader);reader=-1;close_reader=0;}
+ /* apl_mgr is multithreaded and starts programs: no descriptor of ours may
+  * leak through a concurrent exec, and no open may wait for a FIFO peer. */
+ if(!(flags&O_CLOEXEC)||!(flags&O_NONBLOCK))unsafe_opens++;
  return open(path,flags,create_mode);
 }
 #define clock_gettime test_clock
@@ -46,7 +49,7 @@ static int test_open(const char *path,int flags,...){
 #undef open
 #undef write
 #undef clock_gettime
-static int stock(int *ctx){(void)ctx;stock_calls++;return 42;}
+static int stock(int *ctx){(void)ctx;stock_calls++;stock_errno=errno;return 42;}
 static void lease(uint32_t expires){int fd=open(UB_OVERLAY_OPEN,O_WRONLY|O_CREAT|O_TRUNC,0600);assert(fd>=0);assert(write(fd,&expires,sizeof expires)==sizeof expires);close(fd);}
 int main(void){
  int ctx[64]={0};uint32_t key;
@@ -61,6 +64,14 @@ int main(void){
  mode=0;seconds=104;assert(ub_hook_key_filter(ctx)==42&&stock_calls==2); /* stale UI cannot trap remote */
  seconds=100;lease(103);close_reader=1;assert(to_overlay(0x85,1)==0&&reader==-1); /* reader disappears: no SIGPIPE */
  assert(to_overlay(0x85,1)==-1); /* no external reader at initial open */
+ /* The hook runs on apl_mgr's key thread: its file probes never change the
+  * caller's errno, and the stock filter sees the caller's value. */
+ unlink(UB_OVERLAY_OPEN);ctx[CTX_KEY]=KEY_NETFLIX;stock_calls=0;
+ errno=4242;assert(ub_hook_key_filter(ctx)==42&&stock_calls==1&&stock_errno==4242);
+ {int fd=open(UB_NETFLIX_OFF,O_WRONLY|O_CREAT,0600);assert(fd>=0);close(fd);}
+ errno=4243;assert(ub_hook_key_filter(ctx)==1&&errno==4243&&stock_calls==1);unlink(UB_NETFLIX_OFF);
+ ctx[CTX_KEY]=0x85;errno=4244;assert(ub_hook_key_filter(ctx)==42&&stock_errno==4244);
+ assert(!unsafe_opens);
  unlink(UB_KEYS_FIFO);unlink(UB_OVERLAY_OPEN);unlink(UB_OVERLAY_ABORT);rmdir(UB_KEYS_TEST_DIR);
  puts("keys_delivery_test passed");return 0;
 }

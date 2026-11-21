@@ -1,8 +1,7 @@
 /* Normal ELF-loader constructor, not a ptrace payload. The verified launcher
- * loads this only for future apl_bdv starts. The native executable has no
- * preinit array; its region initialization is reached after loader constructors.
- * Thus all three source instructions are committed before the first native
- * region computation, without racing process detection or rewriting registers.
+ * loads this for future verified BD/DVD/Settings children. Only apl_bdv may
+ * apply a region policy. Scoped indefinite EV waits are prepared before main;
+ * unrecognized executables/providers never publish readiness for a live stop.
  */
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
@@ -16,6 +15,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "bd_sha256.h"
+#include "../native_events/wait.c"
 
 #ifndef UB_BD_EXE_HASH_182
 #define UB_BD_EXE_HASH_182 "0eed5038db1c678b14cf666752c1c02db6c884ec1229329b9867f4342544714d"
@@ -34,18 +34,33 @@
 #define BD_FILE_LIMIT (1024*1024)
 
 static void preload_log(const char *s){
- char line[256];int n=snprintf(line,sizeof line,"region: BD pre-main PID%d: %s\n",(int)getpid(),s);
+ char line[256];int n=snprintf(line,sizeof line,"native_events: pre-main PID%d: %s\n",(int)getpid(),s);
  int fd;if(n<=0||n>=(int)sizeof line)return;
  fd=open("/tmp/ub820_submenu.log",O_WRONLY|O_APPEND|O_CLOEXEC);
  if(fd>=0){ssize_t r;do{r=write(fd,line,(size_t)n);}while(r<0&&errno==EINTR);close(fd);}
 }
+#ifndef UB_SETTINGS_EXE_HASH_182
+#define UB_SETTINGS_EXE_HASH_182 "6529f72a9c01770980be7335142ba481e75799c4b5f1a31a5ead8b60a064a006"
+#endif
+#ifndef UB_SETTINGS_EXE_HASH_185
+#define UB_SETTINGS_EXE_HASH_185 "62d6933a4e577c4be3466f75d08ee1d1a6ce2b6d687a11112cb11c85cc052741"
+#endif
+#ifndef UB_BDPLAY_EXE_HASH_182
+#define UB_BDPLAY_EXE_HASH_182 "a07b82bc4a3a50594ee97ce9ad6937f8f63b129da0779c15576691e06da9789b"
+#endif
 static int preload_identity(void){
  struct hash h;unsigned char buf[8192];char digest[65];ssize_t n;int fd=open("/proc/self/exe",O_RDONLY|O_CLOEXEC);
  if(fd<0)return -1;
  hash_init(&h);
  for(;;){n=read(fd,buf,sizeof buf);if(n<0&&errno==EINTR)continue;if(n<=0)break;hash_feed(&h,buf,(size_t)n);}
  close(fd);if(n<0)return -1;hash_end(&h,digest);
- return strcmp(digest,UB_BD_EXE_HASH_182)&&strcmp(digest,UB_BD_EXE_HASH_185)?-1:0;
+ if(!strcmp(digest,UB_BD_EXE_HASH_182)||!strcmp(digest,UB_BD_EXE_HASH_185))return NATIVE_WAIT_DB;
+ if(!strcmp(digest,UB_SETTINGS_EXE_HASH_182)||!strcmp(digest,UB_SETTINGS_EXE_HASH_185))return NATIVE_WAIT_SETTINGS;
+ if(!strcmp(digest,UB_BDPLAY_EXE_HASH_182)||
+    !strcmp(digest,"62dab1143d4c65f7a099130f58a19b72b48ed676c0bf4122d294904f91756573")||
+    !strcmp(digest,"8ab24aac32c99775c2452d87cd5864b25f66e092cdebef3411100735df75835e")||
+    !strcmp(digest,"9942a855ebec8d85a12353f27d25b8bc8d7b29ac24bb86442c2544282e0b072e"))return NATIVE_WAIT_UFS;
+ return 0;
 }
 static unsigned char *preload_read(const char *path,size_t *size){
  int fd=open(path,O_RDONLY|O_CLOEXEC|O_NONBLOCK);off_t length;unsigned char *b;size_t used=0;ssize_t n;
@@ -132,22 +147,41 @@ static int preload_policy(const char *s){
  if(!strcmp(s,"v1:7"))return 7;
  return 0;
 }
-#ifndef UB_BD_PRELOAD_TEST
-__attribute__((constructor))
-#endif
-static void ub_bd_preload_init(void){
- int policy=preload_policy(getenv("UB820_BD_POLICY")),rc;unsigned mask=0;const char *old=getenv("UB820_BD_PRELOAD_OLD");
- if(!old)return; /* Not launched by our verified media-manager hook. */
- /* Only this child's environment changes. Never propagate our initializer
-  * into tools or further executables started by the player. */
- if(*old){if(setenv("LD_PRELOAD",old,1)){preload_log("cannot restore inherited preload environment; refusing native main");_exit(125);}}
- else unsetenv("LD_PRELOAD");
- unsetenv("UB820_BD_POLICY");unsetenv("UB820_BD_PRELOAD_OLD");
- if(!policy)return;
- if(preload_identity()){preload_log("unrecognized executable; source unchanged");return;}
+/* Region policy at the source, apl_bdv only. Never returns on an unverified
+ * rollback: native code must not run half-patched. */
+static void preload_region(int policy){
+ int rc;unsigned mask=0;
  if(policy==-1){mask=preload_auto_mask();if(!mask){preload_log("auto found no current HDMV mask; stock source retained");return;}}
  rc=preload_patch(policy,mask);
  if(rc==-2){preload_log("rollback could not be verified; refusing to enter native main");_exit(125);}
  if(rc){preload_log("source preflight/write failed; stock instructions retained");return;}
  preload_log(policy==-1?"current-disc HDMV policy installed before native main":"selected region installed before native main");
+}
+#ifndef UB_BD_PRELOAD_TEST
+__attribute__((constructor))
+#endif
+static void ub_bd_preload_init(void){
+ int policy=preload_policy(getenv("UB820_BD_POLICY")),rc,waits=0,kind,handler=0;const char *old=getenv("UB820_BD_PRELOAD_OLD"),*wait=getenv(UB_NATIVE_WAIT_ENV);
+ waits=wait&&!strcmp(wait,UB_NATIVE_WAIT_VALUE);
+ if(!old)return; /* Not launched by our verified media-manager hook. */
+ /* Only this child's environment changes. Never propagate our initializer
+  * into tools or further executables started by the player. */
+ if(*old){if(setenv("LD_PRELOAD",old,1)){preload_log("cannot restore inherited preload environment; refusing native main");_exit(125);}}
+ else unsetenv("LD_PRELOAD");
+ unsetenv("UB820_BD_POLICY");unsetenv("UB820_BD_PRELOAD_OLD");unsetenv(UB_NATIVE_WAIT_ENV);
+ if(!policy&&!waits)return;
+ kind=preload_identity();
+ if(kind<=0){preload_log("unrecognized executable; source unchanged");return;}
+ if(waits){
+  rc=native_wait_enable_kind(kind);
+  if(rc){char why[160];snprintf(why,sizeof why,"native wait readiness refused (%d: resolve/shadow/provider/read/hash/publication); no live stop is authorized",rc);preload_log(why);}
+  else handler=1;
+ }
+ if(policy&&kind==NATIVE_WAIT_DB)preload_region(policy);
+ /* Publish the stop receipt only now: a helper stop is never authorized
+  * while this constructor is still changing its own code. */
+ if(handler){
+  if(native_wait_attest()){preload_log("native wait readiness refused (-6: resolve/shadow/provider/read/hash/publication); no live stop is authorized");}
+  else preload_log(kind==NATIVE_WAIT_DB?"setting-DB EV_wait_message EINTR handling ready before native main":kind==NATIVE_WAIT_SETTINGS?"Easy Setting EV_wait_flag EINTR handling ready before native main":"scoped UFS EV_wait_message EINTR handling ready before native main");
+ }
 }

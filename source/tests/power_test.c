@@ -34,7 +34,7 @@ static char directory[96],enabled_file[128],request_file[128],status_file[128],t
 #define UB_POWER_NATIVE native_file
 #define UB_POWER_PACKET packet_file
 #define UB_POWER_TOOL tool_file
-static unsigned seconds=1000,forks,reaps,saves,hashes,maps;
+static unsigned seconds=1000,forks,reaps,saves,hashes,maps,kills;
 static int fork_failure,wait_ready,wait_code,wait_missing,cohort185,wrong_manager,wrong_base,wrong_path,wrong_library,save_error;
 static pid_t virtual_child=10000;
 static void fixture_now(struct timespec *out){out->tv_sec=seconds;out->tv_nsec=0;}
@@ -46,11 +46,15 @@ static pid_t fixture_waitpid(pid_t pid,int *status,int options){
  if(!wait_ready)return 0;
  reaps++;*status=wait_code<<8;return pid;
 }
+/* Virtual children only: a real kill() of these PIDs could hit host processes. */
+static int fixture_kill(pid_t pid,int sig){assert(pid>10000&&sig==SIGKILL);kills++;return 0;}
 #define ub_now fixture_now
 #define ub_now_ms fixture_now_ms
 #define fork fixture_fork
 #define waitpid fixture_waitpid
+#define kill fixture_kill
 #include "../modules/power/module.c"
+#undef kill
 #undef waitpid
 #undef fork
 #undef ub_now_ms
@@ -70,7 +74,7 @@ const struct ub_payload_variant *ub_payload_variant(const struct ub_payload *p,c
 }
 int ub_hash_file(const char *path,char sha[65]){
  hashes++;
- if(!strcmp(path,"/usr/dtvrec/bin/apl_mgr")){strcpy(sha,wrong_manager?SHA185:(cohort185?SHA185:UB_SHA256_APL_MGR));if(wrong_manager)sha[0]='x';return 0;}
+ if(!strncmp(path,"/proc/",6)){strcpy(sha,wrong_manager?SHA185:(cohort185?SHA185:UB_SHA256_APL_MGR));if(wrong_manager)sha[0]='x';return 0;}
  const char *name=strrchr(path,'/');assert(name);name++;
  for(unsigned i=0;i<UB_POWER_LIBRARY_GUARD_COUNT;i++)if(!strcmp(name,ub_power_library_guards[i].name)){
   const struct ub_power_library_guard *g=&ub_power_library_guards[i];strcpy(sha,cohort185?g->sha185:g->sha182);
@@ -102,11 +106,11 @@ static void remove_files(void){
  ub_dir_close(&d);
 }
 static void reset(void){
- remove_files();memset(&pending,0,sizeof pending);memset(token,0,sizeof token);memset(token_hex,0,sizeof token_hex);
+ remove_files();memset(&pending,0,sizeof pending);memset(&producer,0,sizeof producer);memset(token,0,sizeof token);memset(token_hex,0,sizeof token_hex);
  memset(&parts[0].target,0,sizeof parts[0].target);parts[0].tripped=0;
- auto_off=1;effective=-1;available=blocked=initial_sent=owner_pid=0;owner_born=0;serial=menu_seq=0;menu_message[0]=0;
+ auto_off=1;effective=-1;available=blocked=initial_sent=owner_pid=unsaved=0;owner_born=0;serial=menu_seq=0;menu_message[0]=0;
  fork_failure=wait_ready=wait_code=wait_missing=cohort185=wrong_manager=wrong_base=wrong_path=wrong_library=save_error=0;
- forks=reaps=saves=hashes=maps=0;seconds=1000;
+ forks=reaps=saves=hashes=maps=kills=0;seconds=1000;
 }
 static void native_ack(const char *ack_token,unsigned seq,unsigned mode,int result){
  char text[256];int n=snprintf(text,sizeof text,"UBPWR1 %s %u %u %d 1 0 1 0\n",ack_token,seq,mode,result);
@@ -156,13 +160,14 @@ int main(void){
  request(8,"set off 8\n",seconds+4);control_step(0,0);assert(forks==2&&!pending.active&&strstr(read_reply(8,text,sizeof text),"already applied"));cases++;
  request(9,"set on 9\n",seconds+4);control_step(0,0);assert(pending.active&&forks==3);
  native_ack(token_hex,pending.serial,1,UB_POWER_FPC_ERROR);control_step(0,0);
- assert(!pending.active&&blocked&&effective<0&&pending.producer>0&&access(UB_POWER_ENABLED,F_OK)&&access(UB_POWER_STATUS,F_OK));cases++;
- wait_ready=1;control_step(0,0);assert(pending.producer==0&&pending.producer_done&&reaps==3);cases++;
+ /* The native result settled the request: its producer is ended, then reaped. */
+ assert(!pending.active&&blocked&&effective<0&&producer.pid>0&&kills==1&&access(UB_POWER_ENABLED,F_OK)&&access(UB_POWER_STATUS,F_OK));cases++;
+ wait_ready=1;control_step(0,0);assert(producer.pid==0&&kills==1&&reaps==3);cases++;
  reset();boot_ready();
  request(12,"set off 12\n",seconds+2);control_step(0,0);seconds+=2;control_step(0,0);
- assert(blocked&&pending.unknown&&pending.active&&effective<0&&access(UB_POWER_ENABLED,F_OK));cases++;
+ assert(blocked&&pending.unknown&&pending.active&&effective<0&&kills==1&&access(UB_POWER_ENABLED,F_OK));cases++;
  native_ack(token_hex,pending.serial,0,UB_POWER_OK);wait_ready=1;control_step(0,0);wait_ready=0;
- assert(!pending.active&&!blocked&&effective==0&&saves==1&&forks==2);cases++;
+ assert(!pending.active&&!blocked&&effective==0&&saves==1&&forks==2&&kills==1);cases++;
  reset();boot_ready();
  request(3,"set off 3\n",seconds-1);control_step(0,0);assert(forks==1&&!pending.active);cases++;
  request(4,"set off 5\n",seconds+5);control_step(0,0);assert(forks==1&&!pending.active);cases++;
@@ -191,7 +196,45 @@ int main(void){
  native_ack(token_hex,pending.serial,0,UB_POWER_OK);wait_ready=1;wait_code=7;control_step(0,0);
  assert(effective==0&&!blocked&&!pending.active&&pending.producer_status==7);cases++;
  reset();boot_ready();parts[0].target.born=100;request(13,"set off 13\n",seconds+5);control_step(0,0);
- assert(pending.active);parts[0].target.born=101;control_step(0,0);assert(blocked&&effective<0);cases++;
+ assert(pending.active);parts[0].target.born=101;control_step(0,0);
+ /* The request of the old manager is given up; the new one is not blocked.
+  * Its initial policy waits until the old producer is reaped. */
+ assert(!pending.active&&!blocked&&effective<0&&kills==1&&!initial_sent&&forks==2&&access(UB_POWER_ENABLED,F_OK));
+ control_step(0,0);assert(forks==2&&!initial_sent);
+ wait_ready=1;control_step(0,0);wait_ready=0;assert(initial_sent&&pending.active&&pending.mode==1&&forks==3&&producer.pid>0);
+ native_ack(token_hex,pending.serial-1,0,UB_POWER_OK);control_step(0,0);assert(pending.active&&effective<0);
+ native_ack(token_hex,pending.serial,1,UB_POWER_OK);wait_ready=1;control_step(0,0);wait_ready=0;
+ /* Confirmed for the new manager; the still queued menu request 13 follows. */
+ assert(!blocked&&effective==1&&pending.active&&pending.mode==0&&pending.menu_seq==13);cases++;
+ /* The previous wedge: deadline elapsed (outcome unknown), then the manager
+  * restarts. The new instance gets the configured policy again. */
+ reset();boot_ready();request(14,"set off 14\n",seconds+2);control_step(0,0);seconds+=2;control_step(0,0);
+ assert(blocked&&pending.unknown&&pending.active&&kills==1);
+ parts[0].target.pid=78;parts[0].target.born=102;control_step(0,0);assert(!blocked&&!pending.active&&effective<0);
+ wait_ready=1;control_step(0,0);wait_ready=0;assert(initial_sent&&pending.active&&pending.mode==1&&owner_pid==78);
+ native_ack(token_hex,pending.serial,1,UB_POWER_OK);wait_ready=1;control_step(0,0);wait_ready=0;
+ assert(!pending.active&&!blocked&&effective==1);
+ request(15,"set off 15\n",seconds+5);control_step(0,0);assert(pending.active&&pending.mode==0);cases++;
+ /* Native Off applied, its USB save failed: choosing Off again after the USB
+  * returns retries only the save (no second native request). */
+ reset();boot_ready();request(31,"set off 31\n",seconds+5);control_step(0,0);
+ native_ack(token_hex,pending.serial,0,UB_POWER_OK);wait_ready=1;save_error=4;control_step(0,0);wait_ready=0;
+ assert(saves==1&&effective==0&&unsaved&&strstr(read_reply(31,text,sizeof text),"31 off unsaved applied; not saved to USB"));
+ assert(ub_read_file(UB_POWER_STATUS,text,sizeof text)>0&&strstr(text,"31 off unsaved applied; not saved to USB"));
+ save_error=0;request(32,"set off 32\n",seconds+5);control_step(0,0);
+ assert(saves==2&&forks==2&&!pending.active&&!unsaved&&effective==0&&strstr(read_reply(32,text,sizeof text),"32 off saved"));
+ request(33,"set off 33\n",seconds+5);control_step(0,0);assert(saves==2&&forks==2&&strstr(read_reply(33,text,sizeof text),"already applied"));cases++;
+ /* -1 (value not taken by the settings) also stays unsaved and retryable. */
+ save_error=-1;request(34,"set on 34\n",seconds+5);control_step(0,0);native_ack(token_hex,pending.serial,1,UB_POWER_OK);wait_ready=1;control_step(0,0);wait_ready=0;
+ assert(saves==3&&effective==1&&unsaved&&strstr(read_reply(34,text,sizeof text),"not saved"));
+ save_error=0;request(35,"set on 35\n",seconds+5);control_step(0,0);assert(saves==4&&!unsaved&&strstr(read_reply(35,text,sizeof text),"35 on saved"));cases++;
+ /* Off applied but not saved, then an On that cannot start: its message
+  * replaces the old one, the unsaved field still says Off is not kept. */
+ reset();boot_ready();request(41,"set off 41\n",seconds+5);control_step(0,0);
+ native_ack(token_hex,pending.serial,0,UB_POWER_OK);wait_ready=1;save_error=4;control_step(0,0);wait_ready=0;save_error=0;
+ fork_failure=1;request(42,"set on 42\n",seconds+5);control_step(0,0);fork_failure=0;
+ assert(effective==0&&unsaved&&strstr(read_reply(42,text,sizeof text),"42 off unsaved request could not be sent"));
+ assert(ub_read_file(UB_POWER_STATUS,text,sizeof text)>0&&strstr(text,"42 off unsaved "));cases++;
  remove_files();assert(!rmdir(directory));
  printf("power_test passed (%u scenarios)\n",cases);return 0;
 }

@@ -60,10 +60,19 @@ static inline int cpu_on_allowed(const struct cpu_owner *now,const struct cpu_ow
 static inline int cpu_completion_needs_off(const struct cpu_owner *now,int mode){
  return mode==CPU_MODE_ON&&(!now->enabled||!now->desired);
 }
+/* The kernel's last result: RW15_OK (0) or RW15_ALREADY (1, an On while on or
+ * an Off while never activated) are successes; negative results are faults. */
+static inline int cpu_native_result_ok(int rc){return rc==0||rc==1;}
+/* Off as the controller reports it: stock (phase 0) or restored and pinned
+ * (phase 3), both workers bypassed. Context rejection is checked separately. */
+static inline int cpu_native_off_state(const struct cpu_native *s){
+ return cpu_native_result_ok(s->rc)&&!s->fault&&!s->begin_rc&&s->pid[0]&&s->pid[1]&&s->pid[0]!=s->pid[1]&&
+  (s->phase==0||s->phase==3)&&!s->enabled&&s->pinned==(s->phase==3)&&s->bypass[0]==1&&s->bypass[1]==1;
+}
 static inline int cpu_native_mode(const struct cpu_native *s){
- if(s->rc||s->fault||s->begin_rc||s->rejected[0]||s->rejected[1]||
+ if(!cpu_native_result_ok(s->rc)||s->fault||s->begin_rc||s->rejected[0]||s->rejected[1]||
     !s->pid[0]||!s->pid[1]||s->pid[0]==s->pid[1])return CPU_MODE_UNKNOWN;
- if((s->phase==0||s->phase==3)&&!s->enabled&&s->pinned==(s->phase==3)&&s->bypass[0]==1&&s->bypass[1]==1)return CPU_MODE_OFF;
+ if(cpu_native_off_state(s))return CPU_MODE_OFF;
  if(s->phase==1&&s->pinned==1&&s->enabled==1&&!s->bypass[0]&&!s->bypass[1])return CPU_MODE_ON;
  return CPU_MODE_UNKNOWN;
 }

@@ -13,6 +13,7 @@
 #ifndef UB_SSH_SESSION_GUARD_H
 #define UB_SSH_SESSION_GUARD_H
 #include <signal.h>
+/* module.c: is_our_dropbear() (before this file) and close_inherited(). */
 
 #define GUARD_POLL_MS 100   /* someone is connected */
 #define GUARD_IDLE_MS 500   /* nobody is connected */
@@ -162,8 +163,10 @@ static int guard_check(int master){
  {int fd=open(UB_LOG_URGENT,O_WRONLY|O_CREAT,0600);if(fd>=0)close(fd);}
  return 1;
 }
+/* kill(master,0) also succeeds on an unreaped (zombie) dropbear, and a reaped
+ * PID can be reused: watch only while it still runs our dropbear binary. */
 static void guard_loop(int master){
- while(!kill(master,0)){
+ while(!kill(master,0)&&is_our_dropbear(master)){
   guard_check(master);
   ub_sleep_ms(ub_now_ms()<guard_fast_until?GUARD_BUSY_MS:guard_sessions?GUARD_POLL_MS:GUARD_IDLE_MS);
  }

@@ -23,14 +23,20 @@
 #include <unistd.h>
 
 #define ID "power"
-static int auto_off=1,effective=-1,available,blocked,initial_sent,owner_pid;
+/* unsaved: the effective value came from a menu choice that is applied but
+ * not on the USB stick; choosing it again retries only the save. */
+static int auto_off=1,effective=-1,available,blocked,initial_sent,owner_pid,unsaved;
 static unsigned long long owner_born;
 static unsigned char token[16];static char token_hex[33];static uint32_t serial;
 static unsigned menu_seq;static char menu_message[96]="";
 static struct {
  int active,unknown,mode,producer_done,producer_status;uint32_t serial,expires;
- unsigned menu_seq;pid_t producer;char reply[UB_ACTION_PATH];
+ unsigned menu_seq;char reply[UB_ACTION_PATH];
 } pending;
+/* The EV producer of the latest request. Kept apart from pending, which is
+ * cleared on a new manager instance: the child must still be reaped, and no
+ * new packet is written while an older producer can still read one. */
+static struct { pid_t pid; uint32_t serial; int killed; } producer;
 static struct ub_part parts[];
 static uint32_t now_seconds(void){return (uint32_t)(ub_now_ms()/1000u);}
 static const char *mode_name(int mode){return mode?"on":"off";}
@@ -42,17 +48,29 @@ static int ram_file(const char *path,const void *data,size_t size,int mode){
  if(close(fd))rc=-1;
  if(rc||rename(temp,path)){unlink(temp);return -1;}return 0;
 }
+/* "<seq> <on|off> <saved|unsaved> <message>": whether the effective value is
+ * kept on the stick is its own field, whatever the last message says. */
+static const char *kept(void){return unsaved?"unsaved":"saved";}
 static int publish_status(void){
  char line[192];int n;
  if(effective<0){unlink(UB_POWER_ENABLED);unlink(UB_POWER_STATUS);return 0;}
- n=snprintf(line,sizeof line,"%u %s %s\n",menu_seq,mode_name(effective),menu_message);
+ n=snprintf(line,sizeof line,"%u %s %s %s\n",menu_seq,mode_name(effective),kept(),menu_message);
  if(n<0||(size_t)n>=sizeof line||ram_file(UB_POWER_STATUS,line,(size_t)n,0600))return -1;
  return ram_file(UB_POWER_ENABLED,"1\n",2,0600);
 }
 static void answer(void){
  char line[192];int n;if(!pending.reply[0]||effective<0)return;
- n=snprintf(line,sizeof line,"%u %s %s\n",pending.menu_seq,mode_name(effective),menu_message);
+ n=snprintf(line,sizeof line,"%u %s %s %s\n",pending.menu_seq,mode_name(effective),kept(),menu_message);
  if(n>0&&(size_t)n<sizeof line&&ub_action_reply(pending.reply,line,(size_t)n))ub_log(ID,UB_ALWAYS,"cannot acknowledge power request");
+}
+/* ub_setting_set: 0 saved, -1 invalid value (nothing applied), >0 applied but
+ * not saved (ub_stick_error code). */
+static void save_choice(void){
+ int rc=ub_setting_set(ID,"auto_off",mode_name(effective));
+ unsaved=rc!=0;
+ if(rc<0)snprintf(menu_message,sizeof menu_message,"applied; not saved to USB (setting rejected)");
+ else if(rc)snprintf(menu_message,sizeof menu_message,"applied; not saved to USB (%s)",ub_stick_error(rc));
+ else snprintf(menu_message,sizeof menu_message,"saved");
 }
 static void unknown(const char *why){
  if(effective<0&&blocked&&pending.unknown&&!strcmp(menu_message,why))return;
@@ -60,24 +78,13 @@ static void unknown(const char *why){
  publish_status();ub_log(ID,UB_ALWAYS,"auto power-off result unknown: %s; no automatic resend",why);
 }
 static void clean_producer(void){
- struct ub_dir d;const char *entry;sigset_t empty;int nul;
- for(int sig=1;sig<65;sig++)signal(sig,SIG_DFL);
- sigemptyset(&empty);sigprocmask(SIG_SETMASK,&empty,0);umask(077);
- if(!ub_dir_open(&d,"/proc/self/fd")){
-  while((entry=ub_dir_next(&d)))if(entry[0]>='0'&&entry[0]<='9'){int fd=atoi(entry);if(fd>2&&fd!=d.fd)close(fd);}
-  ub_dir_close(&d);
- }else{
-  struct rlimit lim;if(getrlimit(RLIMIT_NOFILE,&lim)||lim.rlim_max==RLIM_INFINITY)_exit(126);
-  for(rlim_t fd=3;fd<lim.rlim_max;fd++)close((int)fd);
- }
- nul=open("/dev/null",O_RDWR|O_CLOEXEC);
- if(nul<0||dup2(nul,0)<0||dup2(nul,1)<0||dup2(nul,2)<0)_exit(126);
- if(nul>2)close(nul);
+ if(ub_child_sanitize(0))_exit(126);
+ umask(077);
  execl(UB_POWER_TOOL,"events",UB_POWER_PACKET,(char *)0);_exit(127);
 }
 static int begin(int mode,unsigned sequence,const char *reply,uint32_t expires){
- struct ub_power_packet packet;pid_t producer;
- if(pending.active||blocked||!available||mode<0||mode>1)return -1;
+ struct ub_power_packet packet;pid_t child;
+ if(pending.active||blocked||!available||producer.pid>0||mode<0||mode>1)return -1;
  if(!expires)expires=now_seconds()+15u;
  if((int32_t)(now_seconds()-expires)>=0)return -1;
  if(serial==UINT32_MAX){unknown("control sequence exhausted");return -1;}
@@ -86,17 +93,27 @@ static int begin(int mode,unsigned sequence,const char *reply,uint32_t expires){
  if(ram_file(UB_POWER_PACKET,&packet,sizeof packet,0600))return -1;
  memset(&pending,0,sizeof pending);pending.active=1;pending.mode=mode;pending.serial=serial;pending.expires=expires;pending.menu_seq=sequence;
  if(reply)snprintf(pending.reply,sizeof pending.reply,"%s",reply);
- producer=fork();if(!producer)clean_producer();
- if(producer<0){memset(&pending,0,sizeof pending);return -1;}
- pending.producer=producer;
+ child=fork();if(!child)clean_producer();
+ if(child<0){memset(&pending,0,sizeof pending);return -1;}
+ producer.pid=child;producer.serial=serial;producer.killed=0;
  ub_log(ID,UB_INFO,"queued native policy request %u: %s (owner PID%d)",serial,mode_name(mode),owner_pid);return 0;
 }
 static void producer_poll(void){
- int status;pid_t rc;if(pending.producer<=0)return;
- do{rc=waitpid(pending.producer,&status,WNOHANG);}while(rc<0&&errno==EINTR);
- if(rc==pending.producer){pending.producer=0;pending.producer_done=1;pending.producer_status=WIFEXITED(status)?WEXITSTATUS(status):128+WTERMSIG(status);
-  if(pending.producer_status)ub_log(ID,UB_ALWAYS,"EV producer ended with status %d; native acknowledgement remains authoritative",pending.producer_status);
- }else if(rc<0&&errno==ECHILD){pending.producer=0;pending.producer_done=1;pending.producer_status=-1;}
+ int status,code;pid_t rc;if(producer.pid<=0)return;
+ do{rc=waitpid(producer.pid,&status,WNOHANG);}while(rc<0&&errno==EINTR);
+ if(rc==producer.pid)code=WIFEXITED(status)?WEXITSTATUS(status):128+WTERMSIG(status);
+ else if(rc<0&&errno==ECHILD)code=-1;
+ else return;
+ if(pending.active&&pending.serial==producer.serial){pending.producer_done=1;pending.producer_status=code;}
+ if(code&&!producer.killed)ub_log(ID,UB_ALWAYS,"EV producer ended with status %d; native acknowledgement remains authoritative",code);
+ producer.pid=0;
+}
+/* A producer past its request's deadline, or of a request already given up,
+ * cannot help any more: end it so the next request is not held back. */
+static void producer_expire(void){
+ if(producer.pid<=0||producer.killed)return;
+ if(pending.active&&pending.serial==producer.serial&&(int32_t)(now_seconds()-pending.expires)<0)return;
+ if(!kill(producer.pid,SIGKILL)||errno==ESRCH){producer.killed=1;ub_log(ID,UB_ALWAYS,"EV producer PID%d for request %u stopped: its request is settled or past its deadline",(int)producer.pid,producer.serial);}
 }
 static void finish_native(void){
  char text[256],received_token[33],tail;unsigned sequence,mode;int result,eep_seen,eep_rc,fpc_seen,fpc_rc,n;
@@ -109,11 +126,8 @@ static void finish_native(void){
   * until reaped; never overwrite a packet while an older producer can read it. */
  if(!pending.producer_done)return;
  effective=pending.mode;auto_off=effective;menu_seq=pending.menu_seq;blocked=0;
- if(pending.reply[0]){
-  int rc=ub_setting_set(ID,"auto_off",mode_name(effective));
-  if(rc)snprintf(menu_message,sizeof menu_message,"applied; not saved to USB (%s)",ub_stick_error(rc));
-  else snprintf(menu_message,sizeof menu_message,"saved");
- }else snprintf(menu_message,sizeof menu_message,"ready");
+ if(pending.reply[0])save_choice();
+ else snprintf(menu_message,sizeof menu_message,unsaved?"applied; not saved to USB":"ready");
  ub_log(ID,UB_ALWAYS,"auto power-off %s confirmed by manager thread (EEP %d/%d, FPC %d/%d)",mode_name(effective),eep_seen,eep_rc,fpc_seen,fpc_rc);
  answer();pending.active=0;publish_status();
 }
@@ -136,7 +150,9 @@ static void menu_request(void){
  if(mode<0)return;
  if(mode==effective){
   memset(&pending,0,sizeof pending);pending.menu_seq=sequence;snprintf(pending.reply,sizeof pending.reply,"%s",reply);
-  snprintf(menu_message,sizeof menu_message,"already applied");answer();menu_seq=sequence;publish_status();return;
+  if(unsaved)save_choice();  /* applied earlier, its save failed: retry only the save */
+  else snprintf(menu_message,sizeof menu_message,"already applied");
+  answer();menu_seq=sequence;publish_status();return;
  }
  if(begin(mode,sequence,reply,expires)){
   memset(&pending,0,sizeof pending);pending.menu_seq=sequence;snprintf(pending.reply,sizeof pending.reply,"%s",reply);
@@ -144,10 +160,11 @@ static void menu_request(void){
  }
 }
 static void prepare(struct ub_part *part,struct ub_target *target){
- char program_sha[65];const struct ub_payload_variant *variant;int firmware185;
+ char program_sha[65],program_path[64];const struct ub_payload_variant *variant;int firmware185;
  if(!available){target->failed=1;return;}
  if(target->state[0])return;
- if(ub_hash_file("/usr/dtvrec/bin/apl_mgr",program_sha)||(variant=ub_payload_variant(part->payload,program_sha))==0){target->failed=1;ub_log(ID,UB_ALWAYS,"native power control unavailable: manager build differs");return;}
+ snprintf(program_path,sizeof program_path,"/proc/%d/exe",target->pid);
+ if(ub_hash_file(program_path,program_sha)||(variant=ub_payload_variant(part->payload,program_sha))==0){target->failed=1;ub_log(ID,UB_ALWAYS,"native power control unavailable: manager build differs");return;}
  firmware185=!strcmp(variant->firmware,"1.85");
  for(unsigned i=0;i<UB_POWER_LIBRARY_GUARD_COUNT;i++){
   const struct ub_power_library_guard *guard=&ub_power_library_guards[i];char suffix[64],mapped[256],sha[65],allowed[256];uint32_t base;
@@ -171,12 +188,16 @@ static void control_step(struct ub_part *part,struct ub_target *unused){
   return;
  }
  if(owner_pid!=target->pid||owner_born!=target->born){
-  if(pending.active){unknown("manager instance changed during request");return;}
+  /* The request belonged to the previous manager. Its outcome stays unknown,
+   * but it must not block the new instance: that one starts from its stock
+   * policy and receives the configured one like any new manager. */
+  if(pending.active){unknown("manager instance changed during request");memset(&pending,0,sizeof pending);}
   owner_pid=target->pid;owner_born=target->born;effective=-1;initial_sent=0;blocked=0;publish_status();
  }
- if(!initial_sent){initial_sent=1;if(begin(auto_off,0,0,now_seconds()+15u))unknown("initial policy request could not be sent");}
+ if(!initial_sent&&producer.pid<=0){initial_sent=1;if(begin(auto_off,0,0,now_seconds()+15u))unknown("initial policy request could not be sent");}
  finish_native();
  if(pending.active&&(int32_t)(now_seconds()-pending.expires)>=0&&!pending.unknown)unknown("native acknowledgement deadline elapsed");
+ producer_expire();
  menu_request();
 }
 static void start(struct ub_module *module){

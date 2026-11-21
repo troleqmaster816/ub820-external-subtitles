@@ -49,7 +49,7 @@ int main(void){
  assert(sub_ok()==1&&s.listing==LIST_POWER&&s.drop_sel==0);
  assert(list_count()==2&&!strcmp(list_label(0),"On")&&!strcmp(list_label(1),"Off"));checks++;
  memset(hs.action_session,'a',UB_ACTION_SESSION);hs.action_session[UB_ACTION_SESSION]=0;
- put_power(power_enabled_path,"");put_power(power_status_path,"0 on ready\n");
+ put_power(power_enabled_path,"");put_power(power_status_path,"0 on saved ready\n");
  s.drop_sel=1;assert(sub_ok()==1&&s.listing==LIST_NONE&&hs.power_wait&&hs.power_choice==1);checks++;
  assert(ub_action_receive(UB_POWER_REQUEST,body,sizeof body,reply,sizeof reply)&&!strcmp(body,"set off 1\n"));checks++;
  put_power(power_status_path,"1 off saved\n");ha_power_poll(&hs);

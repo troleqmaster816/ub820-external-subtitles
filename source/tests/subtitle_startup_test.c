@@ -1,42 +1,72 @@
 /* Include the real supervisor step, with only its OS/device transport mocked. */
 #define _GNU_SOURCE
 #define UB_HOST_TEST 1
+/* The helper's private RAM records go through the real file system here. */
+#define UB_SUB_TEST_PREFIX "/tmp/ub820-startup-test."
+#define UB_SUB_HINT_FILE UB_SUB_TEST_PREFIX "hint"
+#define UB_SUB_SELECTION_FILE UB_SUB_TEST_PREFIX "selection"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <errno.h>
+#include <signal.h>
 #include <sys/file.h>
 #include <sys/wait.h>
 #include <assert.h>
 #include "ub.h"
 #include "../modules/external_subtitles/protocol.h"
 static int loaded_value,status_present=1,status_active,style_result,style_calls,on_writes,gate_writes,load_events,maps_done;
-static int preference_writes;
+static int preference_writes,font_fail,font_publications,lock_busy,child_running,child_status,killed,marker_created,marker_removed;
+static int dat_open_error;
+static unsigned char last_dat[8];
+static int is_record(const char *path){return !strncmp(path,UB_SUB_TEST_PREFIX,strlen(UB_SUB_TEST_PREFIX));}
 static int test_open(const char *path,int flags,...){
- (void)flags;
+ if(is_record(path)){va_list a;va_start(a,flags);int mode=(flags&O_CREAT)?va_arg(a,int):0;va_end(a);return open(path,flags,mode);}
  if(!strcmp(path,UB_STATUS_FILE))return status_present?100:-1;
  if(!strcmp(path,"/proc/42/mem"))return 101;
  if(!strcmp(path,"/proc/42/maps")){maps_done=0;return 102;}
- if(!strcmp(path,"/tmp/ti_font_size"))return 103;
+ if(!strcmp(path,"/tmp/ti_font_size.tmp"))return font_fail?-1:103;
  if(!strcmp(path,"/tmp/apl_play3dlib_3ddynamic_lock"))return 104;
- if(!strcmp(path,"/tmp/apl_play3dlib_play_dat.dat"))return 105;
+ if(!strcmp(path,"/tmp/apl_play3dlib_play_dat.dat")){if(dat_open_error&&!(flags&(O_WRONLY|O_RDWR))){errno=dat_open_error;return -1;}return 105;}
+ if(!strcmp(path,"/tmp/ub820_srt_precision.off")){assert(flags&O_CREAT);marker_created++;return 106;}
  return -1;
 }
 static ssize_t test_read(int fd,void *buf,size_t size){
+ if(fd<100)return read(fd,buf,size); /* a real record file */
  if(fd==100){struct ub_status status={0};status.magic=UB_MAGIC;status.version=UB_VERSION;status.active=status_active;assert(size==sizeof status);memcpy(buf,&status,size);return size;}
  if(fd==102){const char *maps="293a0000-293d8000 r-xp 00000000 00:01 1 /known/libtiwin.so.0.0.0\n";if(maps_done)return 0;maps_done=1;assert(size>strlen(maps));memcpy(buf,maps,strlen(maps));return strlen(maps);}
  if(fd==105){memset(buf,0,size);return size;}
  return -1;
 }
 static ssize_t test_pread(int fd,void *buf,size_t size,off_t offset){assert(fd==101 && offset==0x434e8 && size==1);*(unsigned char *)buf=loaded_value;return 1;}
-static ssize_t test_write(int fd,const void *buf,size_t size){(void)buf;if(fd==105)on_writes++;else assert(fd==103);return size;}
+static ssize_t test_write(int fd,const void *buf,size_t size){
+ if(fd<100)return write(fd,buf,size);
+ if(fd==105){on_writes++;if(size==8)memcpy(last_dat,buf,8);return size;}
+ assert(fd==103&&size==4&&!memcmp(buf,"122\n",4));return size;
+}
 static ssize_t test_pwrite(int fd,const void *buf,size_t size,off_t offset){(void)buf;assert(fd==101 && size==4 && offset==0x43504);gate_writes++;return size;}
-static int test_close(int fd){(void)fd;return 0;}
-static int test_flock(int fd,int flags){(void)fd;(void)flags;return 0;}
-static pid_t test_fork(void){load_events++;return 123;}
-static pid_t test_waitpid(pid_t pid,int *status,int flags){(void)flags;*status=0;return pid;}
+static int test_close(int fd){return fd<100?close(fd):0;}
+/* The 1 Hz supervisor must never wait for the play-data lock. */
+static int test_flock(int fd,int flags){
+ assert(fd==104);if(flags&LOCK_UN)return 0;
+ assert((flags&LOCK_EX)&&(flags&LOCK_NB));
+ if(lock_busy){errno=EWOULDBLOCK;return -1;}return 0;
+}
+static int test_rename(const char *from,const char *to){
+ if(is_record(from)&&is_record(to))return rename(from,to);
+ assert(!strcmp(from,"/tmp/ti_font_size.tmp")&&!strcmp(to,"/tmp/ti_font_size"));font_publications++;return 0;
+}
+static int test_unlink(const char *path){if(is_record(path))return unlink(path);if(!strcmp(path,"/tmp/ub820_srt_precision.off"))marker_removed++;return 0;}
+static int fork_failed;
+static pid_t test_fork(void){load_events++;return fork_failed?-1:123;}
+/* ...and never wait for evtSend: only nonblocking reaping. */
+static pid_t test_waitpid(pid_t pid,int *status,int flags){
+ assert(pid==123&&flags==WNOHANG);if(child_running)return 0;*status=child_status;return pid;
+}
+static int test_kill(pid_t pid,int sig){if(pid==123){assert(sig==SIGKILL);killed++;return 0;}return kill(pid,sig);}
 #define open test_open
 #define read test_read
 #define pread test_pread
@@ -44,8 +74,11 @@ static pid_t test_waitpid(pid_t pid,int *status,int flags){(void)flags;*status=0
 #define pwrite test_pwrite
 #define close test_close
 #define flock test_flock
+#define rename test_rename
+#define unlink test_unlink
 #define fork test_fork
 #define waitpid test_waitpid
+#define kill test_kill
 #include "../modules/external_subtitles/module.c"
 #undef open
 #undef read
@@ -54,13 +87,26 @@ static pid_t test_waitpid(pid_t pid,int *status,int flags){(void)flags;*status=0
 #undef pwrite
 #undef close
 #undef flock
+#undef rename
+#undef unlink
 #undef fork
 #undef waitpid
+#undef kill
 int ub_hash_file(const char *path,char result[65]){assert(!strcmp(path,"/known/libtiwin.so.0.0.0"));strcpy(result,"6d2216fcd15814defdfc2357ddb5b517bf85398d26d1f530d61bed22087994bf");return 0;}
 int ub_patch_code(int pid,const struct ub_code_patch *patches,unsigned count){(void)patches;assert(pid==42 && count==6);style_calls++;return style_result;}
 const char *ub_patch_stage(void){return "test";}
 void ub_log(const char *module,int level,const char *format,...){(void)module;(void)level;(void)format;}
 int ub_setting_set(const char *module,const char *key,const char *value){(void)module;(void)key;(void)value;preference_writes++;return 0;}
+/* Subtitle memory: startup never saves a preference or touches the stick. */
+int ub_setting_stage(const char *module,const char *key,const char *value){(void)module;(void)key;(void)value;preference_writes++;return 0;}
+int ub_setting_flush(void){preference_writes++;return 0;}
+int ub_stick_load(const char *from,const char *to,int quiet){(void)from;(void)to;(void)quiet;abort();}
+int ub_stick_write(const char *from,const char *to){(void)from;(void)to;abort();}
+const char *ub_stick_error(int code){(void)code;return "test";}
+/* Most cases have no disc, so the disc memory stays inactive. */
+static const char *disc_stub;static int disc_lookups;
+int ub_disc_root(char *out,size_t size){disc_lookups++;if(!disc_stub)return 0;snprintf(out,size,"/mnt/odd");return 1;}
+int ub_disc_id(const char *root,char id[33]){assert(disc_stub&&!strcmp(root,"/mnt/odd"));memcpy(id,disc_stub,33);return 0;}
 /* Retain the actual parts descriptor for its lifecycle-policy assertion.
  * Its unrelated row/translation callbacks must not run in this fixture. */
 const struct ub_payload ub_payload_external_subtitles_precision_source={0};
@@ -76,20 +122,118 @@ int ub_install_payload(int pid,const struct ub_payload *payload){(void)pid;(void
 const char *ub_install_stage(void){abort();}
 static struct ub_target target(void){struct ub_target value={0};value.pid=42;return value;}
 int main(void){
- struct ub_target t=target();struct ub_part part={0};
+ struct ub_target t=target();struct ub_part part={0};unsigned cases=0;
  /* Disc sessions end normally; their clock must remain eligible next time. */
  assert(!parts[0].guarded && !strcmp(parts[0].process,"apl_bdv"));
  /* A worker status published immediately after injection cannot skip setup. */
- engine_step(&part,&t);assert(style_calls==1 && t.state[2]==1 && on_writes==1 && gate_writes==1 && load_events==1);
- engine_step(&part,&t);assert(style_calls==1 && t.state[0]==15 && on_writes==1 && load_events==1);
+ engine_step(&part,&t);assert(style_calls==1 && t.state[2]==1 && on_writes==1 && gate_writes==1 && load_events==1 && font_publications==1);
+ engine_step(&part,&t);assert(style_calls==1 && t.state[0]==15 && on_writes==1 && load_events==1);cases++;
  /* An already-loaded engine gets style verification without forcing On. */
  t=target();loaded_value=1;engine_step(&part,&t);assert(style_calls==2 && t.state[2]==1 && t.state[0]==15 && on_writes==1 && load_events==1);
- t=target();loaded_value=0;status_active=1;engine_step(&part,&t);assert(style_calls==3 && t.state[0]==15 && on_writes==1 && load_events==1);
+ t=target();loaded_value=0;status_active=1;engine_step(&part,&t);assert(style_calls==3 && t.state[0]==15 && on_writes==1 && load_events==1);cases++;
  /* A busy code range defers startup; successful retry styles exactly once. */
  t=target();status_active=0;style_result=-1;engine_step(&part,&t);assert(!t.state[2] && !t.state[0] && on_writes==1 && load_events==1);
  style_result=0;engine_step(&part,&t);assert(t.state[2]==1 && on_writes==2 && load_events==2);
- t=target();style_result=-2;engine_step(&part,&t);assert(t.failed && t.state[0]==15 && on_writes==2 && load_events==2);
+ t=target();style_result=-2;engine_step(&part,&t);assert(t.failed && t.state[0]==15 && on_writes==2 && load_events==2);cases++;
  assert(!preference_writes); /* Startup is not a confirmed menu choice. */
- puts("subtitle_startup_test passed: early status cannot skip style; loaded/user-Off preserved; retry/quarantine handled; no preference save");
+ /* An unreadable (not missing) play-data file is never rewritten with zeros;
+  * a missing one is created from zero as before. */
+ {int writes=on_writes,events=load_events;t=target();t.state[2]=t.state[3]=1;dat_open_error=EIO;
+  engine_step(&part,&t);assert(on_writes==writes&&load_events==events&&!t.state[0]&&t.state[7]==1);
+  dat_open_error=ENOENT;engine_step(&part,&t);assert(on_writes==writes+1&&load_events==events+1);
+  dat_open_error=0;on_writes=writes;load_events=events;cases++;}
+ /* Font calibration: a failed write defers startup and is retried alone,
+  * without repeating the code transaction; it is published by rename. */
+ status_present=0;style_result=0;t=target();font_fail=1;int styled=style_calls,published=font_publications;
+ engine_step(&part,&t);assert(style_calls==styled+1 && t.state[2]==1 && on_writes==2 && load_events==2 && font_publications==published);
+ engine_step(&part,&t);assert(style_calls==styled+1 && on_writes==2 && load_events==2);
+ font_fail=0;engine_step(&part,&t);assert(style_calls==styled+1 && font_publications==published+1 && on_writes==3 && load_events==3);cases++;
+ /* A calibration that never succeeds does not block subtitles for ever. */
+ t=target();font_fail=1;child_running=0;
+ for(int i=0;i<15&&load_events==3;i++)engine_step(&part,&t);
+ assert(load_events==4 && style_calls==styled+2);font_fail=0;cases++;
+ /* A busy play-data lock defers startup to a later tick, no wait, no event. */
+ t=target();lock_busy=1;int events=load_events,writes=on_writes;
+ engine_step(&part,&t);assert(load_events==events && on_writes==writes && !t.state[0]);
+ lock_busy=0;engine_step(&part,&t);assert(load_events==events+1 && on_writes==writes+1 && t.state[0]==1);cases++;
+ /* A running evtSend is never waited for, and no second event is sent. */
+ child_running=1;for(int i=0;i<4;i++)engine_step(&part,&t);
+ assert(load_events==events+1 && !killed);cases++;
+ /* A hung evtSend is stopped; its unknown result is reconciled with the engine
+  * state for a tick before a single new event. */
+ engine_step(&part,&t);assert(killed==1 && load_events==events+1);
+ child_running=0;child_status=SIGKILL;engine_step(&part,&t);assert(load_events==events+1);
+ engine_step(&part,&t);assert(load_events==events+2 && t.state[0]==2);cases++;
+ /* ...and evidence of a loaded engine ends startup with no new event. */
+ child_status=0;loaded_value=1;engine_step(&part,&t);assert(load_events==events+2 && t.state[0]==15);loaded_value=0;cases++;
+ /* A lock held longer than any failure limit still only defers. */
+ t=target();lock_busy=1;events=load_events;
+ for(int i=0;i<40;i++)engine_step(&part,&t);
+ assert(load_events==events && !t.state[0]);
+ lock_busy=0;engine_step(&part,&t);assert(load_events==events+1 && t.state[0]==1);cases++;
+ /* That playback ends while its event runs: the every-tick part reaps it
+  * (stopping it at the deadline), and its unknown result does not hold back
+  * the next instance. */
+ {struct ub_part loader={0};int k=killed;child_running=1;evt_polled=0;
+  for(int i=0;i<EVT_DEADLINE;i++)evt_step(&loader,0);
+  assert(killed==k+1 && evt_child);
+  child_running=0;child_status=SIGKILL;evt_step(&loader,0);assert(!evt_child);
+  struct ub_target next=target();next.born=7;events=load_events;
+  engine_step(&part,&next);assert(load_events==events+1 && next.state[0]==1);cases++;}
+ /* precision=0 disables the source/client; precision=1 permits the source
+  * and removes the engine marker. */
+ precision=0;engine_prepare(&part,&t);assert(marker_created==1 && !marker_removed);
+ t=target();precision_prepare(&part,&t);assert(t.failed);
+ precision=1;engine_prepare(&part,&t);assert(marker_created==1 && marker_removed==1);
+ t=target();precision_prepare(&part,&t);assert(!t.failed);cases++;
+ /* An idle backend status predates delivery. Only a successful sender can
+  * use it to end retries. Never retry after the engine becomes active. */
+ t=target();t.born=9;child_status=0;status_present=1;events=load_events;
+ fork_failed=1;engine_step(&part,&t);assert(load_events==events+1&&!evt_child);
+ fork_failed=0;engine_step(&part,&t);assert(load_events==events+2&&evt_child);
+ child_status=1<<8;engine_step(&part,&t);assert(load_events==events+3&&evt_child);
+ child_status=0;engine_step(&part,&t);assert(!evt_child&&t.state[0]==15&&load_events==events+3);cases++;
+ t=target();t.born=10;engine_step(&part,&t);assert(evt_child);
+ child_status=1<<8;status_active=1;engine_step(&part,&t);
+ assert(!evt_child&&t.state[0]==15&&load_events==events+4);cases++;
+ /* Disc memory: a known disc hands its file to the payload and starts with
+  * its sync/charcode; an unknown disc or memory=off starts at 0/UTF-8. */
+ {static const char A[]="0123456789abcdef0123456789abcdef",B[]="fedcba9876543210fedcba9876543210";
+  struct ub_sub_hint h;
+  unlink(UB_SUB_HINT_FILE);memset(&memory,0,sizeof memory);
+  snprintf(memory.last_dir,sizeof memory.last_dir,"/mnt/usb/Filmy");
+  assert(sub_memory_put(&memory,B,"/mnt/usb/b.srt",0,0)==1&&sub_memory_put(&memory,A,"/mnt/usb/Filmy/a.srt",1,-5)==1);
+  assert(sub_memory_front(&memory,1)&&!strcmp(memory.disc[0].id,B));
+  disc_stub=A;child_status=0;status_present=0;status_active=0;loaded_value=0;
+  t=target();t.born=77;engine_prepare(&part,&t);
+  assert(!ub_br_private_read(UB_SUB_HINT_FILE,&h,sizeof h)&&ub_sub_hint_valid(&h,42,77));
+  assert(h.flags==(UB_SUB_HINT_START_DIR|UB_SUB_HINT_AUTOLOAD)&&!strcmp(h.start_dir,"/mnt/usb/Filmy"));
+  assert(!strcmp(h.autoload,"/mnt/usb/Filmy/a.srt")&&h.sync==-5&&h.charcode==1);
+  assert(!strcmp(disc_cur,A)&&!strcmp(memory.disc[0].id,A)); /* most recent in RAM */
+  t.state[2]=t.state[3]=1;memset(last_dat,0,8);engine_step(&part,&t);
+  assert(t.state[0]==1&&(signed char)last_dat[3]==-5&&last_dat[4]==1&&last_dat[5]==1&&(signed char)last_dat[0]==disc_style.position);
+  assert(prefs.armed&&prefs.base[3]==last_dat[3]);cases++;
+  /* the poll learns a file chosen for this disc, with play_dat's current
+   * sync/charcode (the fixture reads zeros), and schedules one save */
+  {struct ub_sub_selection sel;memset(&sel,0,sizeof sel);
+   sel.magic=UB_SUB_SELECTION_MAGIC;sel.version=UB_SUB_RECORD_VERSION;sel.pid=42;sel.birth_lo=77;sel.seq=1;sel.kind=UB_SUB_KIND_CHOSEN;
+   strcpy(sel.path,"/mnt/usb/Nowe/new.srt");assert(!ub_br_private_write(UB_SUB_SELECTION_FILE,&sel,sizeof sel));
+   memset(&memory_save,0,sizeof memory_save);subtitle_memory_poll(&t);
+   assert(!strcmp(memory.disc[0].id,A)&&!strcmp(memory.disc[0].path,"/mnt/usb/Nowe/new.srt")&&!memory.disc[0].sync&&!memory.disc[0].charcode);
+   assert(!strcmp(memory.last_dir,"/mnt/usb/Nowe")&&memory_save.dirty&&last_kind==UB_SUB_KIND_CHOSEN&&!learn_pending);
+   /* the same record again teaches nothing */
+   memset(&memory_save,0,sizeof memory_save);subtitle_memory_poll(&t);assert(!memory_save.dirty);
+   unlink(UB_SUB_SELECTION_FILE);snprintf(memory.last_dir,sizeof memory.last_dir,"/mnt/usb/Filmy");cases++;}
+  /* unknown disc: folder only, stock sync/charcode */
+  disc_stub="00000000000000000000000000000001";t=target();t.born=78;engine_prepare(&part,&t);
+  assert(!ub_br_private_read(UB_SUB_HINT_FILE,&h,sizeof h)&&h.flags==UB_SUB_HINT_START_DIR&&!h.autoload[0]);
+  t.state[2]=t.state[3]=1;memset(last_dat,0xee,8);engine_step(&part,&t);assert(!last_dat[3]&&!last_dat[4]&&last_dat[5]==1);
+  /* memory=off: the disc is not even looked up */
+  disc_memory=0;disc_stub=A;{int n=disc_lookups;t=target();t.born=79;engine_prepare(&part,&t);assert(disc_lookups==n&&!disc_cur[0]);}
+  assert(!ub_br_private_read(UB_SUB_HINT_FILE,&h,sizeof h)&&h.flags==UB_SUB_HINT_START_DIR);
+  /* nothing to hand over: no hint file at all */
+  memory.last_dir[0]=0;t=target();t.born=80;engine_prepare(&part,&t);assert(access(UB_SUB_HINT_FILE,F_OK));
+  disc_memory=1;disc_stub=0;cases++;}
+ printf("subtitle_startup_test passed: %u cases; early status cannot skip style; loaded/user-Off preserved; retry/quarantine handled; no preference save; calibration retried alone; nonblocking lock and evtSend; precision marker\n",cases);
  return 0;
 }

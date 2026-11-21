@@ -1,0 +1,9 @@
+{
+  "id": "native_events",
+  "order": 12,
+  "assets": [{"name":"bd_preload", "source":"../region/bd_preload.c", "libraries":["dl"]}],
+  "payloads": [
+    {"name":"launch", "source":"../region/launch.c", "manifest":"../region/launch_hooks.json"},
+    {"name":"mgr_launch", "source":"mgr_launch.c", "manifest":"mgr_launch_hooks.json"}
+  ]
+}

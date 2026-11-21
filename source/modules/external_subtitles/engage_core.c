@@ -42,6 +42,7 @@
 #include <sys/syscall.h>
 #include "injector.h"
 #include "log.h"
+#include "sys.h"
 
 #ifndef EVT_PATH
 #define EVT_PATH "/usr/dtvrec/bin/evtSend"
@@ -253,14 +254,22 @@ static int playdat_byte5(int *out) {
     return rc;
 }
 
-static int playdat_set_on(void) {
+/* lock_op LOCK_EX waits (this program); LOCK_EX|LOCK_NB returns 1 while
+ * another holder has the lock, so a periodic caller retries later. Bytes:
+ * 0 position (-8 here, the configured one for the helper), 2 size (0 Normal,
+ * 1 Small, 2 Large), 3 sync seconds, 4 character code (0 UTF-8, 1 GB2312),
+ * 5 external subtitles on. written: the 8 bytes as stored, when rc is 0. */
+static int playdat_write_on(int lock_op, int position, int size, int sync, int charcode, unsigned char written[8]) {
     int lf, fd, rc = -1;
     unsigned char b[8];
     lf = open(PLAY_LOCK, O_CREAT | O_RDWR, 0666);
     if (lf < 0) return -1;
-    if (flock(lf, LOCK_EX) != 0) { close(lf); return -1; }
+    if (flock(lf, lock_op) != 0) { int busy = errno == EWOULDBLOCK; close(lf); return busy ? 1 : -1; }
     memset(b, 0, sizeof b);
     fd = open(PLAY_DAT, O_RDONLY);
+    /* Only a missing file starts from zero. Any other open failure would
+     * rewrite the player's bytes 1, 6 and 7 with zeros (O_TRUNC below). */
+    if (fd < 0 && errno != ENOENT) { flock(lf, LOCK_UN); close(lf); return -1; }
     if (fd >= 0) {
         if (read(fd, b, sizeof b) != (ssize_t)sizeof b) { close(fd); flock(lf, LOCK_UN); close(lf); return -1; }
         close(fd);
@@ -269,40 +278,60 @@ static int playdat_set_on(void) {
      * subtitle baseline (measured on screen); size index 0 = 52 px scaled
      * by /tmp/ti_font_size=122 to ~63 units (cap ~116 px, native 116).
      * No sync, UTF-8, external on.  Preserve bytes 1, 6, 7. */
-    b[0] = (unsigned char)-8;
-    b[2] = 0;
-    b[3] = 0;
-    b[4] = 0;
+    b[0] = (unsigned char)(signed char)position;
+    b[2] = (unsigned char)size;
+    b[3] = (unsigned char)(signed char)sync;
+    b[4] = (unsigned char)charcode;
     b[5] = 1;
     fd = open(PLAY_DAT, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd >= 0) {
         if (write(fd, b, sizeof b) == (ssize_t)sizeof b) rc = 0;
+        if (!rc && written) memcpy(written, b, sizeof b);
         close(fd);
     }
     flock(lf, LOCK_UN);
     close(lf);
     return rc;
 }
+static int playdat_set_on(void) { return playdat_write_on(LOCK_EX, -8, 0, 0, 0, NULL) ? -1 : 0; }
 
-static int run_evt(char *const argv[]) {
+/* Start evtSend without waiting for it. */
+static pid_t evt_start(char *const argv[]) {
     pid_t p = fork();
-    int st;
-    if (p < 0) return -1;
     if (p == 0) {
+        if (ub_child_sanitize(7)) _exit(126);
         execve(argv[0], argv, NULL);
         _exit(127);
     }
+    return p;
+}
+
+/* Nonblocking reap: 0 still running, 1 finished (*code is its exit status,
+ * -1 if a signal ended it), -1 the child can no longer be reaped. */
+static int evt_reap(pid_t p, int *code) {
+    int st;
+    pid_t r = waitpid(p, &st, WNOHANG);
+    if (r == 0) return 0;
+    if (r != p) return r < 0 && errno == EINTR ? 0 : -1;
+    *code = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+    return 1;
+}
+
+static int run_evt(char *const argv[]) {
+    pid_t p = evt_start(argv);
+    int st;
+    if (p < 0) return -1;
     if (waitpid(p, &st, 0) < 0) return -1;
     return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 }
 
 /* 0xb233: start the SRT worker (sender 0xc352, ctl 0x3b, kind 1, type 1). */
+static char *const evt_load_argv[] = {
+    EVT_PATH, "0xc352", "0x44", "0xc44c", "0x1", "0x0", "0x1",
+    "0x3b", "0xb233", NULL
+};
 static int evt_load(void) {
-    char *const argv[] = {
-        EVT_PATH, "0xc352", "0x44", "0xc44c", "0x1", "0x0", "0x1",
-        "0x3b", "0xb233", NULL
-    };
-    return run_evt(argv);
+    return run_evt(evt_load_argv);
 }
 
 /* 0x8eb5: External Subtitle on/off toggle (sender 0xc3b5, ctl 0x39, kind 1,

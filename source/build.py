@@ -12,7 +12,7 @@ Each modules/<id>/ holds module.json, module.c (helper side) and optional
 payload sources with a hook manifest. See CONTRIBUTING.md.
 """
 from pathlib import Path
-import hashlib,io,json,os,struct,subprocess,sys
+import hashlib,io,json,os,re,struct,subprocess,sys
 ROOT=Path(__file__).resolve().parent
 CORE=ROOT/'core';MODULES=ROOT/'modules';GEN=ROOT/'generated';BUILD=ROOT/'build'
 # Directories holding the stock player executables (apl_dispsrv, apl_mgr, ...)
@@ -53,11 +53,51 @@ def build_registry():
  GEN.mkdir(exist_ok=True)
  (GEN/'registry.c').write_text(registry,newline='\n')
 
+def check_embedded_elf_alignment(binary,generated):
+ """Check embedded ELF addresses in the final ARM executable after linking."""
+ images=re.findall(r'static const unsigned char (\w+_elf)\[\]=\{([^}]*)\};',generated)
+ if not images:raise ValueError('No embedded ELF images found in generated payloads')
+ if binary[:6]!=b'\x7fELF\x01\x01':raise ValueError('Expected a little-endian ELF32 helper')
+ phoff=struct.unpack_from('<I',binary,28)[0]
+ entry_size,count=struct.unpack_from('<HH',binary,42)
+ loads=[]
+ for index in range(count):
+  kind,offset,address,_,size=struct.unpack_from('<IIIII',binary,phoff+index*entry_size)
+  if kind==1:loads.append((offset,address,size))
+ for name,text in images:
+  image=bytes(int(byte,16) for byte in text.split(','))
+  offset=binary.find(image)
+  if offset<0:raise ValueError(f'{name}: embedded ELF missing from helper')
+  address=next((va+offset-at for at,va,size in loads if at<=offset and offset+len(image)<=at+size),None)
+  if address is None:raise ValueError(f'{name}: embedded ELF outside a loadable segment')
+  shoff=struct.unpack_from('<I',image,32)[0]
+  if address%8 or (address+shoff)%4:
+   raise ValueError(f'{name}: unaligned ELF at {address:#x}, section table at {address+shoff:#x}')
+  phoff=struct.unpack_from('<I',image,28)[0]
+  phsize,phnum,shsize,shnum=struct.unpack_from('<HHHH',image,42)
+  if phnum and (phoff%4 or phsize!=32 or phoff+phsize*phnum>len(image)):
+   raise ValueError(f'{name}: invalid program header table')
+  if shsize!=40 or shoff+shsize*shnum>len(image):
+   raise ValueError(f'{name}: invalid section header table')
+  entries={2:16,4:12,5:4,6:8,9:8,11:16}
+  for i in range(shnum):
+   fields=struct.unpack_from('<10I',image,shoff+i*shsize)
+   kind,at,size,entry=fields[1],fields[4],fields[5],fields[9]
+   if kind!=8 and (at>len(image) or size>len(image)-at):
+    raise ValueError(f'{name}: section {i} outside image')
+   if kind in entries and (at%4 or size%entries[kind] or entry!=entries[kind]):
+    raise ValueError(f'{name}: unaligned or malformed structured section {i}')
+ return len(images)
+
 def build_helper():
  out=BUILD/'engage'
- args=['arm-linux-gnueabihf-gcc','-std=gnu11','-static','-s',*CFLAGS,'-fno-strict-aliasing','-ffunction-sections','-fdata-sections','-Wl,--gc-sections','-Wno-unused-function',
+ # 64-bit off_t is required (/proc/<pid>/mem offsets >= 0x80000000); do not
+ # depend on the cross compiler's default (Ubuntu's armhf gcc predefines it).
+ args=['arm-linux-gnueabihf-gcc','-std=gnu11','-static','-s',*CFLAGS,'-D_FILE_OFFSET_BITS=64','-D_TIME_BITS=64','-fno-strict-aliasing','-ffunction-sections','-fdata-sections','-Wl,--gc-sections','-Wno-unused-function',
        '-I'+linux(CORE),'-I'+linux(GEN),*[linux(s) for s in helper_sources()],'-o',linux(out)]
  run(args,'helper-compile.log')
+ checked=check_embedded_elf_alignment(out.read_bytes(),(GEN/'payloads.c').read_text())
+ (BUILD/'helper-alignment.log').write_text(f'{checked} embedded ELF images aligned in final ARM executable\n')
  smoke=run(['qemu-arm',linux(out),'--selftest'],'helper-selftest.log')
  listing=run(['qemu-arm',linux(out),'--modules'],'helper-modules.log')
  # Exercise file hashing using a generated text fixture, independent of media.
@@ -160,9 +200,10 @@ def build_assets():
   for asset in meta.get('assets',[]):
    label=mid+'_'+asset['name'];symbol='ub_asset_'+label
    out=BUILD/(label+'.so')
+   libraries=[libc.parent/('lib'+name+'-2.20-2014.11.so') for name in asset.get('libraries',[])]
    run(['arm-linux-gnueabihf-gcc','-std=gnu11','-shared','-fPIC','-nostdlib','-fno-stack-protector',*CFLAGS,
         '-Wl,--hash-style=sysv','-Wl,--build-id=none','-Wl,-z,defs','-I'+linux(d),'-I'+linux(CORE),
-        '-o',linux(out),linux(d/asset['source']),linux(libc),'-lgcc'],label+'-compile.log')
+        '-o',linux(out),linux(d/asset['source']),*[linux(p) for p in libraries],linux(libc),'-lgcc'],label+'-compile.log')
    blob=out.read_bytes();sha=hashlib.sha256(blob).hexdigest()
    elf=ELFFile(io.BytesIO(blob));dynsym=elf.get_section_by_name('.dynsym')
    imports=sorted(s.name for s in dynsym.iter_symbols() if s.name and s['st_shndx']=='SHN_UNDEF')
@@ -173,7 +214,7 @@ def build_assets():
    body+='const size_t %s_size=sizeof %s;\nconst char %s_sha256[]="%s";\n'%(symbol,symbol,symbol,sha)
    header+='extern const unsigned char %s[];\nextern const size_t %s_size;\nextern const char %s_sha256[];\n'%(symbol,symbol,symbol)
    reports.append({'asset':label,'sha256':sha,'bytes':len(blob),'undefined_imports':imports,'version_requirements':versions,
-                   'linked_against':{libc.name:hashlib.sha256(libc.read_bytes()).hexdigest()}})
+                   'linked_against':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in [libc,*libraries]}})
  (GEN/'assets.h').write_text(header+'#endif\n',newline='\n')
  (GEN/'assets.c').write_text(body,newline='\n')
  return reports
@@ -219,7 +260,7 @@ def full_build():
   return {'target':addr,'length':size,'replacement':raw['replacement'],'original_pointer':raw['original_pointer'],
           'expected':expected,'trampoline':tramp,'relocated_literals':rel,
           'decoded':[{'address':hex(x.address),'mnemonic':x.mnemonic,'operands':x.op_str} for x in ins]}
- def cblob(name,data):return 'static const unsigned char '+name+'[]={'+','.join('0x%02x'%b for b in data)+'};\n'
+ def cblob(name,data):return '_Alignas(8) static const unsigned char '+name+'[]={'+','.join('0x%02x'%b for b in data)+'};\n'
  def compile_payload(d,name,source):
   out=BUILD/f'{d.name}_{name}.so'
   run(['arm-linux-gnueabihf-gcc','-shared','-fPIC','-nostdlib','-fno-stack-protector',*CFLAGS,'-Wl,--hash-style=sysv','-Wl,--build-id=none','-I'+linux(d),'-I'+linux(CORE),'-o',linux(out),linux(d/source)],f'{d.name}_{name}-compile.log')

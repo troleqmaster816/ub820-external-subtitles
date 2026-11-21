@@ -41,6 +41,17 @@ has loaded and before the first tick installs any payload. SSH uses order 5
 for optional automatic startup; logging uses 10 for its initial persistence.
 Both full and `--helper` builds regenerate the registry from module metadata.
 
+Every helper build checks the addresses of all embedded ELF images in the
+final ARM executable. An unaligned image or section table fails the build.
+Host tests use the alignment sanitizer and stop on an invalid aligned access.
+`elf_alignment_test` also parses the generated images and checks rejection
+of misaligned inputs. An ARM/QEMU run covers that parser separately.
+
+When reviewing binary data, check the alignment of its storage and file
+offsets before casting bytes to structures. Inspect the linked ARM artifact
+when generated data or its layout changes. Record which startup paths and
+on-device operations were actually exercised.
+
 ## The interface (`source/core/ub.h`)
 
 A module (`struct ub_module`) has an id, a one-line summary, a default

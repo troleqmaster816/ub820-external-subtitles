@@ -18,29 +18,58 @@
 #include "action_ipc.h"
 
 #define HA_SSH_ENABLED "/tmp/ub820_ssh.enabled"
+struct ha_preference {struct ub_action_revision revision;int retry;};
 struct helper_state {
+ struct ha_preference region_pref,dvd_pref,netflix_pref;
  char action_session[UB_ACTION_SESSION+1];
  uint32_t region_deadline,dvd_deadline,netflix_deadline,ssh_deadline,save_deadline,power_deadline,cpu_deadline;
  unsigned int ssh_seq,ssh_counter;
  int ssh_enabled,ssh_running; unsigned int ssh_wait;
- int log_always; unsigned int save_seq,save_ticks,save_counter;
- int region_known,region_auto; char region_choice[8]; unsigned int region_disc,region_player,region_seq,region_wait,region_counter;
- int netflix_known; unsigned int netflix_choice,netflix_seq,netflix_wait,netflix_counter;
+ int log_always,log_off; unsigned int save_seq,save_ticks,save_counter;  /* log_off: no UB_LOG_MODE, the log module is disabled */
+ /* *_follow identifies a private answer whose effect is being retried. */
+ int region_known,region_auto; char region_choice[8]; unsigned int region_disc,region_player,region_seq,region_wait,region_counter,region_follow;
+ int netflix_known; unsigned int netflix_choice,netflix_seq,netflix_wait,netflix_counter,netflix_follow;
  int dvd_known; unsigned int dvd_choice,dvd_seq,dvd_wait,dvd_counter;
- int power_enabled,power_known,power_uncertain; unsigned int power_choice,power_seq,power_wait,power_counter;
+ char region_said[64],netflix_said[64];
+ int power_enabled,power_known,power_uncertain,power_unsaved; unsigned int power_choice,power_seq,power_wait,power_counter;
  int cpu_enabled,cpu_known,cpu_uncertain,cpu_query,cpu_confirmed; unsigned int cpu_choice,cpu_seq,cpu_wait,cpu_counter;
  char cpu_message[96];
  char notice[128];
 };
 
 static void ha_copy(char *out,const char *in,size_t n){size_t i=0;if(!n)return;while(i+1<n&&in&&in[i]){out[i]=in[i];i++;}out[i]=0;}
+/* Text for a CTK button. CTK draws through gdk_mbstowcs and drops the whole
+ * string when it is rejected, so only complete, valid UTF-8 sequences are
+ * kept: any other byte becomes '?', a control character a space. At most max
+ * characters (and what fits in cap); a cut is marked with "...". */
+#define HA_TEXT_CHARS 96u
+static const char *ha_display(char *out,size_t cap,const char *in,unsigned int max){
+ const unsigned char *p=(const unsigned char *)(in?in:"");size_t o=0;unsigned int n=0;
+ if(cap<4){if(cap)out[0]=0;return cap?out:"";}
+ while(*p){
+  unsigned int c=p[0],len=c<0x80?1:c>=0xc2&&c<=0xdf?2:c>=0xe0&&c<=0xef?3:c>=0xf0&&c<=0xf4?4:0,i;
+  for(i=1;i<len;i++)if((p[i]&0xc0)!=0x80){len=0;break;}
+  if(len==3&&((c==0xe0&&p[1]<0xa0)||(c==0xed&&p[1]>=0xa0)))len=0;   /* overlong, surrogate */
+  if(len==4&&((c==0xf0&&p[1]<0x90)||(c==0xf4&&p[1]>=0x90)))len=0;   /* overlong, above U+10FFFF */
+  if(n==max||o+(len?len:1)>cap-4){memcpy(out+o,"...",3);o+=3;break;}
+  if(!len){out[o++]='?';p++;}
+  else if(len==1){out[o++]=c<32||c==127?' ':(char)c;p++;}
+  else{memcpy(out+o,p,len);o+=len;p+=len;}
+  n++;
+ }
+ out[o]=0;return out;
+}
 static int ha_exists(const char *path){int fd=open(path,O_RDONLY);if(fd>=0)close(fd);return fd>=0;}
-/* First line of a small text file; 0 if absent. */
-static int ha_read_line(const char *path,char *buf,size_t cap){
+/* Small text record; 0 if absent or unreadable. */
+static int ha_read_record(const char *path,char *buf,size_t cap){
  int fd=open(path,O_RDONLY);ssize_t n;
  if(fd<0)return 0;
- n=read(fd,buf,cap-1);close(fd);if(n<=0)return 0;
- buf[n]=0;buf[strcspn(buf,"\n")]=0;return 1;
+ do{n=read(fd,buf,cap-1);}while(n<0&&errno==EINTR);close(fd);if(n<=0)return 0;
+ buf[n]=0;return 1;
+}
+static int ha_read_line(const char *path,char *buf,size_t cap){
+ if(!ha_read_record(path,buf,cap))return 0;
+ buf[strcspn(buf,"\n")]=0;return 1;
 }
 /* Random session IDs prevent acknowledgements from a previous payload or
  * another menu from matching even when both local counters start at one. */
@@ -67,7 +96,7 @@ static void ha_action_cancel(const struct helper_state *s,const char *base,unsig
 }
 /* 1 our reply, 0 pending, -1 expired/unreadable clock. The queue file can
  * already have been claimed at timeout: do not claim the change was undone. */
-static int ha_action_poll(const struct helper_state *s,const char *base,unsigned seq,uint32_t deadline,char *buf,size_t cap){
+static int ha_action_poll_record(const struct helper_state *s,const char *base,unsigned seq,uint32_t deadline,char *buf,size_t cap){
  char path[UB_ACTION_PATH],message[512],*body;uint32_t now,expires;int fd;ssize_t n;
  if(ub_action_path(path,sizeof path,base,'r',s->action_session,seq)||ha_action_now(&now))return -1;
  fd=open(path,O_RDONLY);
@@ -76,21 +105,60 @@ static int ha_action_poll(const struct helper_state *s,const char *base,unsigned
   close(fd);
   if(n>0){
    message[n]=0;body=ub_action_body(message,&expires);
-   if(body&&(int32_t)(now-expires)<0){ha_copy(buf,body,cap);buf[strcspn(buf,"\n")]=0;unlink(path);return 1;}
+   if(body&&(int32_t)(now-expires)<0){ha_copy(buf,body,cap);unlink(path);return 1;}
   }
  }
  if((int32_t)(now-deadline)>=0){ha_action_cancel(s,base,seq);return -1;}
  return 0;
 }
+static int ha_action_poll(const struct helper_state *s,const char *base,unsigned seq,uint32_t deadline,char *buf,size_t cap){
+ int result=ha_action_poll_record(s,base,seq,deadline,buf,cap);
+ if(result==1)buf[strcspn(buf,"\n")]=0;
+ return result;
+}
 static unsigned int ha_parse(const char **p){unsigned int v=0;while(**p>='0'&&**p<='9')v=v*10+(unsigned int)(*(*p)++-'0');return v;}
+
+static int ha_decimal(const char **p,unsigned *result){
+ unsigned v=0;
+ if(**p<'0'||**p>'9')return 0;
+ do{unsigned d=(unsigned)(*(*p)++-'0');if(v>429496729u||(v==429496729u&&d>5))return 0;v=v*10u+d;}while(**p>='0'&&**p<='9');
+ *result=v;return 1;
+}
+/* A private reply can precede the corresponding public snapshot. Older
+ * snapshots must neither rewind the row nor stop its pending notification.
+ * A newer revision belongs to a different request, even if its seq matches. */
+static int ha_preference_record(char *buf,struct ha_preference *pref,unsigned *follow){
+ char *line=buf+strcspn(buf,"\n");const char *p;
+ struct ub_action_revision next;
+ if(*line)*line++=0;
+ if(!*line){
+  if(pref->revision.sec||pref->revision.nsec)return 0;
+  if(follow)*follow=0;
+  pref->retry=strstr(buf,"not saved")||strstr(buf,"retrying");return 1;
+ }
+ if(strncmp(line,"STATE ",6))return 0;
+ p=line+6;
+ if(!ha_decimal(&p,&next.sec)||*p++!=' '||!ha_decimal(&p,&next.nsec)||next.nsec>=1000000000u||*p++!=' ')return 0;
+ if((*p!='0'&&*p!='1')||strcmp(p+1,"\n")||(!next.sec&&!next.nsec))return 0;
+ if(next.sec<pref->revision.sec||(next.sec==pref->revision.sec&&next.nsec<pref->revision.nsec))return 0;
+ int superseded=follow&&*follow&&(next.sec!=pref->revision.sec||next.nsec!=pref->revision.nsec);
+ if(superseded)*follow=0;
+ pref->revision=next;pref->retry=*p=='1';return superseded?2:1;
+}
 
 /* ---- Idle auto-power-off ---- */
 static const char *ha_power_value(const struct helper_state *s){
- return !s->power_enabled?"not available":!s->power_known?"not confirmed":s->power_choice?"On":"Off";
+ return !s->power_enabled?"not available":!s->power_known?"not confirmed":s->power_unsaved?(s->power_choice?"On (not saved)":"Off (not saved)"):s->power_choice?"On":"Off";
 }
-/* Strictly parse the new protocol; an invalid or different private reply
- * never acknowledges this menu's pending request. */
-static int ha_power_status(const char *text,unsigned int *seq,unsigned int *choice,const char **message){
+/* Strictly parse "<seq> <on|off> <saved|unsaved> <message>"; an invalid or
+ * different private reply never acknowledges this menu's pending request.
+ * unsaved: the module applied the value but could not keep it on the USB
+ * stick, told apart from the message (a later failed request replaces it). */
+static int ha_power_word(const char **p,const char *word){
+ size_t n=strlen(word);if(strncmp(*p,word,n)||((*p)[n]&&(*p)[n]!=' '&&(*p)[n]!='\n'))return 0;
+ *p+=n;if(**p==' ')(*p)++;return 1;
+}
+static int ha_power_status(const char *text,unsigned int *seq,unsigned int *choice,unsigned int *unsaved,const char **message){
  const char *p=text;unsigned int value=0;
  if(*p<'0'||*p>'9')return -1;
  do{unsigned int digit=(unsigned int)(*p-'0');if(value>429496729u||(value==429496729u&&digit>5u))return -1;value=value*10u+digit;p++;}while(*p>='0'&&*p<='9');
@@ -98,10 +166,13 @@ static int ha_power_status(const char *text,unsigned int *seq,unsigned int *choi
  if(!strncmp(p,"on ",3)){*choice=1;p+=3;}
  else if(!strncmp(p,"off ",4)){*choice=0;p+=4;}
  else return -1;
+ if(ha_power_word(&p,"saved"))*unsaved=0;
+ else if(ha_power_word(&p,"unsaved"))*unsaved=1;
+ else return -1;
  *seq=value;*message=p;return 0;
 }
 static int ha_power_poll(struct helper_state *s){
- char text[192];const char *message;unsigned int seq,choice;int enabled=ha_exists(UB_POWER_ENABLED),changed=enabled!=s->power_enabled,reply=0;
+ char text[192];const char *message;unsigned int seq,choice,unsaved;int enabled=ha_exists(UB_POWER_ENABLED),changed=enabled!=s->power_enabled,reply=0;
  s->power_enabled=enabled;
  if(!enabled){
   changed|=s->power_known;s->power_known=0;
@@ -111,25 +182,28 @@ static int ha_power_poll(struct helper_state *s){
  if(s->power_wait){
   reply=ha_action_poll(s,UB_POWER_REQUEST,s->power_seq,s->power_deadline,text,sizeof text);
   if(reply<0){s->power_wait=0;s->power_known=0;s->power_uncertain=1;ha_copy(s->notice,"No power confirmation; reopen Helper to refresh",sizeof s->notice);return 1;}
-  if(!reply||ha_power_status(text,&seq,&choice,&message)||seq!=s->power_seq)return changed;
-  s->power_choice=choice;s->power_known=1;s->power_wait=0;s->power_uncertain=0;
-  if(!strcmp(message,"saved"))snprintf(s->notice,sizeof s->notice,"Auto power-off: %s. Manual POWER is unchanged.",ha_power_value(s));
-  else snprintf(s->notice,sizeof s->notice,"Auto power-off: %s, %.90s",ha_power_value(s),message);
+  if(!reply||ha_power_status(text,&seq,&choice,&unsaved,&message)||seq!=s->power_seq)return changed;
+  s->power_choice=choice;s->power_known=1;s->power_wait=0;s->power_uncertain=0;s->power_unsaved=(int)unsaved;
+  if(!message[0]||!strcmp(message,"saved"))snprintf(s->notice,sizeof s->notice,"Auto power-off: %s. Manual POWER is unchanged.",ha_power_value(s));
+  else snprintf(s->notice,sizeof s->notice,"Auto power-off: %s, %.90s",s->power_choice?"On":"Off",message);
   return 1;
  }
  /* A stale global observation must not turn a timed-out action into success.
   * Reopening the page explicitly refreshes the observational state. */
  if(s->power_uncertain)return changed;
- if(!ha_read_line(UB_POWER_STATUS,text,sizeof text)||ha_power_status(text,&seq,&choice,&message)){
+ if(!ha_read_line(UB_POWER_STATUS,text,sizeof text)||ha_power_status(text,&seq,&choice,&unsaved,&message)){
   changed|=s->power_known;s->power_known=0;return changed;
  }
- changed|=!s->power_known||choice!=s->power_choice;s->power_choice=choice;s->power_known=1;return changed;
+ changed|=!s->power_known||choice!=s->power_choice||(int)unsaved!=s->power_unsaved;
+ s->power_choice=choice;s->power_known=1;s->power_unsaved=(int)unsaved;return changed;
 }
+/* Only a different value is sent, or the same one when it is applied but not
+ * saved: the module then retries only the save. */
 static void ha_power_set(struct helper_state *s,unsigned int next){
  char text[32];int n;
  if(!s->power_enabled||!s->power_known){ha_copy(s->notice,"Power control is not ready; reopen Helper to refresh",sizeof s->notice);return;}
  if(s->power_wait){ha_copy(s->notice,"Saving...",sizeof s->notice);return;}
- if(next>1||next==s->power_choice)return;
+ if(next>1||(next==s->power_choice&&!s->power_unsaved))return;
  if(!++s->power_counter)s->power_counter=1;
  n=snprintf(text,sizeof text,"set %s %u\n",next?"on":"off",s->power_counter);
  if(ha_action_send(s,UB_POWER_REQUEST,text,(size_t)n,s->power_counter,&s->power_deadline)){ha_copy(s->notice,"Cannot contact the helper",sizeof s->notice);return;}
@@ -139,7 +213,7 @@ static void ha_power_set(struct helper_state *s,unsigned int next){
 /* ---- CPU optimization ---- */
 static const char *ha_cpu_value(const struct helper_state *s){
  if(s->cpu_enabled&&s->cpu_wait&&s->cpu_query)return "checking...";
- return !s->cpu_enabled||!s->cpu_known?"unavailable":s->cpu_choice?"On":"Off";
+ return !s->cpu_enabled?"unavailable":!s->cpu_known?"unknown":s->cpu_choice?"On":"Off";
 }
 static void ha_cpu_unavailable(struct helper_state *s){
  if(s->cpu_wait&&s->cpu_query){ha_copy(s->notice,"Checking CPU optimization...",sizeof s->notice);return;}
@@ -198,12 +272,15 @@ static int ha_cpu_poll(struct helper_state *s){
 }
 static void ha_cpu_set(struct helper_state *s,unsigned int next){
  char text[32];int n;
- if(!s->cpu_enabled||!s->cpu_known){ha_cpu_unavailable(s);return;}
+ if(!s->cpu_enabled){ha_cpu_unavailable(s);return;}
  if(s->cpu_wait){ha_copy(s->notice,"CPU request already running",sizeof s->notice);return;}
  /* The saved preference can differ from the live state after a suppressed or
   * failed startup. Even choosing the current state must reach the backend so
   * it can persist that explicit choice without repeating native activation. */
  if(next>1)return;
+ /* With the state unknown only Off is offered: the backend verifies identity
+  * and restores the stock code; it never activates on an unknown state. */
+ if(!s->cpu_known&&next){snprintf(s->notice,sizeof s->notice,"CPU state unknown; choose Off to restore stock behaviour (%.60s)",s->cpu_message[0]?s->cpu_message:"no status");return;}
  if(!++s->cpu_counter)s->cpu_counter=1;
  n=snprintf(text,sizeof text,"set %s %u\n",next?"on":"off",s->cpu_counter);
  if(ha_action_send(s,UB_CPU_REQUEST,text,(size_t)n,s->cpu_counter,&s->cpu_deadline)){ha_copy(s->notice,"Cannot contact the helper",sizeof s->notice);return;}
@@ -240,12 +317,16 @@ static int ha_region_poll(struct helper_state *s){
  char buf[160],choice[8],before[8];const char *p=buf;unsigned int seq,disc,player,autok,i=0,disc_before=s->region_disc;int known=s->region_known,auto_before=s->region_auto;
  ha_copy(before,s->region_choice,sizeof before);
  if(s->region_wait){
-  reply=ha_action_poll(s,UB_REGION_REQUEST,s->region_seq,s->region_deadline,buf,sizeof buf);
+  reply=ha_action_poll_record(s,UB_REGION_REQUEST,s->region_seq,s->region_deadline,buf,sizeof buf);
   if(reply<0){s->region_wait=0;ha_copy(s->notice,"No confirmation from helper; result unknown",sizeof s->notice);return 1;}
-  answered=reply==1;
+  if(!reply)return 0;
+  answered=1;
  }
- if(!answered&&!ha_read_line(UB_REGION_STATUS,buf,sizeof buf)){s->region_known=0;return known;}
- seq=ha_parse(&p);if(*p++!=' ')return 0;
+ if(!answered&&!ha_read_record(UB_REGION_STATUS,buf,sizeof buf)){s->region_known=0;return known;}
+ seq=ha_parse(&p);if(*p++!=' '||(answered&&seq!=s->region_seq))return 0;
+ int record=ha_preference_record(buf,&s->region_pref,&s->region_follow);
+ if(!record)return 0;
+ if(record==2&&!strncmp(s->notice,"Blu-ray region: ",16)&&strstr(s->notice,s->region_said))s->notice[0]=0;
  while(*p&&*p!=' '&&i+1<sizeof choice)choice[i++]=*p++;
  choice[i]=0;if(*p++!=' ')return 0;
  disc=ha_parse(&p);if(*p++!=' ')return 0;
@@ -254,12 +335,21 @@ static int ha_region_poll(struct helper_state *s){
  s->region_known=1;s->region_disc=disc;s->region_player=player;s->region_auto=autok==1;
  if(!s->region_wait||(answered&&seq==s->region_seq))ha_copy(s->region_choice,choice,sizeof s->region_choice);
  if(s->region_wait&&(answered&&seq==s->region_seq)){
-  s->region_wait=0;
+  s->region_wait=0;s->region_follow=(s->region_pref.revision.sec||s->region_pref.revision.nsec)&&s->region_pref.retry?seq:0;ha_copy(s->region_said,p,sizeof s->region_said);
   if(!strcmp(p,"saved"))snprintf(s->notice,sizeof s->notice,"Blu-ray region: %s. Takes effect with the next disc.",ha_region_label(s));
   else snprintf(s->notice,sizeof s->notice,"Blu-ray region: %s, %s",ha_region_label(s),p);
   return 1;
  }
- return !known||disc!=disc_before||auto_before!=s->region_auto||strcmp(before,s->region_choice);
+ if(s->region_follow&&!s->region_wait){
+  if(seq!=s->region_follow)s->region_follow=0; /* another request since */
+  else if(strncmp(p,s->region_said,sizeof s->region_said-1)){
+   ha_copy(s->region_said,p,sizeof s->region_said);if(!s->region_pref.retry)s->region_follow=0;
+   if(!strcmp(p,"saved"))snprintf(s->notice,sizeof s->notice,"Blu-ray region: %s. Takes effect with the next disc.",ha_region_label(s));
+   else snprintf(s->notice,sizeof s->notice,"Blu-ray region: %s, %s",ha_region_label(s),p);
+   return 1;
+  }
+ }
+ return record==2||!known||disc!=disc_before||auto_before!=s->region_auto||strcmp(before,s->region_choice);
 }
 /* The region value of the row, in words about what the player does (the
  * disc's own regions are not known): "Auto (player's own: B)", "Auto (set
@@ -281,7 +371,7 @@ static void ha_region_set(struct helper_state *s,unsigned int next){
  char text[48];int n;
  if(!s->region_known){ha_copy(s->notice,"Needs the region module ([region] in modules.cfg)",sizeof s->notice);return;}
  if(s->region_wait){ha_copy(s->notice,"Saving...",sizeof s->notice);return;}
- if(next>=ha_region_count(s)||next==ha_region_index(s->region_choice))return;
+ if(next>=ha_region_count(s)||(next==ha_region_index(s->region_choice)&&!s->region_pref.retry))return;
  if(!++s->region_counter)s->region_counter=1;
  n=snprintf(text,sizeof text,"set %s %u\n",ha_region_names[next],s->region_counter);
  if(ha_action_send(s,UB_REGION_REQUEST,text,(size_t)n,s->region_counter,&s->region_deadline)){ha_copy(s->notice,"Cannot contact the helper",sizeof s->notice);return;}
@@ -300,12 +390,14 @@ static int ha_dvd_poll(struct helper_state *s){
  int answered=0,reply;
  char buf[160];const char *p=buf,*name;unsigned int seq,choice,before=s->dvd_choice;int known=s->dvd_known;
  if(s->dvd_wait){
-  reply=ha_action_poll(s,UB_DVD_REQUEST,s->dvd_seq,s->dvd_deadline,buf,sizeof buf);
+  reply=ha_action_poll_record(s,UB_DVD_REQUEST,s->dvd_seq,s->dvd_deadline,buf,sizeof buf);
   if(reply<0){s->dvd_wait=0;ha_copy(s->notice,"No confirmation from helper; result unknown",sizeof s->notice);return 1;}
-  answered=reply==1;
+  if(!reply)return 0;
+  answered=1;
  }
- if(!answered&&!ha_read_line(UB_DVD_STATUS,buf,sizeof buf)){s->dvd_known=0;return known;}
- seq=ha_parse(&p);if(*p++!=' ')return 0;
+ if(!answered&&!ha_read_record(UB_DVD_STATUS,buf,sizeof buf)){s->dvd_known=0;return known;}
+ seq=ha_parse(&p);if(*p++!=' '||(answered&&seq!=s->dvd_seq))return 0;
+ if(!ha_preference_record(buf,&s->dvd_pref,0))return 0;
  name=p;while(*p&&*p!=' ')p++;
  choice=ha_dvd_index(name,(size_t)(p-name));
  if(*p==' ')p++;
@@ -325,7 +417,7 @@ static void ha_dvd_set(struct helper_state *s,unsigned int next){
  char text[48];int n;
  if(!s->dvd_known){ha_copy(s->notice,"Needs the region module ([region] in modules.cfg)",sizeof s->notice);return;}
  if(s->dvd_wait){ha_copy(s->notice,"Saving...",sizeof s->notice);return;}
- if(next>=HA_DVD_CHOICES||next==s->dvd_choice)return;
+ if(next>=HA_DVD_CHOICES||(next==s->dvd_choice&&!s->dvd_pref.retry))return;
  if(!++s->dvd_counter)s->dvd_counter=1;
  n=snprintf(text,sizeof text,"set %s %u\n",ha_dvd_names[next],s->dvd_counter);
  if(ha_action_send(s,UB_DVD_REQUEST,text,(size_t)n,s->dvd_counter,&s->dvd_deadline)){ha_copy(s->notice,"Cannot contact the helper",sizeof s->notice);return;}
@@ -343,24 +435,37 @@ static int ha_netflix_poll(struct helper_state *s){
  int answered=0,reply;
  char buf[160];const char *p=buf;unsigned int seq,choice,before=s->netflix_choice;int known=s->netflix_known;
  if(s->netflix_wait){
-  reply=ha_action_poll(s,UB_REMOTE_REQUEST,s->netflix_seq,s->netflix_deadline,buf,sizeof buf);
+  reply=ha_action_poll_record(s,UB_REMOTE_REQUEST,s->netflix_seq,s->netflix_deadline,buf,sizeof buf);
   if(reply<0){s->netflix_wait=0;ha_copy(s->notice,"No confirmation from helper; result unknown",sizeof s->notice);return 1;}
-  answered=reply==1;
+  if(!reply)return 0;
+  answered=1;
  }
- if(!answered&&!ha_read_line(UB_REMOTE_STATUS,buf,sizeof buf)){s->netflix_known=0;return known;}
- seq=ha_parse(&p);if(*p++!=' ')return 0;
+ if(!answered&&!ha_read_record(UB_REMOTE_STATUS,buf,sizeof buf)){s->netflix_known=0;return known;}
+ seq=ha_parse(&p);if(*p++!=' '||(answered&&seq!=s->netflix_seq))return 0;
+ int record=ha_preference_record(buf,&s->netflix_pref,&s->netflix_follow);
+ if(!record)return 0;
+ if(record==2&&!strncmp(s->notice,"Netflix button: ",16)&&strstr(s->notice,s->netflix_said))s->notice[0]=0;
  choice=!strncmp(p,"nothing",7)?1u:!strncmp(p,"helper",6)?2u:0u;
  while(*p&&*p!=' ')p++;
  if(*p==' ')p++;
  s->netflix_known=1;
  if(!s->netflix_wait||(answered&&seq==s->netflix_seq))s->netflix_choice=choice;
  if(s->netflix_wait&&(answered&&seq==s->netflix_seq)){
-  s->netflix_wait=0;
+  s->netflix_wait=0;s->netflix_follow=(s->netflix_pref.revision.sec||s->netflix_pref.revision.nsec)&&s->netflix_pref.retry?seq:0;ha_copy(s->netflix_said,p,sizeof s->netflix_said);
   if(!strcmp(p,"saved"))snprintf(s->notice,sizeof s->notice,"Netflix button: %s",ha_netflix_labels[s->netflix_choice]);
   else snprintf(s->notice,sizeof s->notice,"Netflix button: %s, %s",ha_netflix_labels[s->netflix_choice],p);
   return 1;
  }
- return !known||before!=s->netflix_choice;
+ if(s->netflix_follow&&!s->netflix_wait){
+  if(seq!=s->netflix_follow)s->netflix_follow=0; /* another request since */
+  else if(strncmp(p,s->netflix_said,sizeof s->netflix_said-1)){
+   ha_copy(s->netflix_said,p,sizeof s->netflix_said);if(!s->netflix_pref.retry)s->netflix_follow=0;
+   if(!strcmp(p,"saved"))snprintf(s->notice,sizeof s->notice,"Netflix button: %s",ha_netflix_labels[s->netflix_choice]);
+   else snprintf(s->notice,sizeof s->notice,"Netflix button: %s, %s",ha_netflix_labels[s->netflix_choice],p);
+   return 1;
+  }
+ }
+ return record==2||!known||before!=s->netflix_choice;
 }
 /* Chooses k (index into ha_netflix_names); nothing is sent when it is
  * already the current one. */
@@ -368,7 +473,7 @@ static void ha_netflix_set(struct helper_state *s,unsigned int next){
  char text[48];int n;
  if(!s->netflix_known){ha_copy(s->notice,"Needs the remote module ([remote] in modules.cfg)",sizeof s->notice);return;}
  if(s->netflix_wait){ha_copy(s->notice,"Saving...",sizeof s->notice);return;}
- if(next>=HA_NETFLIX_CHOICES||next==s->netflix_choice)return;
+ if(next>=HA_NETFLIX_CHOICES||(next==s->netflix_choice&&!s->netflix_pref.retry))return;
  if(!++s->netflix_counter)s->netflix_counter=1;
  n=snprintf(text,sizeof text,"set %s %u\n",ha_netflix_names[next],s->netflix_counter);
  if(ha_action_send(s,UB_REMOTE_REQUEST,text,(size_t)n,s->netflix_counter,&s->netflix_deadline)){ha_copy(s->notice,"Cannot contact the helper",sizeof s->notice);return;}
@@ -402,6 +507,7 @@ static int ha_ssh_poll(struct helper_state *s){
 /* ---- Save log to USB ---- */
 static void ha_log_save(struct helper_state *s){
  char text[32];int n;
+ if(s->log_off){ha_copy(s->notice,"The log module is off ([log] in modules.cfg)",sizeof s->notice);return;}
  if(s->log_always){ha_copy(s->notice,"The log is already saved to USB a few seconds after each change",sizeof s->notice);return;}
  if(s->save_seq){ha_copy(s->notice,"Saving the log is already running",sizeof s->notice);return;}
  if(!++s->save_counter)s->save_counter=1;
@@ -409,9 +515,11 @@ static void ha_log_save(struct helper_state *s){
  if(ha_action_send_timeout(s,UB_STORAGE_REQUEST,text,(size_t)n,s->save_counter,&s->save_deadline,45u)){ha_copy(s->notice,"Cannot contact the helper",sizeof s->notice);return;}
  s->save_seq=s->save_counter;s->save_ticks=0;ha_copy(s->notice,"Saving the log to USB...",sizeof s->notice);
 }
-/* 1 when answered. Call about four times a second. */
+/* 1 when answered or the log module was switched on or off. Call about four
+ * times a second. UB_LOG_MODE exists only while the log module is enabled. */
 static int ha_log_poll(struct helper_state *s){
- char buf[160];const char *p=buf;int code,negative=0,reply;unsigned int seq;
+ char buf[160];const char *p=buf;int code,negative=0,reply,off=!ha_exists(UB_LOG_MODE);unsigned int seq;
+ if(off!=s->log_off){s->log_off=off;if(!s->save_seq)return 1;}
  if(!s->save_seq)return 0;
  reply=ha_action_poll(s,UB_STORAGE_REQUEST,s->save_seq,s->save_deadline,buf,sizeof buf);
  if(!reply)return 0;
@@ -442,7 +550,8 @@ static void ha_load(struct helper_state *s){
  if(s->cpu_wait)ha_action_cancel(s,UB_CPU_REQUEST,s->cpu_seq);
  s->notice[0]=0;s->ssh_wait=0;s->region_wait=0;s->netflix_wait=0;s->dvd_wait=0;s->save_seq=0;s->power_wait=0;s->power_uncertain=0;s->cpu_wait=0;s->cpu_uncertain=0;s->cpu_query=0;s->cpu_confirmed=0;
  s->ssh_enabled=ha_exists(HA_SSH_ENABLED);
- s->log_always=ha_read_line(UB_LOG_MODE,mode,sizeof mode)&&!strcmp(mode,"always");
+ s->log_off=!ha_exists(UB_LOG_MODE);  /* the file exists only while the log module is enabled */
+ s->log_always=!s->log_off&&ha_read_line(UB_LOG_MODE,mode,sizeof mode)&&!strcmp(mode,"always");
  ha_ssh_load(s);ha_region_poll(s);ha_dvd_poll(s);ha_netflix_poll(s);ha_power_poll(s);ha_cpu_poll(s);ha_cpu_refresh(s);
 }
 #endif
