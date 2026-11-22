@@ -10,6 +10,9 @@ static int test_transport_now_ms(uint64_t *ms);
 #define UB_PC_SOCKET_NAME test_address
 static void test_source_backoff(void);
 #define UB_PC_SOURCE_BACKOFF() test_source_backoff()
+#include <sys/socket.h>
+static ssize_t test_recvmsg(int fd,struct msghdr *msg,int flags);
+#define ub_pc_recvmsg test_recvmsg
 #include "../modules/external_subtitles/precision_transport.h"
 #include <assert.h>
 #include <stdio.h>
@@ -20,7 +23,15 @@ static void test_source_backoff(void);
 #include <dirent.h>
 #include <sys/eventfd.h>
 
-struct shared {int calls,mode,backoffs,paused,release;uint32_t generation;};static struct shared *shared;
+struct shared {int calls,mode,backoffs,paused,release,eagain;pid_t client;uint32_t generation;};static struct shared *shared;
+/* A spurious POLLIN: the source's next nonblocking receive fails with EAGAIN
+ * and leaves the queued datagram in place. */
+static ssize_t test_recvmsg(int fd,struct msghdr *msg,int flags) {
+ if(shared&&getpid()!=shared->client&&(flags&MSG_DONTWAIT)&&__atomic_load_n(&shared->eagain,__ATOMIC_ACQUIRE)>0) {
+  __atomic_sub_fetch(&shared->eagain,1,__ATOMIC_ACQ_REL);errno=EAGAIN;return -1;
+ }
+ return recvmsg(fd,msg,flags);
+}
 static int source_event_fd;
 static int test_paused(uint32_t *generation) {
  *generation=__atomic_load_n(&shared->generation,__ATOMIC_ACQUIRE);
@@ -91,7 +102,7 @@ int main(void) {
  test_unexpected_rights();
  snprintf(test_address,sizeof(test_address),"ub820.srt.clock.test.%u",(unsigned)getpid());
  shared=mmap(0,sizeof(*shared),PROT_READ|PROT_WRITE,MAP_SHARED|MAP_ANONYMOUS,-1,0);
- assert(shared!=MAP_FAILED);memset(shared,0,sizeof(*shared));
+ assert(shared!=MAP_FAILED);memset(shared,0,sizeof(*shared));shared->client=getpid();
  source_event_fd=eventfd(0,EFD_NONBLOCK|EFD_CLOEXEC);assert(source_event_fd>=0);
  /* Simulate the old apl_bdv retaining the abstract listener during overlap.
   * The new source remains resident, backs off, then binds after release.
@@ -236,6 +247,17 @@ int main(void) {
  usleep(50000);ub_pc_client_wake(&client);until=now_ms()+1500;
  while(client.state.pid!=(uint32_t)child&&now_ms()<until){checked_step(&client,8,1,&ticks);usleep(2000);}
  assert(client.state.pid==(uint32_t)child&&client.paused);
+ /* EAGAIN after POLLIN keeps the socket and the paused subscriber: no
+  * rebind backoff, and the next resume still reaches the client. */
+ {int backoffs=__atomic_load_n(&shared->backoffs,__ATOMIC_ACQUIRE);
+  __atomic_store_n(&shared->eagain,1,__ATOMIC_RELEASE);
+  raw=ub_pc_socket(1);assert(raw>=0);memset(&bad,0,sizeof(bad));
+  assert(sendto(raw,&bad,sizeof(bad),MSG_DONTWAIT,(struct sockaddr *)&address,len)==sizeof(bad));
+  until=now_ms()+500;while(__atomic_load_n(&shared->eagain,__ATOMIC_ACQUIRE)&&now_ms()<until)usleep(1000);
+  assert(!__atomic_load_n(&shared->eagain,__ATOMIC_ACQUIRE));usleep(50000);close(raw);
+  assert(__atomic_load_n(&shared->backoffs,__ATOMIC_ACQUIRE)==backoffs);
+  set_paused(0);assert(wait_paused(&client,8,0,1500));
+  assert(__atomic_load_n(&shared->backoffs,__ATOMIC_ACQUIRE)==backoffs);}
  ub_pc_client_close(&client);assert(!kill(child,SIGTERM));assert(waitpid(child,&status,0)==child);
  /* Without a source wake descriptor there is no pause suspension; queries
   * continue so an eventfd allocation failure cannot strand a paused client. */

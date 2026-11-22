@@ -100,7 +100,9 @@ int ub_setting_set(const char *module,const char *key,const char *value){(void)m
 /* Subtitle memory: startup never saves a preference or touches the stick. */
 int ub_setting_stage(const char *module,const char *key,const char *value){(void)module;(void)key;(void)value;preference_writes++;return 0;}
 int ub_setting_flush(void){preference_writes++;return 0;}
-int ub_stick_load(const char *from,const char *to,int quiet){(void)from;(void)to;(void)quiet;abort();}
+/* Only the retry of a failed boot read of the subtitle memory loads here. */
+static int stick_loads,stick_load_rc=UB_STICK_ABSENT;
+int ub_stick_load(const char *from,const char *to,int quiet){(void)from;(void)to;(void)quiet;stick_loads++;return stick_load_rc;}
 int ub_stick_write(const char *from,const char *to){(void)from;(void)to;abort();}
 const char *ub_stick_error(int code){(void)code;return "test";}
 /* Most cases have no disc, so the disc memory stays inactive. */
@@ -233,7 +235,17 @@ int main(void){
   assert(!ub_br_private_read(UB_SUB_HINT_FILE,&h,sizeof h)&&h.flags==UB_SUB_HINT_START_DIR);
   /* nothing to hand over: no hint file at all */
   memory.last_dir[0]=0;t=target();t.born=80;engine_prepare(&part,&t);assert(access(UB_SUB_HINT_FILE,F_OK));
-  disc_memory=1;disc_stub=0;cases++;}
+  disc_memory=1;disc_stub=0;cases++;
+  /* A failed boot read is retried by every new playback until it reads; the
+   * RAM entries stay, and a known memory is never read again. */
+  memset(&memory,0,sizeof memory);assert(sub_memory_put(&memory,A,"/mnt/usb/Filmy/a.srt",0,0)==1);
+  stick_loads=0;stick_load_rc=UB_STICK_TIMEOUT;disc_stub=A;
+  t=target();t.born=81;engine_prepare(&part,&t);assert(stick_loads==1&&!memory.known);
+  assert(!ub_br_private_read(UB_SUB_HINT_FILE,&h,sizeof h)&&(h.flags&UB_SUB_HINT_AUTOLOAD)); /* RAM still serves */
+  t=target();t.born=82;engine_prepare(&part,&t);assert(stick_loads==2&&!memory.known);
+  stick_load_rc=UB_STICK_ABSENT;t=target();t.born=83;engine_prepare(&part,&t);assert(stick_loads==3&&memory.known&&memory.count==1);
+  t=target();t.born=84;engine_prepare(&part,&t);assert(stick_loads==3);
+  disc_stub=0;cases++;}
  printf("subtitle_startup_test passed: %u cases; early status cannot skip style; loaded/user-Off preserved; retry/quarantine handled; no preference save; calibration retried alone; nonblocking lock and evtSend; precision marker\n",cases);
  return 0;
 }

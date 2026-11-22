@@ -14,6 +14,7 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <dirent.h>
 #include <time.h>
 #include <unistd.h>
 static char tool_path[96];
@@ -33,6 +34,7 @@ const unsigned char ub_tool_ufs[]=
  "case \"$mode\" in\n"
  " env) { grep -E '^Sig(Blk|Ign)' /proc/$$/status; for f in 0 1 2 42; do if [ -e /proc/$$/fd/$f ]; then echo \"fd$f $(readlink /proc/$$/fd/$f)\"; else echo \"fd$f closed\"; fi; done; } > \"$3\"; exit 0;;\n"
  " hang) echo secret > \"$3.ufs\"; exec sleep 3;;\n"
+ " late) sleep 2; echo late > \"$3.ufs\"; mv \"$3.ufs\" \"$3\"; exit 0;;\n"
  " hangwrite) sleep 3; cat \"$2\" > \"$3\"; exit 0;;\n"
  " fail) exit 6;;\n"
  "esac\n"
@@ -44,6 +46,14 @@ static int failures;
 static char report[4096];
 static void slurp(const char *path){FILE *f=fopen(path,"r");size_t n=f?fread(report,1,sizeof report-1,f):0;if(f)fclose(f);report[n]=0;}
 static unsigned long long field(const char *name){const char *p=strstr(report,name);return p?strtoull(p+strlen(name),0,16):~0ULL;}
+/* Private files of this process left in /tmp (reader outputs, writer inputs). */
+static int private_files(void){
+ char tail[32];int n=0;DIR *d=opendir("/tmp");struct dirent *e;
+ snprintf(tail,sizeof tail,"-%d-",(int)getpid());
+ while(d&&(e=readdir(d))){if(!strncmp(e->d_name,"ub820-ufs-",10)&&strstr(e->d_name,tail))n++;}
+ if(d)closedir(d);
+ return n;
+}
 static unsigned long long ms(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (unsigned long long)t.tv_sec*1000+(unsigned long long)t.tv_nsec/1000000;}
 
 int main(void){
@@ -67,9 +77,17 @@ int main(void){
  /* Overdue readers and writers are never killed, and deferred detach is polled. */
  polls=0;logged=0;t=ms();rc=ub_stick_read("hang",out);
  CHECK(rc==UB_STICK_TIMEOUT&&access(temp,F_OK)&&ms()-t<1800&&polls>=10&&logged==1);
+ /* the partial private copy (it may hold a secret) is gone at the deadline */
+ CHECK(stuck[0].pid>0&&strstr(stuck[0].temp,"/tmp/ub820-ufs-output-")&&access(stuck[0].temp,F_OK));
  CHECK(ub_stick_reap()==1&&ub_stick_read("env",out)==UB_STICK_BUSY);
  for(int i=0;i<40&&ub_stick_reap();i++)usleep(100000);
  CHECK(!ub_stick_reap()&&access(temp,F_OK));
+ /* A reader that finishes after its deadline never replaces the caller's
+  * file (a newer copy may be there by then) and leaves no RAM copy behind. */
+ f=fopen(out,"w");CHECK(f);if(f){fputs("newer",f);fclose(f);}
+ rc=ub_stick_read("late",out);CHECK(rc==UB_STICK_TIMEOUT&&ub_stick_reap()==1);
+ for(int i=0;i<40&&ub_stick_reap();i++)usleep(100000);
+ CHECK(!ub_stick_reap());slurp(out);CHECK(!strcmp(report,"newer"));CHECK(!private_files());
  f=fopen(input,"w");CHECK(f);if(f){fputs("hangwrite",f);fclose(f);}
  rc=ub_stick_write(input,out);CHECK(rc==UB_STICK_TIMEOUT&&ub_stick_reap()==1);
  char held[300];snprintf(held,sizeof held,"%s",stuck[0].temp);CHECK(!access(held,F_OK));
@@ -78,7 +96,9 @@ int main(void){
  for(int i=0;i<40&&ub_stick_reap();i++)usleep(100000);
  CHECK(!ub_stick_reap()&&access(held,F_OK));slurp(out);CHECK(!strcmp(report,"hangwrite"));
  CHECK(ub_stick_read("env",out)==0);
- CHECK(!kills);
+ /* a failed read leaves the caller's file and no private copy */
+ CHECK(ub_stick_read("fail",out)==6);slurp(out);CHECK(strstr(report,"fd0"));
+ CHECK(!kills);CHECK(!private_files());
  /* The /tmp copy of the tool vanished: written again, and the call works. */
  unlink(tool_path);CHECK(ub_stick_read("env",out)==0);
  CHECK(strcmp(ub_stick_error(UB_STICK_NO_TOOL),"unexpected error")&&strcmp(ub_stick_error(UB_STICK_ABSENT),"unexpected error"));

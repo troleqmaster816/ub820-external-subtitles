@@ -140,7 +140,7 @@ int main(void){
   CHECK(ub_while_stopped(unprotected,failed_callback,0)==-1&&seizes==before);
   CHECK(child_state(unprotected)!='T');end_child(unprotected);}}
  int pid=child();struct stopped s;inject_signal=1;
- CHECK(stop_threads(pid,&s)==0);inject_signal=0;CHECK(s.signal[0]==SIGUSR1);CHECK(shared[0]==0);
+ CHECK(stop_threads(pid,&s)==0);inject_signal=0;CHECK(s.signal[0]==SIGUSR1);CHECK(s.delivery[0]);CHECK(shared[0]==0);
  if(s.mem>=0)close(s.mem);
  detach_all(&s);usleep(10000);CHECK(shared[0]==1);CHECK(child_state(pid)!='T');CHECK(!deferred.n);end_child(pid);
  pid=child();kill(pid,SIGSTOP);int status;waitpid(pid,&status,WUNTRACED);CHECK(WIFSTOPPED(status));
@@ -175,9 +175,34 @@ int main(void){
  pid=child();CHECK(stop_threads(pid,&s)==0);tracked_pid=pid;memset(arm_regs,0,sizeof arm_regs);arm_regs[15]=(uint32_t)(uintptr_t)stubmap;arm_regs[7]=99;arm_regs[17]=123;memcpy(arm_saved,arm_regs,sizeof arm_regs);arm_mask=0x1234;arm_cont=arm_event=0;emulate_arm=1;
  uint32_t args[6]={1,2,3,4,5,6},result=0;CHECK(remote_syscall(&s,pid,192,args,&result)==0);CHECK(result==0x12345000);CHECK(!memcmp(arm_regs,arm_saved,sizeof arm_regs));CHECK(arm_mask==0x1234);CHECK(stubmap[0]==0x66&&stubmap[7]==0x66);
  arm_timeout=1;arm_cont=arm_event=0;s.until=ub_now_ms()+100;CHECK(remote_syscall(&s,pid,192,args,&result)==-1);CHECK(!s.quarantine);CHECK(s.signal[0]==0);CHECK(!memcmp(arm_regs,arm_saved,sizeof arm_regs));CHECK(arm_mask==0x1234);CHECK(stubmap[0]==0x66&&stubmap[7]==0x66);
- arm_timeout=0;arm_mask_fail=1;s.until=ub_now_ms()+500;CHECK(remote_syscall(&s,pid,192,args,&result)==-1);CHECK(stubmap[0]==0x66);CHECK(!s.quarantine);arm_mask_fail=0;emulate_arm=0;
+ arm_timeout=0;arm_mask_fail=1;s.until=ub_now_ms()+500;CHECK(remote_syscall(&s,pid,192,args,&result)==-1);CHECK(stubmap[0]==0x66);CHECK(!s.quarantine);arm_mask_fail=0;
+ /* The 8-byte stub stays inside the PC's page: a PC in the last word of the
+  * mapping (the next page is not mapped here; in apl_bdv it is RW data) runs
+  * the stub one word earlier, and every byte is restored. */
+ CHECK(stub_address(0x12000ffcu)==0x12000ff8u&&stub_address(0x12000ffeu)==0x12000ff8u&&stub_address(0x12000ff8u)==0x12000ff8u&&stub_address(0x12000ffau)==0x12000ff8u);
+ CHECK(stub_address(0x12001000u)==0x12001000u&&stub_address(0x12000002u)==0x12000000u);
+ for(uint32_t at=0;at<8;at+=2){uint32_t pc=(uint32_t)(uintptr_t)stubmap+4088+at;
+  memset(arm_regs,0,sizeof arm_regs);arm_regs[15]=pc;arm_regs[7]=99;arm_regs[17]=123;memcpy(arm_saved,arm_regs,sizeof arm_regs);arm_cont=arm_event=0;result=0;s.until=ub_now_ms()+500;
+  CHECK(remote_syscall(&s,pid,192,args,&result)==0);CHECK(result==0x12345000);CHECK(!memcmp(arm_regs,arm_saved,sizeof arm_regs));CHECK(!s.quarantine);
+  CHECK(stubmap[4088]==0x66&&stubmap[4095]==0x66);}
+ /* A PC outside executable memory is refused before any byte or register changes. */
+ {unsigned char *data=mmap((void *)0x12100000,4096,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_ANONYMOUS,-1,0);CHECK(data!=MAP_FAILED);memset(data,0x77,4096);
+  int dpid=child();struct stopped d;emulate_arm=0;CHECK(stop_threads(dpid,&d)==0);emulate_arm=1;tracked_pid=dpid;
+  memset(arm_regs,0,sizeof arm_regs);arm_regs[15]=(uint32_t)(uintptr_t)data;memcpy(arm_saved,arm_regs,sizeof arm_regs);arm_cont=0;
+  CHECK(remote_syscall(&d,dpid,192,args,&result)==-1);CHECK(arm_cont==0);CHECK(!memcmp(arm_regs,arm_saved,sizeof arm_regs));CHECK(data[0]==0x77&&data[7]==0x77);CHECK(!d.quarantine);
+  emulate_arm=0;if(d.mem>=0)close(d.mem);detach_all(&d);end_child(dpid);munmap(data,4096);emulate_arm=1;tracked_pid=pid;}
+ /* A thread that holds a dequeued signal is never resumed for a remote call. */
+ memset(arm_regs,0,sizeof arm_regs);arm_regs[15]=(uint32_t)(uintptr_t)stubmap;memcpy(arm_saved,arm_regs,sizeof arm_regs);arm_cont=0;s.signal[0]=SIGUSR1;
+ CHECK(remote_syscall(&s,pid,192,args,&result)==-1);CHECK(arm_cont==0);CHECK(stubmap[0]==0x66);CHECK(!s.quarantine);s.signal[0]=0;emulate_arm=0;
  if(s.mem>=0)close(s.mem);
  detach_all(&s);end_child(pid);munmap(stubmap,4096);
+ /* Real kernel: a dequeued signal recorded while the thread now sits in an
+  * event-stop (our INTERRUPT) is not lost on detach. Linux ignores a detach
+  * signal there, so it must be queued again. */
+ pid=child();CHECK(stop_threads(pid,&s)==0);CHECK(!s.signal[0]&&!s.delivery[0]);
+ s.signal[0]=SIGUSR1;if(s.mem>=0)close(s.mem);detach_all(&s);
+ for(int k=0;k<2000&&!shared[0];k++){usleep(500);}
+ CHECK(shared[0]==1);CHECK(child_state(pid)!='T');end_child(pid);
  vm=mmap((void *)0x11000000,4096*3,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_ANONYMOUS,-1,0);CHECK(vm!=MAP_FAILED);CHECK((uintptr_t)vm<=UINT32_MAX);
  unsigned char *orig=malloc(4096),*replacement=malloc(4096);memset(orig,0x44,4096);memset(replacement,0x55,4096);
  memcpy(vm,orig,4096);pid=child();remote_syscall_test=vm_syscall;vm_maps=vm_moves=0;vm_fail_move=1;

@@ -191,8 +191,8 @@ struct regs {uint32_t r[18];};
 #define UB_PTRACE_PAUSE_MS 500
 #endif
 struct stopped {
- int tids[256],signal[256];unsigned char waiting[256],group_stop[256];
- unsigned n;int pid,mem,quarantine;unsigned long long until;
+ int tids[256],signal[256];unsigned char waiting[256],group_stop[256],delivery[256];
+ unsigned n;int pid,mem,quarantine;unsigned long long until;uint32_t stub_pc;
 };
 /* A task in uninterruptible I/O need not acknowledge INTERRUPT by our deadline.
  * No memory has been touched in that case. Keep ownership and detach as soon
@@ -201,8 +201,11 @@ struct stopped {
 static struct stopped deferred;
 static void observe_interrupted_call(int tid);
 static int trace_index(struct stopped *s,int tid){for(unsigned i=0;i<s->n;i++)if(s->tids[i]==tid)return (int)i;return -1;}
+/* delivery[i]: the thread is in the signal-delivery-stop that dequeued
+ * signal[i]. Only that stop lets PTRACE_DETACH deliver it with its original
+ * siginfo; Linux ignores a detach signal in an event-stop. */
 static void record_stop(struct stopped *s,unsigned i,int status){
- s->waiting[i]=0;
+ s->waiting[i]=0;s->delivery[i]=(unsigned)status>>16==0;
  if((unsigned)status>>16==PTRACE_EVENT_STOP){
   if(WSTOPSIG(status)!=SIGTRAP)s->group_stop[i]=1;
   else observe_interrupted_call(s->tids[i]);
@@ -241,12 +244,16 @@ static void detach_all(struct stopped *s){
   if(!s->waiting[i]){
    int sig=s->quarantine||s->group_stop[i]?SIGSTOP:s->signal[i];
    /* A genuine signal already removed from the pending queue must survive
-    * quarantine/group-stop too; detach can carry only one signal. */
-   if(sig==SIGSTOP&&s->signal[i]&&s->signal[i]!=SIGSTOP)syscall(SYS_tgkill,s->pid,tid,s->signal[i]);
+    * quarantine/group-stop too; detach can carry only one signal, and only
+    * out of its own delivery-stop. Otherwise it is queued again. */
+   if(s->signal[i]&&(sig!=s->signal[i]||!s->delivery[i])){
+    syscall(SYS_tgkill,s->pid,tid,s->signal[i]);
+    if(sig==s->signal[i])sig=0;
+   }
    if(!ptrace(PTRACE_DETACH,tid,0,(void *)(uintptr_t)sig)||errno==ESRCH)continue;
    ub_log("injector",UB_ALWAYS,"detach %d deferred: %s\n",tid,strerror(errno));
   }else ptrace(PTRACE_INTERRUPT,tid,0,0);
-  unsigned j=remaining.n++;remaining.tids[j]=tid;remaining.signal[j]=s->signal[i];remaining.waiting[j]=s->waiting[i];remaining.group_stop[j]=s->group_stop[i];
+  unsigned j=remaining.n++;remaining.tids[j]=tid;remaining.signal[j]=s->signal[i];remaining.waiting[j]=s->waiting[i];remaining.group_stop[j]=s->group_stop[i];remaining.delivery[j]=s->delivery[i];
  }
  s->n=0;deferred=remaining;
 }
@@ -418,6 +425,11 @@ static struct { uint32_t pc,trap_pc,old_pc,old_r7,old_orig,old_cpsr; unsigned st
 /* Tests model failing ARM VM syscalls without executing Thumb on an x86 child. */
 static int (*remote_syscall_test)(struct stopped *,int,uint32_t,const uint32_t [6],uint32_t *);
 #endif
+/* The 8-byte stub replaces code at the stopped thread's own PC. It must stay
+ * inside that PC's page: the next page can be data (apl_bdv's RX segment ends
+ * where RW begins) and the stub's final breakpoint would fault there. */
+static uint32_t stub_address(uint32_t pc){pc&=~3u;if((pc&4095u)>4088u)pc-=4u;return pc;}
+static int executable_range(int pid,uint32_t a,uint32_t n);
 static int remote_syscall(struct stopped *s,int tid,uint32_t number,const uint32_t args[6],uint32_t *result){
 #ifdef UB_HOST_TEST
  if(remote_syscall_test)return remote_syscall_test(s,tid,number,args,result);
@@ -428,9 +440,15 @@ static int remote_syscall(struct stopped *s,int tid,uint32_t number,const uint32
  unsigned long long until=ub_now_ms()+UB_PTRACE_PAUSE_MS;
  if(s->until&&until>s->until)until=s->until;
  if(ub_now_ms()>=until)return -1;
- if(index<0||s->waiting[index]||s->group_stop[index]||s->signal[index]==SIGSTOP||s->quarantine)return -1;
+ /* A thread holding a dequeued signal is never resumed: an INTERRUPT that
+  * arrived during its delivery-stop would turn that stop into an event-stop
+  * and the signal could only be re-queued with a forged siginfo. Detach
+  * delivers it intact; the caller retries the transaction. */
+ if(index<0||s->waiting[index]||s->group_stop[index]||s->signal[index]||s->quarantine)return -1;
  if(getregs(tid,&old))return -1;
- r=old;pc=old.r[15]&~3u;
+ r=old;pc=stub_address(old.r[15]);
+ /* Registers are restored after every call, so one maps check per stop. */
+ if(s->stub_pc!=(pc|1u)){if(pc>=0xffff0000u||!executable_range(s->pid,pc,8))return -1;s->stub_pc=pc|1u;}
  rsdbg.old_pc=old.r[15];rsdbg.old_r7=old.r[7];rsdbg.old_orig=old.r[17];rsdbg.old_cpsr=old.r[16];rsdbg.pc=pc;rsdbg.trap_pc=0;rsdbg.stops=0;rsdbg.lastsig=0;
  if(memio(s->mem,pc,saved,8,0))return -1;
  /* Mask changes are mandatory: never run a library signal handler while its

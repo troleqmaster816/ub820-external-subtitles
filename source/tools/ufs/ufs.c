@@ -120,10 +120,29 @@ static int short_stem(const char *entry,const char *name,const char *end){
  }
  return n&&entry[n]=='.';
 }
+static int hex_digit(char c){c=upper(c);return (c>='0'&&c<='9')||(c>='A'&&c<='F');}
+/* A FAT numeric-tail alias of the stem [name,end): at most 8 characters
+ * before the dot, <prefix>~<1-6 digits, no leading 0>. The prefix is a prefix
+ * of the stem with dots and spaces dropped, or Windows' hashed form: 1-2 of
+ * its characters and up to 4 hex digits. Any other '~' belongs to a real
+ * long name (UFS_ReadDir lists long names) and never stands for ours. */
+static int tail_alias(const char *entry,const char *name,const char *end){
+ char stem[16];unsigned n=0,t,k,j,p;
+ for(const char *c=name;c<end&&n<sizeof stem;c++)if(*c!='.'&&*c!=' ')stem[n++]=upper(*c);
+ for(t=0;entry[t]&&entry[t]!='.'&&entry[t]!='~';t++){}
+ if(!t||entry[t]!='~'||entry[t+1]<'1'||entry[t+1]>'9')return 0;
+ for(k=t+1;entry[k]>='0'&&entry[k]<='9';k++){}
+ if((entry[k]&&entry[k]!='.')||k>8)return 0;
+ for(j=0;j<t&&j<n&&upper(entry[j])==stem[j];j++){}
+ if(j==t)return 1;
+ if(!j||t>6)return 0;
+ for(p=j<2?j:2;p<t&&hex_digit(entry[p]);p++){}
+ return p==t&&t-(j<2?j:2)<=4;
+}
 /* entry may be the exact name or an 8.3 alias of a current or parked file. */
 enum file_names { TARGET=1, PREVIOUS=2, PARKED=4 };
 static int matching_names(const char *entry,const char *name){
- const char *e,*dot=0;int tilde=0;
+ const char *e,*dot=0;
  if(same_name(entry,name))return TARGET;
  {const char *a=entry,*b=name;while(*b&&upper(*a)==upper(*b)){a++;b++;}if(!*b&&same_name(a,".old"))return PREVIOUS;}
  for(e=name;*e;e++)if(*e=='.')dot=e;
@@ -132,11 +151,11 @@ static int matching_names(const char *entry,const char *name){
   for(j=0;j<k&&entry[j]&&upper(entry[j])==upper(name[j]);j++){}
   if(j==k&&entry[k]=='.'&&is_tp(entry+k+1))return PARKED;
  }
- for(e=entry;*e&&*e!='.';e++)if(*e=='~')tilde=1;
  if(upper(entry[0])!=upper(name[0]))return 0;
  e=extension(entry);
- int base=tilde||short_stem(entry,name,dot?dot:name+length(name));
- int backup=tilde||short_stem(entry,name,name+length(name));
+ const char *stem_end=dot?dot:name+length(name);
+ int base=tail_alias(entry,name,stem_end)||short_stem(entry,name,stem_end);
+ int backup=tail_alias(entry,name,name+length(name))||short_stem(entry,name,name+length(name));
  return (base&&same_ext(e,extension(name))?TARGET:0)|(backup&&same_ext(e,"OLD")?PREVIOUS:0)|(base&&is_tp(e)?PARKED:0);
 }
 /* Possible names in a complete listing, or -1 for an incomplete observation. */

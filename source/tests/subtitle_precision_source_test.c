@@ -3,6 +3,9 @@
 #define UB_HOST_TEST 1
 #endif
 #define UB_PRECISION_SOURCE_TEST
+/* Short bound so the timeout case runs quickly; the logic is the same. */
+#define UB_PRECISION_CLOSE_WAIT_MS 200u
+#define UB_PRECISION_CLOSE_POLL_US 1000u
 #define pthread_create precision_test_pthread_create
 #define pthread_detach precision_test_pthread_detach
 #define eventfd precision_test_eventfd
@@ -14,20 +17,58 @@
 #undef write
 #include <stdio.h>
 
+#include <pthread.h>
+/* pthread.h was first included under the stub macro: declare the real one. */
+extern int pthread_create(pthread_t *,const pthread_attr_t *,void *(*)(void *),void *);
 static int failures,get_calls,get_rc,change_id,change_state,original_calls,original_active;
 static int create_calls,create_failure,detach_calls,serve_calls;
 static int eventfd_calls,eventfd_failure,event_writes,event_eintr,event_eagain,notify_calls;
-static uint32_t mm_id=0x1234,mm_state=3,pce_state=6;
+static uint32_t mm_id=0x1234,mm_state=3,pce_state=6,expect_id=0x1234;
 static void *(*created_entry)(void *);
 static void *created_arg;
-#define CHECK(c) do{if(!(c)){printf("FAIL subtitle_precision_source_test:%d: %s\n",__LINE__,#c);failures++;}}while(0)
+/* Close barrier fixtures (shared with a second thread: atomics only). */
+static int get_block,get_entered,close_active,close_calls,close_saw_closing,close_errno_in;
+static uint32_t close_id_in;
+#define CHECK(c) do{if(!(c)){printf("FAIL subtitle_precision_source_test:%d: %s\n",__LINE__,#c);__atomic_add_fetch(&failures,1,__ATOMIC_SEQ_CST);}}while(0)
 
 static int native_get(uint32_t id,uint32_t *out){
- get_calls++;CHECK(!original_active&&id==0x1234);
+ __atomic_add_fetch(&get_calls,1,__ATOMIC_SEQ_CST);CHECK(!original_active&&id==expect_id);
+ /* Never while stock API_Close runs: that is the teardown race. */
+ CHECK(!__atomic_load_n(&close_active,__ATOMIC_SEQ_CST));
+ __atomic_store_n(&get_entered,1,__ATOMIC_SEQ_CST);
+ while(__atomic_load_n(&get_block,__ATOMIC_SEQ_CST))usleep(200);
  out[0]=0x11223344;out[1]=0x55667788; /* Writes even on error, like stock. */
  if(change_id)mm_id=0x5678;
  if(change_state)mm_state=(uint32_t)change_state;
  return get_rc;
+}
+static uint32_t original_close(uint32_t id){
+ uint32_t out[2]={0xaaaaaaaa,0xbbbbbbbb};int before=get_calls;
+ __atomic_store_n(&close_active,1,__ATOMIC_SEQ_CST);
+ close_calls++;close_id_in=id;close_errno_in=errno;
+ close_saw_closing=__atomic_load_n(&source_closing,__ATOMIC_SEQ_CST)==1;
+ /* A request attempted during Close is refused without a native call. */
+ CHECK(precision_native_time(out)<0&&get_calls==before);
+ CHECK(out[0]==0xaaaaaaaau&&out[1]==0xbbbbbbbbu);
+ __atomic_store_n(&close_active,0,__ATOMIC_SEQ_CST);
+ errno=EXDEV;return 0x91000122u;
+}
+static void *request_thread(void *unused){
+ uint32_t out[2];(void)unused;return (void *)(intptr_t)precision_native_time(out);
+}
+static void *close_thread(void *unused){
+ (void)unused;return (void *)(uintptr_t)ub_hook_api_close(0x1234);
+}
+static int stress_stop;
+static void *stress_requests(void *unused){
+ uint32_t out[2];int n=0;(void)unused;
+ while(!__atomic_load_n(&stress_stop,__ATOMIC_SEQ_CST)){(void)precision_native_time(out);n++;}
+ return (void *)(intptr_t)n;
+}
+static uint32_t stress_close(uint32_t id){
+ (void)id;__atomic_store_n(&close_active,1,__ATOMIC_SEQ_CST);
+ for(volatile int spin=0;spin<200;spin++){}
+ __atomic_store_n(&close_active,0,__ATOMIC_SEQ_CST);return 0;
 }
 static void original_callback(const uint32_t *info){
  original_active=1;original_calls++;CHECK(info&&info[0]==77);original_active=0;
@@ -69,7 +110,7 @@ void ub_precision_source_serve(int (*get)(uint32_t[2]),int (*paused)(uint32_t *)
  CHECK(out[0]==0x11223344&&out[1]==0x55667788);
 }
 static void reset_get(void){
- mm_id=0x1234;mm_state=3;pce_state=6;get_calls=get_rc=change_id=change_state=0;
+ mm_id=0x1234;expect_id=0x1234;mm_state=3;pce_state=6;get_calls=get_rc=change_id=change_state=0;get_block=0;get_entered=0;
  ub_native_get_media_time=native_get;ub_precision_mm_id=&mm_id;ub_precision_mm_state=&mm_state;
  ub_precision_pce_state=&pce_state;
 }
@@ -139,6 +180,73 @@ int main(void){
    * The worker never publishes or closes an invalid descriptor. */
   pce_state=6;source_event_fd=-1;eventfd_failure=1;
   CHECK(!precision_source_thread(0));CHECK(eventfd_calls==2&&source_event_fd==-1);
+ }
+ /* Only ids API_Open can assign are used: never the API_Close sentinel
+  * 0xffffffff (stock compares it equal to itself), nor 0x80000000+. */
+ {
+  static const uint32_t refused[]={0xffffffffu,0x80000000u,0xfffffffeu};
+  for(unsigned i=0;i<sizeof refused/sizeof *refused;i++){
+   reset_get();mm_id=refused[i];out[0]=0xaaaaaaaa;out[1]=0xbbbbbbbb;
+   CHECK(precision_native_time(out)<0&&!get_calls);unchanged(out);
+  }
+  reset_get();mm_id=expect_id=0x7fffffff;CHECK(!precision_native_time(out)&&get_calls==1);
+  reset_get();mm_id=expect_id=1;CHECK(!precision_native_time(out)&&get_calls==1);
+  /* The sentinel also stops the pause predicate: no pause after Close. */
+  reset_get();mm_id=0xffffffffu;pce_state=7;{uint32_t g;CHECK(precision_native_paused(&g)==-1);}
+ }
+ /* API_Close hook: argument, result and errno pass through; Close runs with
+  * new requests refused; the barrier is open again afterwards. */
+ {
+  uint32_t rc;
+  reset_get();ub_original_api_close=original_close;close_calls=0;
+  errno=ENOSPC;rc=ub_hook_api_close(0x1234);
+  CHECK(rc==0x91000122u&&close_calls==1&&close_id_in==0x1234&&close_errno_in==ENOSPC);
+  CHECK(close_saw_closing&&errno==EXDEV&&!source_closing&&!source_requests);
+  CHECK(!precision_native_time(out)&&get_calls==1);
+  /* No original bound (never on target): fatal code, no crash. */
+  ub_original_api_close=0;CHECK(ub_hook_api_close(1)==0x91000121u&&!source_closing);
+ }
+ /* A request already in the native call holds Close back until it returns. */
+ {
+  pthread_t request,closer;void *result;int calls_seen;
+  reset_get();ub_original_api_close=original_close;close_calls=0;
+  __atomic_store_n(&get_block,1,__ATOMIC_SEQ_CST);
+  CHECK(!pthread_create(&request,0,request_thread,0));
+  while(!__atomic_load_n(&get_entered,__ATOMIC_SEQ_CST))usleep(100);
+  CHECK(!pthread_create(&closer,0,close_thread,0));
+  usleep(50000); /* Close must still be waiting: the request is in flight. */
+  calls_seen=close_calls;CHECK(!calls_seen&&__atomic_load_n(&source_closing,__ATOMIC_SEQ_CST));
+  __atomic_store_n(&get_block,0,__ATOMIC_SEQ_CST);
+  CHECK(!pthread_join(request,&result)&&(intptr_t)result==0);
+  CHECK(!pthread_join(closer,&result)&&(uintptr_t)result==0x91000122u);
+  CHECK(close_calls==1&&!source_requests&&!source_closing);
+ }
+ /* Bounded: a request that never returns cannot hold Close forever. */
+ {
+  pthread_t request,closer;void *result;
+  reset_get();ub_original_api_close=original_close;close_calls=0;
+  __atomic_store_n(&get_block,1,__ATOMIC_SEQ_CST);
+  CHECK(!pthread_create(&request,0,request_thread,0));
+  while(!__atomic_load_n(&get_entered,__ATOMIC_SEQ_CST))usleep(100);
+  /* The stuck request passed native_get's entry check before Close began;
+   * Close proceeds once the bound (200 ms here) expires. */
+  CHECK(!pthread_create(&closer,0,close_thread,0));
+  CHECK(!pthread_join(closer,&result)&&close_calls==1);
+  __atomic_store_n(&get_block,0,__ATOMIC_SEQ_CST);
+  CHECK(!pthread_join(request,&result));
+  CHECK(!source_requests&&!source_closing);
+ }
+ /* Stress: a request thread and repeated Close never overlap a native call
+  * with the original Close (native_get checks close_active). */
+ {
+  pthread_t request;void *result;
+  reset_get();ub_original_api_close=stress_close;
+  __atomic_store_n(&stress_stop,0,__ATOMIC_SEQ_CST);
+  CHECK(!pthread_create(&request,0,stress_requests,0));
+  for(int i=0;i<20000;i++)(void)ub_hook_api_close(0x1234);
+  __atomic_store_n(&stress_stop,1,__ATOMIC_SEQ_CST);
+  CHECK(!pthread_join(request,&result)&&(intptr_t)result>0);
+  CHECK(!source_requests&&!source_closing&&get_calls>0);
  }
  printf("subtitle_precision_source_test %s\n",failures?"FAILED":"passed");return failures?1:0;
 }

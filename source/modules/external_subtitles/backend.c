@@ -88,14 +88,20 @@ static struct {
  uint32_t base_color,base_level,base_desired,cancel_failures;
  uint32_t commit_seq,commit_epoch,commit_percent,commit_level;
 } brightness;
-static char current_path[1024]; /* Always readable1024 bytes for native memcpy. */
-static char candidate_path[1024], rollback_path[1024];
+/* Stock ESL_Open (apl_meda_bdplay FUN_0001d764) copies a fixed 0x400 bytes
+ * from its path argument, whatever the string length. Every buffer this file
+ * hands to native Open/Start must therefore be readable for that many bytes. */
+#define UB_NATIVE_OPEN_BYTES 1024u
+static char current_path[UB_NATIVE_OPEN_BYTES];
+static char candidate_path[UB_NATIVE_OPEN_BYTES], rollback_path[UB_NATIVE_OPEN_BYTES];
 /* First folder of the browser in this process (helper hint), else /mnt/usb/sub. */
 static char hint_start_dir[UB_SUB_PATH_BYTES];
 /* Disc memory (helper hint): the file remembered for this disc replaces the
  * player's own sub.srt Open; its sync/charcode are already in play_dat.
  * Cleared after the first failed Open, so a missing file costs one try. */
-static char hint_autoload[UB_SUB_PATH_BYTES];
+static char hint_autoload[UB_NATIVE_OPEN_BYTES]; /* holds <=UB_SUB_PATH_BYTES, passed to native Open */
+_Static_assert(sizeof current_path>=UB_NATIVE_OPEN_BYTES&&sizeof candidate_path>=UB_NATIVE_OPEN_BYTES&&
+ sizeof rollback_path>=UB_NATIVE_OPEN_BYTES&&sizeof hint_autoload>=UB_NATIVE_OPEN_BYTES,"native Open reads 0x400 bytes");
 static int8_t hint_sync,hint_code;
 static uint32_t hint_applied;
 static uint32_t selection_seq,selection_pending;

@@ -24,11 +24,37 @@ static void want(const char *name){
  for(unsigned i=0;i<name_count;i++)if(!strcmp(names[i].name,name))return;
  if(name_count<UB_NAMES)names[name_count++].name=name;
 }
+/* /proc/<pid>/stat after the command name: field 3 state, 20 threads, 22
+ * start time. 0 when unreadable. */
+static int proc_stat(int pid,char *state,unsigned long *threads,unsigned long long *start){
+ char p[64],buf[2048],*q,*save;int fd;ssize_t n;unsigned field=3;
+ snprintf(p,sizeof p,"/proc/%d/stat",pid);fd=open(p,O_RDONLY|O_CLOEXEC);if(fd<0)return 0;
+ n=read(fd,buf,sizeof buf-1);close(fd);if(n<=0)return 0;buf[n]=0;
+ q=strrchr(buf,')');if(!q)return 0;
+ for(q=strtok_r(q+1," ",&save);q;q=strtok_r(0," ",&save),field++){
+  if(field==3&&state)*state=q[0];
+  if(field==20&&threads)*threads=strtoul(q,0,10);
+  if(field==22){if(start)*start=strtoull(q,0,10);return 1;}
+ }
+ return 0;
+}
+/* Ended but not yet reaped by its parent (apl_medm reaps the players on its
+ * own schedule): a zombie keeps its comm, start time and kill(0) success.
+ * A leader whose main thread alone has exited is also shown as Z, but still
+ * counts its live threads; only a lone zombie is a finished process. */
+static int finished(int pid){
+ char state=0;unsigned long threads=0;
+ if(!proc_stat(pid,&state,&threads,0))return 0;
+ return state=='X'||(state=='Z'&&threads<=1);
+}
 static void scan(void){
  char buf[4096] __attribute__((aligned(8))),p[64],comm[64];int n,fd;unsigned i;
  for(i=0;i<name_count;i++)names[i].pid=0;
- fd=open("/proc",O_RDONLY|O_DIRECTORY);if(fd<0)return;
- while((n=(int)syscall(SYS_getdents64,fd,buf,sizeof buf))>0){
+ fd=open("/proc",O_RDONLY|O_DIRECTORY|O_CLOEXEC);if(fd<0)return;
+ for(;;){
+  n=(int)syscall(SYS_getdents64,fd,buf,sizeof buf);
+  if(n<0&&errno==EINTR)continue;
+  if(n<=0)break;
   int off=0;
   while(off<n){
    struct linux_dirent64 *e=(void *)(buf+off);int pid,cfd;ssize_t k;
@@ -37,20 +63,14 @@ static void scan(void){
    snprintf(p,sizeof p,"/proc/%d/comm",pid);cfd=open(p,O_RDONLY);if(cfd<0)continue;
    k=read(cfd,comm,sizeof comm-1);close(cfd);if(k<=0)continue;
    comm[k]=0;comm[strcspn(comm,"\r\n")]=0;
-   for(i=0;i<name_count;i++)if(!names[i].pid&&!strcmp(comm,names[i].name))names[i].pid=pid;
+   /* A finished instance must not shadow its live successor. */
+   for(i=0;i<name_count;i++)if(!names[i].pid&&!strcmp(comm,names[i].name)&&!finished(pid))names[i].pid=pid;
   }
  }
  close(fd);
 }
 static int pid_of(const char *name){for(unsigned i=0;i<name_count;i++)if(!strcmp(names[i].name,name))return names[i].pid;return 0;}
-static unsigned long long birth(int pid){
- char p[64],buf[2048],*q,*save;int fd;ssize_t n;unsigned field=3;
- snprintf(p,sizeof p,"/proc/%d/stat",pid);fd=open(p,O_RDONLY);if(fd<0)return 0;
- n=read(fd,buf,sizeof buf-1);close(fd);if(n<=0)return 0;buf[n]=0;
- q=strrchr(buf,')');if(!q)return 0;
- for(q=strtok_r(q+1," ",&save);q;q=strtok_r(0," ",&save),field++)if(field==22)return strtoull(q,0,10);
- return 0;
-}
+static unsigned long long birth(int pid){unsigned long long start=0;return proc_stat(pid,0,0,&start)?start:0;}
 /* Executable hash per process instance, shared by all parts. */
 static struct { int pid; unsigned long long born; char sha[65]; } hashes[UB_HASHES];
 static const char *exe_hash(int pid,unsigned long long born){
@@ -123,7 +143,7 @@ static void tick(struct ub_part *p){
  if(pid!=t->pid||born!=t->born){
   if(t->pid&&t->born){
    unsigned long long now=birth(t->pid);
-   int missing=kill(t->pid,0)&&errno==ESRCH;
+   int missing=(kill(t->pid,0)&&errno==ESRCH)||finished(t->pid);
    if(!missing&&!(now&&now!=t->born))return; /* the tracked instance still runs; a missed scan is not an end */
    ended(p->process,t->pid,t->born,missing?"no longer running":"its PID belongs to a newer process");
   }

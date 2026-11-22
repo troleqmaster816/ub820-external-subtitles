@@ -37,15 +37,20 @@ static int tool_ready(void){
  ready=1;return 0;
 }
 /* An overdue tool retains ownership of USB until it exits. Never kill a
- * libufs lock holder, including a reader. Reap later and remove its RAM copy. */
-static struct { pid_t pid;char temp[300]; } stuck[UB_TOOL_STUCK];
+ * libufs lock holder, including a reader. Reap later and remove its RAM
+ * copies: a writer's private input, a reader's private output and temp. */
+static struct { pid_t pid;char temp[300],output[300]; } stuck[UB_TOOL_STUCK];
 int ub_stick_reap(void){
  int left=0,status;
  for(unsigned i=0;i<UB_TOOL_STUCK;i++){
   pid_t r;
   if(stuck[i].pid<=0)continue;
   r=waitpid(stuck[i].pid,&status,WNOHANG);
-  if(r==stuck[i].pid||(r<0&&errno==ECHILD)){if(stuck[i].temp[0])unlink(stuck[i].temp);stuck[i].pid=0;}
+  if(r==stuck[i].pid||(r<0&&errno==ECHILD)){
+   if(stuck[i].temp[0])unlink(stuck[i].temp);
+   if(stuck[i].output[0])unlink(stuck[i].output);
+   stuck[i].pid=0;
+  }
   else left++;
  }
  return left;
@@ -91,25 +96,53 @@ static int run_transfer(const char *op,const char *from,const char *to,int quiet
   if(r==pid&&WIFEXITED(status)&&WEXITSTATUS(status)!=127)return WEXITSTATUS(status);
   if(r==pid||(r<0&&errno!=EINTR)){if(temp[0])unlink(temp);return UB_STICK_TIMEOUT;}
   for(k=0;k<UB_TOOL_STUCK&&stuck[k].pid>0;k++){}
-  if(k<UB_TOOL_STUCK){stuck[k].pid=pid;snprintf(stuck[k].temp,sizeof stuck[k].temp,"%s",temp);}
+  if(k<UB_TOOL_STUCK){
+   stuck[k].pid=pid;snprintf(stuck[k].temp,sizeof stuck[k].temp,"%s",temp);
+   snprintf(stuck[k].output,sizeof stuck[k].output,"%s",strcmp(op,"write")?to:"");
+  }
   ub_log("storage",UB_ALWAYS,"USB tool PID%d exceeded its deadline; retained until completion, USB transfers wait",(int)pid);
   return UB_STICK_TIMEOUT;
  }
 }
+/* A new 0600 file under a name no other caller uses. glibc's mkstemp probes
+ * a time64 syscall absent from the player kernel. */
+static int private_file(char *name,size_t size,const char *kind){
+ static unsigned serial;int fd=-1;
+ for(unsigned attempt=0;attempt<16;attempt++){
+  snprintf(name,size,"/tmp/ub820-ufs-%s-%d-%u",kind,(int)getpid(),++serial);
+  fd=open(name,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
+  if(fd>=0||errno!=EEXIST)break;
+ }
+ return fd;
+}
+static int retained(const char *name){
+ for(unsigned i=0;i<UB_TOOL_STUCK;i++)
+  if(stuck[i].pid>0&&(!strcmp(stuck[i].temp,name)||!strcmp(stuck[i].output,name)))return 1;
+ return 0;
+}
+/* A reader that misses its deadline may still finish much later. It writes
+ * only a private name, never the caller's file: a late result must neither
+ * replace a newer copy (the menu settings) nor leave a secret (SSH) under a
+ * known name. Only a clean, timely result is moved into place. */
+static int run_read(const char *op,const char *from,const char *to,int quiet){
+ char output[96],temp[100];int fd,rc;
+ fd=private_file(output,sizeof output,"output");if(fd<0)return 5;
+ close(fd);
+ rc=run_transfer(op,from,output,quiet);
+ if(retained(output))return rc;
+ if(!rc&&rename(output,to))rc=8;
+ snprintf(temp,sizeof temp,"%s.ufs",output);unlink(temp);
+ if(rc)unlink(output);
+ return rc;
+}
 static int run_tool(const char *op,const char *from,const char *to,int quiet){
- static unsigned serial;
- char input[96],buf[8192];int in,out=-1,rc=0,retained=0;ssize_t n;
+ char input[96],buf[8192];int in,out=-1,rc=0;ssize_t n;
  if(ub_stick_reap())return UB_STICK_BUSY;
- if(strcmp(op,"write"))return run_transfer(op,from,to,quiet);
+ if(strcmp(op,"write"))return run_read(op,from,to,quiet);
  /* A timed-out writer can finish later. Give it an immutable RAM source:
   * another setting/log save must not truncate the input it still owns. */
  in=open(from,O_RDONLY|O_CLOEXEC);if(in<0)return 4;
- /* glibc's mkstemp probes a time64 syscall absent from the player kernel. */
- for(unsigned attempt=0;attempt<16;attempt++){
-  snprintf(input,sizeof input,"/tmp/ub820-ufs-input-%d-%u",(int)getpid(),++serial);
-  out=open(input,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
-  if(out>=0||errno!=EEXIST)break;
- }
+ out=private_file(input,sizeof input,"input");
  if(out<0){close(in);return 5;}
  for(;;){
   do{n=read(in,buf,sizeof buf);}while(n<0&&errno==EINTR);
@@ -120,8 +153,7 @@ static int run_tool(const char *op,const char *from,const char *to,int quiet){
  }
  close(in);if(close(out))rc=7;
  if(!rc)rc=run_transfer(op,input,to,quiet);
- for(unsigned i=0;i<UB_TOOL_STUCK;i++)if(stuck[i].pid>0&&!strcmp(stuck[i].temp,input))retained=1;
- if(!retained)unlink(input);
+ if(!retained(input))unlink(input);
  return rc;
 }
 int ub_stick_read(const char *stick_path,const char *tmp_path){return run_tool("read",stick_path,tmp_path,0);}

@@ -12,7 +12,9 @@
 #define UB_PC_NOW_MS ub_payload_now_ms
 #endif
 #ifdef UB_HOST_TEST
+#ifndef ub_pc_recvmsg
 #define ub_pc_recvmsg recvmsg
+#endif
 #define ub_pc_setsockopt setsockopt
 #else
 /* The native libc is 2.20: modern ARM headers redirect these two interfaces
@@ -172,7 +174,8 @@ static inline void ub_precision_source_serve(int (*get)(uint32_t[2]),
   if(wait[0].revents&(POLLERR|POLLHUP|POLLNVAL))break;
   if(!(wait[0].revents&POLLIN))continue;
   ssize_t n=ub_pc_receive(fd,&request,sizeof(request),MSG_DONTWAIT,&from,&from_len,&peer);
-  if(n<0){if(n==-1&&errno!=EINTR)break;continue;}
+  /* POLLIN is a hint, not a promise: EAGAIN keeps the socket and subscriber. */
+  if(n<0){if(n==-1&&errno!=EINTR&&errno!=EAGAIN&&errno!=EWOULDBLOCK)break;continue;}
   if(!ub_pc_request_peer(&request,n,&peer)||from_len<=offsetof(struct sockaddr_un,sun_path))continue;
   if(from_len>sizeof(from))continue;
   if(UB_PC_NOW_MS(&begin))continue;

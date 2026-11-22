@@ -57,7 +57,18 @@ static void playdat(const unsigned char b[8]){
 }
 /* Native Open that records its paths; a missing file is any path with "gone". */
 static char opened[4][UB_SUB_PATH_BYTES];static unsigned opened_count;
+/* Stock ESL_Open copies a fixed 0x400 bytes from the path (FUN_0001d764).
+ * Paths the controller supplies itself must allow that read; under ASan an
+ * undersized buffer fails here. The caller's own literal is not read: stock
+ * passes its 1024-byte buffer there. */
+static volatile unsigned char native_copy_sink;
+static void stock_path_copy(const char *path){
+ if(path!=hint_autoload&&path!=current_path&&path!=candidate_path&&path!=rollback_path)return;
+ unsigned char c=0;for(unsigned i=0;i<0x400;i++)c^=(unsigned char)path[i];
+ native_copy_sink=c;
+}
 static int recording_open(const char *path){
+ stock_path_copy(path);
  if(opened_count<4)snprintf(opened[opened_count],sizeof opened[0],"%s",path);
  opened_count++;
  if(strstr(path,"gone")){assert(atomic_read(&gate));open_calls++;return 7;}

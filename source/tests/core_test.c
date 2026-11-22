@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/wait.h>
@@ -88,7 +89,10 @@ static int named_child(const char *name){
 }
 static int child(void){return named_child("fake_ui");}
 static int log_has(const char *text){
- static char buf[65536];FILE *f=fopen(UB_LOG_FILE,"r");size_t n=f?fread(buf,1,sizeof buf-1,f):0;if(f)fclose(f);buf[n]=0;return strstr(buf,text)!=0;
+ /* the newest 64 KiB: the debug-level log outgrows one buffer */
+ static char buf[65536];FILE *f=fopen(UB_LOG_FILE,"r");size_t n=0;
+ if(f){if(!fseek(f,0,SEEK_END)&&ftell(f)>(long)sizeof buf-1)fseek(f,-(long)(sizeof buf-1),SEEK_END);else rewind(f);n=fread(buf,1,sizeof buf-1,f);fclose(f);}
+ buf[n]=0;return strstr(buf,text)!=0;
 }
 static void stop(int pid){kill(pid,SIGKILL);waitpid(pid,0,0);}
 /* A ready handshake avoids timing assumptions; EOF requests an ordinary
@@ -110,6 +114,23 @@ static int clock_child(int *finish){
 static void clock_finish(int pid,int finish){
  int status;close(finish);CHECK(waitpid(pid,&status,0)==pid);
  CHECK(WIFEXITED(status)&&WEXITSTATUS(status)==0);
+}
+static int wait_state(int pid,char want){
+ for(int i=0;i<400;i++){
+  char p[64],b[512];snprintf(p,sizeof p,"/proc/%d/stat",pid);FILE *f=fopen(p,"r");
+  size_t n=f?fread(b,1,sizeof b-1,f):0;if(f)fclose(f);b[n]=0;
+  char *q=strrchr(b,')');if(q&&q[1]==' '&&q[2]==want)return 1;
+  usleep(5000);
+ }
+ return 0;
+}
+/* A "fake_clock" whose main thread exits while a second thread keeps the
+ * process running. */
+static void *forever(void *unused){(void)unused;for(;;)pause();return 0;}
+static int threaded_leader(void){
+ pid_t pid=fork();
+ if(!pid){pthread_t t;prctl(PR_SET_NAME,"fake_clock");if(pthread_create(&t,0,forever,0))_exit(2);pthread_exit(0);}
+ return pid;
 }
 static void write_file(const char *path,const char *text){FILE *f=fopen(path,"w");fputs(text,f);fclose(f);}
 
@@ -184,6 +205,22 @@ int main(void){
  CHECK(clock_parts[0].target.changed&&!clock_parts[0].tripped);
  clock_finish(pid,finish);ub_core_tick();
  CHECK(!clock_parts[0].target.pid&&!clock_parts[0].tripped);
+
+ /* A finished instance its parent has not reaped yet (a zombie) counts as
+  * ended and never shadows the next instance; a leader whose main thread
+  * alone has exited (also shown as Z) still runs. */
+ {int old=clock_child(&finish),next,next_finish;CHECK(old>0);
+  ub_core_tick();CHECK(clock_parts[0].target.pid==old);
+  close(finish);CHECK(wait_state(old,'Z'));
+  ub_core_tick();CHECK(!clock_parts[0].target.pid&&!clock_parts[0].tripped);
+  next=clock_child(&next_finish);CHECK(next>0);
+  ub_core_tick();CHECK(clock_parts[0].target.pid==next); /* the zombie is still listed */
+  {int status;CHECK(waitpid(old,&status,0)==old);}
+  clock_finish(next,next_finish);ub_core_tick();CHECK(!clock_parts[0].target.pid);
+  int leader=threaded_leader();CHECK(leader>0&&wait_state(leader,'Z'));
+  for(int i=0;i<3;i++)ub_core_tick();
+  CHECK(clock_parts[0].target.pid==leader);
+  stop(leader);ub_core_tick();CHECK(!clock_parts[0].target.pid&&!clock_parts[0].tripped);}
 
  /* Already hooked (not stock): one refusal, no prepare, no retries. */
  {unsigned char *site=mmap((void *)(uintptr_t)SITE,4096,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_ANONYMOUS,-1,0);CHECK(site==(void *)(uintptr_t)SITE);

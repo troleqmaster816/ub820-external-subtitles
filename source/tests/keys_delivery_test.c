@@ -60,6 +60,17 @@ int main(void){
  assert(ub_hook_key_filter(ctx)==1&&stock_calls==1);assert(read(reader,&key,sizeof key)==sizeof key&&key==0x85);
  mode=1;calls=0;assert(ub_hook_key_filter(ctx)==1&&calls==2);assert(read(reader,&key,sizeof key)==sizeof key);
  mode=2;calls=0;assert(ub_hook_key_filter(ctx)==1&&calls==1);assert(!access(UB_OVERLAY_ABORT,F_OK));assert(stock_calls==1);unlink(UB_OVERLAY_ABORT);
+ /* Tray OPEN/CLOSE is never held back by the overlay: the press closes it,
+  * every event goes to the stock filter, and nothing reaches the FIFO. */
+ {static const int tray[]={0x01,0x6f,0x80018,0x80019};
+  for(unsigned i=0;i<4;i++)for(int press=1;press>=0;press--){
+   int before=stock_calls;ctx[CTX_KEY]=tray[i];ctx[CTX_EVENT]=press?1:2;mode=0;calls=0;
+   assert(ub_hook_key_filter(ctx)==42&&stock_calls==before+1&&!calls);
+   assert(press?!access(UB_OVERLAY_ABORT,F_OK):access(UB_OVERLAY_ABORT,F_OK)!=0);unlink(UB_OVERLAY_ABORT);
+   assert(read(reader,&key,sizeof key)<=0); /* empty: EOF or EAGAIN */
+  }
+  ctx[CTX_KEY]=0x6e;ctx[CTX_EVENT]=1;assert(ub_hook_key_filter(ctx)==1);assert(read(reader,&key,sizeof key)==sizeof key&&key==0x6e);
+  ctx[CTX_KEY]=0x85;stock_calls=1;}
  mode=3;assert(to_overlay(0x85,1)==-1); /* incomplete record is never success */
  mode=0;seconds=104;assert(ub_hook_key_filter(ctx)==42&&stock_calls==2); /* stale UI cannot trap remote */
  seconds=100;lease(103);close_reader=1;assert(to_overlay(0x85,1)==0&&reader==-1); /* reader disappears: no SIGPIPE */

@@ -23,6 +23,8 @@ def build(name,sources,defines):
  if name in ('subtitle_startup_test','ssh_runtime_test','settings_tile_test','cpu_settings_test','cpu_backend_test','hook_transfer_test','elf_alignment_test'):flags+=' -ffunction-sections -fdata-sections -Wl,--gc-sections'
  if name in ('settings_tile_test','power_settings_test'):flags+=' -no-pie'
  if name=='cpu_settings_test':flags+=' -fno-pie -no-pie'
+ # stock ESL_Open reads 0x400 bytes of every path the controller hands it
+ if name=='subtitle_engine_lifecycle_test':flags+=' -fsanitize=address -fno-omit-frame-pointer'
  inc=f'-I{shlex.quote(linux(ROOT/"core"))} -I{shlex.quote(linux(ROOT/"generated"))}'
  defs=' '.join(f"'-D{k}=\"{v}\"'" for k,v in defines.items())
  srcs=' '.join(shlex.quote(linux(ROOT/s)) for s in sources)

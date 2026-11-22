@@ -15,7 +15,9 @@
  *     presses are sent to it and every event (press, repeat, release) is
  *     dropped, so the application underneath gets none. If nobody reads the
  *     FIFO (apl_dispsrv or its payload is gone), every key goes to the
- *     original as usual: the remote cannot get stuck.
+ *     original as usual: the remote cannot get stuck. Tray OPEN/CLOSE is
+ *     never held back: its press closes the overlay and every event goes
+ *     to the original, which keeps its own tray lock.
  * The state in which the stock filter lets every key pass (ctx+0x64 == 2)
  * is left to the original. The marker files are kept by the remote module
  * (Netflix choice) and by the overlay (open). */
@@ -50,6 +52,10 @@ static int overlay_live(void){
  n=read(fd,&expires,sizeof expires);close(fd);
  return n==(int)sizeof expires&&!ub_payload_now(&now)&&(int32_t)(expires-now)>0;
 }
+/* The stock filter's tray keys (1.82 FUN_0002e4f0 / 1.85 FUN_0002e568,
+ * "Key Cancel (trayLock)"): OPEN/CLOSE from the remote and the front panel.
+ * A physical request the overlay has no use for. */
+static int tray_key(int key){return key==0x01||key==0x6f||key==0x80018||key==0x80019;}
 static void abort_overlay(void){int fd=open(UB_OVERLAY_ABORT,O_WRONLY|O_CREAT|O_NONBLOCK|O_CLOEXEC,0600);if(fd>=0)close(fd);}
 /* A temporary read descriptor pins a reader through write(), so a UI exit
  * between the first open and the write cannot deliver SIGPIPE to apl_mgr.
@@ -76,8 +82,11 @@ int ub_hook_key_filter(int *ctx){
   if(key==KEY_NETFLIX&&exists(UB_NETFLIX_HELPER)){if(to_overlay(key,press)&&overlay_live())abort_overlay();drop=1;}
   else if(key==KEY_NETFLIX&&exists(UB_NETFLIX_OFF))drop=1;
   else if(overlay_live()){
-   if(to_overlay(key,press))abort_overlay();
-   drop=1; /* failed press closes overlay; never pass it to hidden stock */
+   if(tray_key(key)){if(press)abort_overlay();}
+   else {
+    if(to_overlay(key,press))abort_overlay();
+    drop=1; /* failed press closes overlay; never pass it to hidden stock */
+   }
   }
  }
  errno=saved;

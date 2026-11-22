@@ -86,15 +86,21 @@ static void memory_load(void){
  memory.known=rc>=0;
  if(rc<0)ub_log(ID,UB_ALWAYS,"%s/%s could not be read; the last folder is kept in RAM and the file is not replaced until it reads",UB_STICK_DIR,UB_SUB_MEMORY_NAME);
 }
+/* After a failed read (a stick still starting at boot): the file's entries
+ * join RAM, where everything learnt since wins. 0 known now, -1 still not. */
+static int memory_retry(void){
+ struct sub_memory file;int f;
+ if(memory.known)return 0;
+ f=memory_fetch(&file);
+ if(f<0)return -1;
+ if(!f)sub_memory_merge(&memory,&file);
+ memory.known=1;
+ return 0;
+}
 static void memory_save_now(unsigned long long now){
  static char text[96*1024];static const char path[]=UB_SUB_CONFIG_DIR "/" UB_SUB_MEMORY_NAME ".out";
  size_t n;int fd,rc=0;size_t done=0;
- if(!memory.known){
-  struct sub_memory file;int f=memory_fetch(&file);
-  if(f<0){sched_result(&memory_save,now,0);ub_log(ID,UB_ALWAYS,"%s/%s still unreadable; subtitle memory not saved",UB_STICK_DIR,UB_SUB_MEMORY_NAME);return;}
-  if(!f)sub_memory_merge(&memory,&file);
-  memory.known=1;
- }
+ if(memory_retry()){sched_result(&memory_save,now,0);ub_log(ID,UB_ALWAYS,"%s/%s still unreadable; subtitle memory not saved",UB_STICK_DIR,UB_SUB_MEMORY_NAME);return;}
  n=sub_memory_format(&memory,text,sizeof text);
  mkdir(UB_SUB_CONFIG_DIR,0700);
  fd=n?open(path,O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC|O_NOFOLLOW,0600):-1;
@@ -194,6 +200,9 @@ static void engine_prepare(struct ub_part *p,struct ub_target *t){
  memset(&h,0,sizeof h);
  h.magic=UB_SUB_HINT_MAGIC;h.version=UB_SUB_RECORD_VERSION;h.pid=(uint32_t)t->pid;
  h.birth_lo=(uint32_t)t->born;h.birth_hi=(uint32_t)(t->born>>32);
+ /* The disc lookup needs the stick's entries: a failed boot read is retried
+  * once per playback, not only when something is saved. */
+ if(!memory.known&&!memory_retry())ub_log(ID,UB_ALWAYS,"%s/%s read on retry",UB_STICK_DIR,UB_SUB_MEMORY_NAME);
  if(memory.last_dir[0]){h.flags|=UB_SUB_HINT_START_DIR;snprintf(h.start_dir,sizeof h.start_dir,"%s",memory.last_dir);}
  if(disc_memory){
   char root[200];unsigned long long began=ub_now_ms();

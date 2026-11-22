@@ -136,6 +136,23 @@ int main(void){
  extra_entry="UB820_~2.TP0";CHECK(tool("load",target,out)==4);
  extra_entry="UB820_~1.OLD";CHECK(tool("load",target,out)==4);
  extra_entry="UB820_~1.NEW";CHECK(tool("load",target,out)==12);
+ /* Only a real numeric-tail alias: a prefix of the stem, or Windows' hashed
+  * form (1-2 stem characters, up to 4 hex digits), then ~1..~999999. */
+ extra_entry="UB820~12.CFG";CHECK(tool("load",target,out)==4);
+ extra_entry="UB~1.CFG";CHECK(tool("load",target,out)==4);
+ extra_entry="UB2F1A~5.CFG";CHECK(tool("load",target,out)==4);
+ extra_entry="U2F1A~1.CFG";CHECK(tool("load",target,out)==4);
+ extra_entry="UB820_~1.TP3";CHECK(tool("load",target,out)==4);
+ extra_entry="UB82F~1.OLD";CHECK(tool("load",target,out)==4);
+ extra_entry="USER~1.CFG";CHECK(tool("load",target,out)==12);CHECK(tool("write",src,target)==0);unlink(target);
+ extra_entry="u~backup.cfg";CHECK(tool("load",target,out)==12);
+ extra_entry="UBX~1.CFG";CHECK(tool("load",target,out)==12);
+ extra_entry="UB820_~0.CFG";CHECK(tool("load",target,out)==12);
+ extra_entry="UB820_~12.CFG";CHECK(tool("load",target,out)==12);
+ extra_entry="UB2F1A9~1.CFG";CHECK(tool("load",target,out)==12);
+ extra_entry="UB820_~1X.CFG";CHECK(tool("load",target,out)==12);
+ extra_entry="UB820_~1.LOG";CHECK(tool("load",target,out)==12);
+ extra_entry="~1.CFG";CHECK(tool("load",target,out)==12);
  extra_entry="UB820_ME.CFG";CHECK(tool("load",target,out)==4);CHECK(tool("write",src,target)==8);
  extra_entry="UB820_ME.TP0";CHECK(tool("load",target,out)==4);CHECK(tool("write",src,target)==8);
  extra_entry="UB820_ME.OLD";CHECK(tool("load",target,out)==4);

@@ -8,6 +8,21 @@
  * synchronous MM API, which serializes the underlying PCE/AVD query on its
  * existing owner thread. Never issue that synchronous request from a native
  * callback: the caller can still hold the PCE event/callback mutexes.
+ *
+ * Teardown (analysis/freeze-eject-20261122): stock API_Close (0x66e9c) sets
+ * the MM id to 0xffffffff, runs Close, then sets the MM worker state to Exit
+ * (3) and joins the worker without a timeout. The API queue (0x75cd4) stores
+ * state 2 for a new request without checking for Exit, so a request of ours
+ * that reaches the queue at that moment revives the worker after Exit and the
+ * join never returns: apl_bdv hangs on a black screen. Stock issues these
+ * requests only from the thread that also calls API_Close; ours is a second
+ * thread. Two guards close this:
+ *   - only ids that API_Open can assign (1..0x7fffffff) are used, never the
+ *     0xffffffff Close sentinel nor 0 (no MM opened yet);
+ *   - ub_hook_api_close stops new requests and waits for the ones in flight
+ *     before stock Close starts. A request in flight is served by the MM
+ *     worker as usual (stock would queue Close behind it anyway), so the wait
+ *     ends; its bound only exceeds both stock 60 s queue waits.
  */
 #include <stdint.h>
 #include <errno.h>
@@ -23,6 +38,7 @@ extern void ub_precision_source_serve(int (*get)(uint32_t[2]),int (*paused)(uint
 
 void (*ub_original_clock_callback)(const uint32_t *);
 void (*ub_original_notify_callback)(const uint32_t *);
+uint32_t (*ub_original_api_close)(uint32_t);
 int (*ub_native_get_media_time)(uint32_t,uint32_t *);
 volatile uint32_t *ub_precision_mm_id;
 volatile uint32_t *ub_precision_mm_state;
@@ -39,7 +55,21 @@ static uint32_t source_started;
  * counter carries meaning; eventfd coalesces wakeups without losing epochs. */
 static int source_event_fd=-1;
 static uint32_t source_generation=1,source_clock_seen,source_clock_lo,source_clock_hi;
+/* Close barrier: source_closing is set for the whole of stock API_Close,
+ * source_requests counts native time requests that passed the barrier. Both
+ * sides use sequentially consistent accesses (store own flag, then read the
+ * other's), so a request either sees Close or is seen by it. */
+static uint32_t source_closing,source_requests;
+#ifndef UB_PRECISION_CLOSE_WAIT_MS
+#define UB_PRECISION_CLOSE_WAIT_MS 130000u /* > the two stock 60 s queue waits */
+#endif
+#ifndef UB_PRECISION_CLOSE_POLL_US
+#define UB_PRECISION_CLOSE_POLL_US 1000u
+#endif
 static uint32_t source_read(volatile uint32_t *p){return __atomic_load_n(p,__ATOMIC_ACQUIRE);}
+/* API_Open assigns (counter & 0x7fffffff) after a counter increment from 0,
+ * so an open MM has 1..0x7fffffff. 0: never opened. 0xffffffff: API_Close. */
+static int source_id_open(uint32_t id){return id&&id<=0x7fffffffu;}
 static int source_ready(void){
  uint32_t state;
  if(!ub_precision_mm_id||!ub_precision_mm_state||!ub_native_get_media_time)return 0;
@@ -47,19 +77,45 @@ static int source_ready(void){
  /* Stock callback dispatcher 0x72b98 admits 2..11; the queued getter's
   * handler at 0x6cb66 additionally rejects 9 and 11. Avoid posting requests
   * in those known inadmissible states instead of guessing their enum names. */
- return state>=2&&state<=11&&state!=9&&state!=11&&source_read(ub_precision_mm_id)!=0;
+ return state>=2&&state<=11&&state!=9&&state!=11&&source_id_open(source_read(ub_precision_mm_id));
 }
 /* Transport contract: zero supplies a valid little-endian two-word 45000-Hz
  * title-media time. On error, the caller's output is left untouched. The
  * native API copies its output even on some error paths, so querying into a
  * local buffer and checking its return value is mandatory. */
 static int precision_native_time(uint32_t ticks[2]){
- uint32_t id,value[2]={0,0};int rc;
- if(!ticks||!source_ready())return -1;
- id=source_read(ub_precision_mm_id);
- rc=ub_native_get_media_time(id,value);
- if(rc||!source_ready()||source_read(ub_precision_mm_id)!=id)return -1;
- ticks[0]=value[0];ticks[1]=value[1];return 0;
+ uint32_t id,value[2]={0,0};int rc=-1;
+ if(!ticks)return -1;
+ __atomic_add_fetch(&source_requests,1,__ATOMIC_SEQ_CST);
+ if(!__atomic_load_n(&source_closing,__ATOMIC_SEQ_CST)&&source_ready()){
+  id=source_read(ub_precision_mm_id);
+  /* Re-checked here: the id read for the request must itself be an open one. */
+  if(source_id_open(id)&&!ub_native_get_media_time(id,value)&&source_ready()&&source_read(ub_precision_mm_id)==id){
+   ticks[0]=value[0];ticks[1]=value[1];rc=0;
+  }
+ }
+ __atomic_sub_fetch(&source_requests,1,__ATOMIC_SEQ_CST);
+ return rc;
+}
+/* Stock API_Close(mm_id), called on the APL control thread (API_EXT_Close
+ * 0x67b7c from the state machine 0x506f8), never on the MM worker that serves
+ * our requests, so waiting here cannot wait on itself. New requests are
+ * refused from the first store; requests already past the barrier finish
+ * before Close sets the sentinel and queues its own command. The original's
+ * arguments, result and errno are passed through. */
+uint32_t ub_hook_api_close(uint32_t id){
+ int saved=errno;uint32_t rc;
+ __atomic_store_n(&source_closing,1,__ATOMIC_SEQ_CST);
+ /* A poll count, not a clock: the bound holds even without a usable clock,
+  * and sleeping longer than asked only lengthens a never-expected wait. */
+ for(uint32_t polls=0;__atomic_load_n(&source_requests,__ATOMIC_SEQ_CST)&&
+     polls<UB_PRECISION_CLOSE_WAIT_MS*1000u/UB_PRECISION_CLOSE_POLL_US;polls++)usleep(UB_PRECISION_CLOSE_POLL_US);
+ errno=saved;
+ rc=ub_original_api_close?ub_original_api_close(id):0x91000121u; /* BDROM_MM_E_FATAL */
+ saved=errno;
+ /* After Close the id is the sentinel: source_ready refuses until an Open. */
+ __atomic_store_n(&source_closing,0,__ATOMIC_SEQ_CST);
+ errno=saved;return rc;
 }
 static int precision_native_paused(uint32_t *generation){
  uint32_t before,after,state;
